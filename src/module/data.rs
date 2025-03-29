@@ -1,10 +1,10 @@
 //! Data segments within a wasm module.
 
-use crate::emit::{Emit, EmitContext, Section};
+use crate::emit::{Emit, EmitContext};
 use crate::ir::Value;
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{GlobalId, InitExpr, MemoryId, Module, Result, ValType};
+use crate::{ConstExpr, MemoryId, Module, Result, ValType};
 use anyhow::{bail, Context};
 
 /// A passive element segment identifier
@@ -25,6 +25,9 @@ pub struct Data {
     pub kind: DataKind,
     /// The data payload of this data segment.
     pub value: Vec<u8>,
+    /// The name of this data, used for debugging purposes in the `name`
+    /// custom section.
+    pub name: Option<String>,
 }
 
 /// The kind of data segment: passive or active.
@@ -32,33 +35,19 @@ pub struct Data {
 pub enum DataKind {
     /// An active data segment that is automatically initialized at some address
     /// in a static memory.
-    Active(ActiveData),
+    Active {
+        /// The memory that this active data segment will be automatically
+        /// initialized in.
+        memory: MemoryId,
+        /// The memory offset where this active data segment will be automatically
+        /// initialized.
+        offset: ConstExpr,
+    },
     /// A passive data segment that must be manually initialized at a dynamic
     /// address via the `memory.init` instruction (perhaps multiple times in
     /// multiple different memories) and then manually freed when it's no longer
     /// needed via the `data.drop` instruction.
     Passive,
-}
-
-/// The parts of a data segment that are only present in active data segments.
-#[derive(Clone, Debug)]
-pub struct ActiveData {
-    /// The memory that this active data segment will be automatically
-    /// initialized in.
-    pub memory: MemoryId,
-    /// The memory location where this active data segment will be automatically
-    /// initialized.
-    pub location: ActiveDataLocation,
-}
-
-/// The memory location where an active data segment will be automatically
-/// initialized.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActiveDataLocation {
-    /// A static, absolute address within the memory.
-    Absolute(u32),
-    /// A relative address (expressed as a global's value) within the memory.
-    Relative(GlobalId),
 }
 
 impl Tombstone for Data {
@@ -75,10 +64,7 @@ impl Data {
 
     /// Is this a passive data segment?
     pub fn is_passive(&self) -> bool {
-        match self.kind {
-            DataKind::Passive => true,
-            _ => false,
-        }
+        matches!(self.kind, DataKind::Passive)
     }
 }
 
@@ -116,7 +102,12 @@ impl ModuleData {
     /// Add a data segment
     pub fn add(&mut self, kind: DataKind, value: Vec<u8>) -> DataId {
         let id = self.arena.next_id();
-        let id2 = self.arena.alloc(Data { id, kind, value });
+        let id2 = self.arena.alloc(Data {
+            id,
+            kind,
+            value,
+            name: None,
+        });
         debug_assert_eq!(id, id2);
         id
     }
@@ -135,7 +126,7 @@ impl ModuleData {
         let mut any_passive = false;
 
         for data in self.iter() {
-            cx.indices.set_data_index(data.id(), count as u32);
+            cx.indices.set_data_index(data.id(), count);
             count += 1;
             any_passive |= data.is_passive();
         }
@@ -154,7 +145,8 @@ impl ModuleData {
             || maybe_parallel!(funcs.(iter_local | par_iter_local))
                 .any(|(_, f)| !f.used_data_segments().is_empty())
         {
-            cx.start_section(Section::DataCount).encoder.usize(count);
+            cx.wasm_module
+                .section(&wasm_encoder::DataCountSection { count });
         }
     }
 }
@@ -176,6 +168,7 @@ impl Module {
                 // parse the data segments.
                 value: Vec::new(),
                 kind: DataKind::Passive,
+                name: None,
             }));
         }
     }
@@ -184,7 +177,7 @@ impl Module {
     pub(crate) fn parse_data(
         &mut self,
         section: wasmparser::DataSectionReader,
-        ids: &IndicesToIds,
+        ids: &mut IndicesToIds,
     ) -> Result<()> {
         log::debug!("parse data section");
         let preallocated = self.data.arena.len() > 0;
@@ -196,11 +189,16 @@ impl Module {
             let id = if preallocated {
                 ids.get_data(i as u32)?
             } else {
-                self.data.arena.alloc_with_id(|id| Data {
+                let id = self.data.arena.alloc_with_id(|id| Data {
                     id,
                     value: Vec::new(),
                     kind: DataKind::Passive,
-                })
+                    name: None,
+                });
+
+                ids.push_data(id);
+
+                id
             };
             let data = self.data.get_mut(id);
 
@@ -211,7 +209,7 @@ impl Module {
                 }
                 wasmparser::DataKind::Active {
                     memory_index,
-                    init_expr,
+                    offset_expr,
                 } => {
                     data.value = segment.data.to_vec();
 
@@ -219,22 +217,34 @@ impl Module {
                     let memory = self.memories.get_mut(memory_id);
                     memory.data_segments.insert(data.id);
 
-                    let offset = InitExpr::eval(&init_expr, ids)
-                        .with_context(|| format!("in segment {}", i))?;
-                    data.kind = DataKind::Active(ActiveData {
+                    let offset = ConstExpr::eval(&offset_expr, ids)
+                        .with_context(|| format!("failed to evaluate the offset of data {}", i))?;
+
+                    if memory.memory64 {
+                        match offset {
+                            ConstExpr::Value(Value::I64(_)) => {}
+                            ConstExpr::Global(global)
+                                if self.globals.get(global).ty == ValType::I64 => {}
+                            _ => bail!(
+                                "data {} is active for 64-bit memory but has non-i64 offset",
+                                i
+                            ),
+                        }
+                    } else {
+                        match offset {
+                            ConstExpr::Value(Value::I32(_)) => {}
+                            ConstExpr::Global(global)
+                                if self.globals.get(global).ty == ValType::I32 => {}
+                            _ => bail!(
+                                "data {} is active for 32-bit memory but has non-i32 offset",
+                                i
+                            ),
+                        }
+                    }
+                    data.kind = DataKind::Active {
                         memory: memory_id,
-                        location: match offset {
-                            InitExpr::Value(Value::I32(n)) => {
-                                ActiveDataLocation::Absolute(n as u32)
-                            }
-                            InitExpr::Global(global)
-                                if self.globals.get(global).ty == ValType::I32 =>
-                            {
-                                ActiveDataLocation::Relative(global)
-                            }
-                            _ => bail!("non-i32 constant in segment {}", i),
-                        },
-                    });
+                        offset,
+                    }
                 }
             }
         }
@@ -245,38 +255,29 @@ impl Module {
 impl Emit for ModuleData {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit data section");
+
         if self.arena.len() == 0 {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Data);
-        cx.encoder.usize(self.arena.len());
-
         // The encodings here are with respect to the bulk memory proposal, but
         // should be backwards compatible with the current MVP WebAssembly spec
         // so long as the only memory 0 is used.
+        let mut wasm_data_section = wasm_encoder::DataSection::new();
         for data in self.iter() {
             match data.kind {
                 DataKind::Passive => {
-                    cx.encoder.byte(0x01);
-                    cx.encoder.bytes(&data.value);
+                    wasm_data_section.passive(data.value.clone());
                 }
-                DataKind::Active(ref a) => {
-                    let index = cx.indices.get_memory_index(a.memory);
-                    if index == 0 {
-                        cx.encoder.byte(0x00);
-                    } else {
-                        cx.encoder.byte(0x02);
-                        cx.encoder.u32(index);
-                    }
-                    let init_expr = match a.location {
-                        ActiveDataLocation::Absolute(a) => InitExpr::Value(Value::I32(a as i32)),
-                        ActiveDataLocation::Relative(g) => InitExpr::Global(g),
-                    };
-                    init_expr.emit(&mut cx);
-                    cx.encoder.bytes(&data.value);
+                DataKind::Active { memory, offset } => {
+                    wasm_data_section.active(
+                        cx.indices.get_memory_index(memory),
+                        &offset.to_wasmencoder_type(cx),
+                        data.value.clone(),
+                    );
                 }
             }
         }
+        cx.wasm_module.section(&wasm_data_section);
     }
 }

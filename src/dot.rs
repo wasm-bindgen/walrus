@@ -103,7 +103,7 @@ impl<T: DotNode> Dot for T {
 
         impl FieldAggregator for AppendFields<'_> {
             fn add_field(&mut self, field: &[&str]) {
-                assert!(field.len() > 0);
+                assert!(!field.is_empty());
                 self.out.push_str("<tr>");
                 for f in field {
                     self.out.push_str("<td>");
@@ -114,7 +114,7 @@ impl<T: DotNode> Dot for T {
             }
 
             fn add_field_with_port(&mut self, port: &str, field: &str) {
-                assert!(field.len() > 0);
+                assert!(!field.is_empty());
                 self.out.push_str("<tr>");
                 self.out.push_str("<td port=\"");
                 self.out.push_str(port);
@@ -142,7 +142,7 @@ impl<T: DotNode> Dot for T {
             fn add_edge_from_port(&mut self, port: &str, to: &impl DotName) {
                 self.out.push_str("    ");
                 self.out.push_str(self.from);
-                self.out.push_str(":");
+                self.out.push(':');
                 self.out.push_str(port);
                 self.out.push_str(" -> ");
                 self.out.push_str(&to.dot_name());
@@ -174,7 +174,7 @@ impl Dot for Module {
         // self.name.dot(out);
         // self.config.dot(out);
 
-        out.push_str("}");
+        out.push('}');
     }
 }
 
@@ -514,8 +514,8 @@ impl DotNode for Data {
     }
 
     fn edges(&self, edges: &mut impl EdgeAggregator) {
-        if let DataKind::Active(ref a) = self.kind {
-            edges.add_edge_from_port("kind", &a.memory);
+        if let DataKind::Active { memory, offset: _ } = self.kind {
+            edges.add_edge_from_port("kind", &memory);
         }
     }
 }
@@ -526,10 +526,8 @@ impl DotNode for Element {
     }
 
     fn edges(&self, edges: &mut impl EdgeAggregator) {
-        for m in self.members.iter() {
-            if let Some(m) = m {
-                edges.add_edge(m);
-            }
+        if let ElementItems::Functions(function_ids) = &self.items {
+            function_ids.iter().for_each(|f| edges.add_edge(f));
         }
     }
 }

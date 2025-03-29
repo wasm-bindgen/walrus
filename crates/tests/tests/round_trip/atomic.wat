@@ -11,17 +11,17 @@
       (i32.const 0)
       (i32.const 1))
 
-    (atomic.notify
+    (memory.atomic.notify
       (i32.const 0)
       (i32.const 1))
 
-    (i32.atomic.wait
+    (memory.atomic.wait32
       (i32.const 0)
       (i32.const 1)
       (i64.const 2)
       )
 
-    (i64.atomic.wait
+    (memory.atomic.wait64
       (i32.const 0)
       (i64.const 1)
       (i64.const 2)
@@ -61,7 +61,8 @@
       i32.add
       i32.add
       i32.add
-      drop)
+      drop
+    )
     (memory (;0;) 1 1 shared)
-    (export "atomics" (func 0)))
+    (export "atomics" (func 0))
 ;)

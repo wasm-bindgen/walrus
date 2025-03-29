@@ -1,11 +1,14 @@
 //! A wasm module's imports.
 
-use crate::emit::{Emit, EmitContext, Section};
+use std::convert::TryInto;
+
+use anyhow::Context;
+
+use crate::emit::{Emit, EmitContext};
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
 use crate::{FunctionId, GlobalId, MemoryId, Result, TableId};
-use crate::{Module, TypeId, ValType};
-use anyhow::bail;
+use crate::{Module, RefType, TypeId, ValType};
 
 /// The id of an import.
 pub type ImportId = Id<Import>;
@@ -103,6 +106,42 @@ impl ModuleImports {
 
         Some(import?.0)
     }
+
+    /// Retrieve an imported function by import name, including the module in which it resides
+    pub fn get_func(&self, module: impl AsRef<str>, name: impl AsRef<str>) -> Result<FunctionId> {
+        self.iter()
+            .find_map(|impt| match impt.kind {
+                ImportKind::Function(fid)
+                    if impt.module == module.as_ref() && impt.name == name.as_ref() =>
+                {
+                    Some(fid)
+                }
+                _ => None,
+            })
+            .with_context(|| format!("unable to find function export '{}'", name.as_ref()))
+    }
+
+    /// Retrieve an imported function by ID
+    pub fn get_imported_func(&self, fid: FunctionId) -> Option<&Import> {
+        self.arena.iter().find_map(|(_, import)| match import.kind {
+            ImportKind::Function(id) if fid == id => Some(import),
+            _ => None,
+        })
+    }
+
+    /// Delete an imported function by name from this module.
+    pub fn remove(&mut self, module: impl AsRef<str>, name: impl AsRef<str>) -> Result<()> {
+        let import = self
+            .iter()
+            .find(|e| e.module == module.as_ref() && e.name == name.as_ref())
+            .with_context(|| {
+                format!("failed to find imported func with name [{}]", name.as_ref())
+            })?;
+
+        self.delete(import.id());
+
+        Ok(())
+    }
 }
 
 impl Module {
@@ -116,57 +155,46 @@ impl Module {
         for entry in section {
             let entry = entry?;
             match entry.ty {
-                wasmparser::ImportSectionEntryType::Function(idx) => {
+                wasmparser::TypeRef::Func(idx) => {
                     let ty = ids.get_type(idx)?;
-                    let id = self.add_import_func(
-                        entry.module,
-                        entry.field.expect("module linking not supported"),
-                        ty,
-                    );
+                    let id = self.add_import_func(entry.module, entry.name, ty);
                     ids.push_func(id.0);
                 }
-                wasmparser::ImportSectionEntryType::Table(t) => {
-                    let ty = ValType::parse(&t.element_type)?;
+                wasmparser::TypeRef::Table(t) => {
                     let id = self.add_import_table(
                         entry.module,
-                        entry.field.expect("module linking not supported"),
-                        t.limits.initial,
-                        t.limits.maximum,
-                        ty,
+                        entry.name,
+                        t.table64,
+                        t.initial,
+                        t.maximum,
+                        t.element_type.try_into()?,
                     );
                     ids.push_table(id.0);
                 }
-                wasmparser::ImportSectionEntryType::Memory(m) => {
-                    let (shared, limits) = match m {
-                        wasmparser::MemoryType::M32 { shared, limits } => (shared, limits),
-                        wasmparser::MemoryType::M64 { .. } => {
-                            bail!("64-bit memories not supported")
-                        }
-                    };
+                wasmparser::TypeRef::Memory(m) => {
                     let id = self.add_import_memory(
                         entry.module,
-                        entry.field.expect("module linking not supported"),
-                        shared,
-                        limits.initial,
-                        limits.maximum,
+                        entry.name,
+                        m.shared,
+                        m.memory64,
+                        m.initial,
+                        m.maximum,
+                        m.page_size_log2,
                     );
                     ids.push_memory(id.0);
                 }
-                wasmparser::ImportSectionEntryType::Global(g) => {
+                wasmparser::TypeRef::Global(g) => {
                     let id = self.add_import_global(
                         entry.module,
-                        entry.field.expect("module linking not supported"),
+                        entry.name,
                         ValType::parse(&g.content_type)?,
                         g.mutable,
+                        g.shared,
                     );
                     ids.push_global(id.0);
                 }
-                wasmparser::ImportSectionEntryType::Module(_)
-                | wasmparser::ImportSectionEntryType::Instance(_) => {
-                    unimplemented!("module linking not implemented");
-                }
-                wasmparser::ImportSectionEntryType::Event(_) => {
-                    unimplemented!("exception handling not implemented")
+                wasmparser::TypeRef::Tag(_) => {
+                    unimplemented!("exception handling not implemented");
                 }
             }
         }
@@ -193,11 +221,15 @@ impl Module {
         module: &str,
         name: &str,
         shared: bool,
-        initial: u32,
-        maximum: Option<u32>,
+        memory64: bool,
+        initial: u64,
+        maximum: Option<u64>,
+        page_size_log2: Option<u32>,
     ) -> (MemoryId, ImportId) {
         let import = self.imports.arena.next_id();
-        let mem = self.memories.add_import(shared, initial, maximum, import);
+        let mem =
+            self.memories
+                .add_import(shared, memory64, initial, maximum, page_size_log2, import);
         self.imports.add(module, name, mem);
         (mem, import)
     }
@@ -207,12 +239,15 @@ impl Module {
         &mut self,
         module: &str,
         name: &str,
-        initial: u32,
-        max: Option<u32>,
-        ty: ValType,
+        table64: bool,
+        initial: u64,
+        maximum: Option<u64>,
+        ty: RefType,
     ) -> (TableId, ImportId) {
         let import = self.imports.arena.next_id();
-        let table = self.tables.add_import(initial, max, ty, import);
+        let table = self
+            .tables
+            .add_import(table64, initial, maximum, ty, import);
         self.imports.add(module, name, table);
         (table, import)
     }
@@ -224,9 +259,10 @@ impl Module {
         name: &str,
         ty: ValType,
         mutable: bool,
+        shared: bool,
     ) -> (GlobalId, ImportId) {
         let import = self.imports.arena.next_id();
-        let global = self.globals.add_import(ty, mutable, import);
+        let global = self.globals.add_import(ty, mutable, shared, import);
         self.imports.add(module, name, global);
         (global, import)
     }
@@ -235,42 +271,64 @@ impl Module {
 impl Emit for ModuleImports {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit import section");
+
+        let mut wasm_import_section = wasm_encoder::ImportSection::new();
+
         let count = self.iter().count();
         if count == 0 {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Import);
-        cx.encoder.usize(count);
-
         for import in self.iter() {
-            cx.encoder.str(&import.module);
-            cx.encoder.str(&import.name);
-            match import.kind {
-                ImportKind::Function(id) => {
-                    cx.encoder.byte(0x00);
-                    cx.indices.push_func(id);
-                    let ty = cx.module.funcs.get(id).ty();
-                    let idx = cx.indices.get_type_index(ty);
-                    cx.encoder.u32(idx);
-                }
-                ImportKind::Table(id) => {
-                    cx.encoder.byte(0x01);
-                    cx.indices.push_table(id);
-                    cx.module.tables.get(id).emit(&mut cx);
-                }
-                ImportKind::Memory(id) => {
-                    cx.encoder.byte(0x02);
-                    cx.indices.push_memory(id);
-                    cx.module.memories.get(id).emit(&mut cx);
-                }
-                ImportKind::Global(id) => {
-                    cx.encoder.byte(0x03);
-                    cx.indices.push_global(id);
-                    cx.module.globals.get(id).emit(&mut cx);
-                }
-            }
+            wasm_import_section.import(
+                &import.module,
+                &import.name,
+                match import.kind {
+                    ImportKind::Function(id) => {
+                        cx.indices.push_func(id);
+                        let ty = cx.module.funcs.get(id).ty();
+                        let idx = cx.indices.get_type_index(ty);
+                        wasm_encoder::EntityType::Function(idx)
+                    }
+                    ImportKind::Table(id) => {
+                        cx.indices.push_table(id);
+                        let table = cx.module.tables.get(id);
+                        wasm_encoder::EntityType::Table(wasm_encoder::TableType {
+                            element_type: match table.element_ty {
+                                RefType::Externref => wasm_encoder::RefType::EXTERNREF,
+                                RefType::Funcref => wasm_encoder::RefType::FUNCREF,
+                            },
+                            table64: table.table64,
+                            minimum: table.initial,
+                            maximum: table.maximum,
+                            shared: false,
+                        })
+                    }
+                    ImportKind::Memory(id) => {
+                        cx.indices.push_memory(id);
+                        let mem = cx.module.memories.get(id);
+                        wasm_encoder::EntityType::Memory(wasm_encoder::MemoryType {
+                            minimum: mem.initial,
+                            maximum: mem.maximum,
+                            memory64: false,
+                            shared: mem.shared,
+                            page_size_log2: None,
+                        })
+                    }
+                    ImportKind::Global(id) => {
+                        cx.indices.push_global(id);
+                        let g = cx.module.globals.get(id);
+                        wasm_encoder::EntityType::Global(wasm_encoder::GlobalType {
+                            val_type: g.ty.to_wasmencoder_type(),
+                            mutable: g.mutable,
+                            shared: g.shared,
+                        })
+                    }
+                },
+            );
         }
+
+        cx.wasm_module.section(&wasm_import_section);
     }
 }
 
@@ -295,5 +353,38 @@ impl From<GlobalId> for ImportKind {
 impl From<TableId> for ImportKind {
     fn from(id: TableId) -> ImportKind {
         ImportKind::Table(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FunctionBuilder, Module};
+
+    #[test]
+    fn get_imported_func() {
+        let mut module = Module::default();
+
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder.func_body().i32_const(1234).drop();
+        let new_fn_id: FunctionId = builder.finish(vec![], &mut module.funcs);
+        module.imports.add("mod", "dummy", new_fn_id);
+
+        assert!(module.imports.get_imported_func(new_fn_id).is_some());
+    }
+
+    #[test]
+    fn get_func_by_name() {
+        let mut module = Module::default();
+
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder.func_body().i32_const(1234).drop();
+        let new_fn_id: FunctionId = builder.finish(vec![], &mut module.funcs);
+        module.imports.add("mod", "dummy", new_fn_id);
+
+        assert!(module
+            .imports
+            .get_func("mod", "dummy")
+            .is_ok_and(|fid| fid == new_fn_id));
     }
 }

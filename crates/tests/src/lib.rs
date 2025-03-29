@@ -79,11 +79,11 @@ impl FileCheck {
         let mut iter = contents.lines().map(str::trim);
         while let Some(line) = iter.next() {
             if line.starts_with("(; CHECK-ALL:") {
-                if patterns.len() != 0 {
+                if !patterns.is_empty() {
                     panic!("CHECK cannot be used with CHECK-ALL");
                 }
                 let mut pattern = Vec::new();
-                while let Some(line) = iter.next() {
+                for line in iter.by_ref() {
                     if line == ";)" {
                         break;
                     }
@@ -95,18 +95,17 @@ impl FileCheck {
                 return FileCheck::Exhaustive(pattern, path.to_path_buf());
             }
 
-            if line.starts_with(";; CHECK:") {
-                let p = line[";; CHECK:".len()..].to_string();
-                patterns.push(vec![p]);
+            if let Some(p) = line.strip_prefix(";; CHECK:") {
+                patterns.push(vec![p.to_string()]);
             }
-            if line.starts_with(";; NEXT:") {
+            if let Some(n) = line.strip_prefix(";; NEXT:") {
                 let p = patterns
                     .last_mut()
                     .expect("NEXT should never come before CHECK");
-                p.push(line[";; NEXT:".len()..].to_string());
+                p.push(n.to_string());
             }
         }
-        if patterns.len() == 0 {
+        if patterns.is_empty() {
             FileCheck::None(path.to_path_buf())
         } else {
             FileCheck::Patterns(patterns)
@@ -125,7 +124,7 @@ impl FileCheck {
 
                     'inner: while let Some(pos) = output_lines[start..]
                         .iter()
-                        .position(|l| matches(*l, first_line))
+                        .position(|l| matches(l, first_line))
                     {
                         start = pos + 1;
                         if output_lines[pos..].len() + 1 < pattern.len() {
@@ -155,11 +154,11 @@ impl FileCheck {
                 }
             }
             FileCheck::None(_) => {
-                println!("");
+                println!();
                 println!("no test assertions were found in this file, but");
                 println!("you can rerun tests with `WALRUS_BLESS=1` to");
                 println!("automatically add assertions to this file");
-                println!("");
+                println!();
                 panic!("no tests to run")
             }
         }
@@ -210,7 +209,7 @@ fn update_output(path: &Path, output: &str) {
             new_output.push_str("  ");
             new_output.push_str(line.trim_end());
         }
-        new_output.push_str("\n");
+        new_output.push('\n');
     }
     let new = format!(
         "{}\n\n(; CHECK-ALL:\n{}\n;)\n",

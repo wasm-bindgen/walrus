@@ -15,19 +15,23 @@
     end)
   (export "f" (func $f)))
 
-;; CHECK: (module
-;; NEXT:    (type (;0;) (func (result i32)))
-;; NEXT:    (func $f (type 0) (result i32)
-;; NEXT:      i32.const 0
-;; NEXT:      drop
-;; NEXT:      block  ;; label = @1
-;; NEXT:        i32.const 1
-;; NEXT:        drop
-;; NEXT:      end
-;; NEXT:      i32.const 2)
-;; NEXT:    (func (;1;) (type 0) (result i32)
-;; NEXT:      block
-;; NEXT:        i32.const 0
-;; NEXT:      end)
-;; NEXT:    (export "foo" (func 1))
-;; NEXT:    (export "f" (func $f)))
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func (result i32)))
+    (func $f (;0;) (type 0) (result i32)
+      i32.const 0
+      drop
+      block ;; label = @1
+        i32.const 1
+        drop
+      end
+      i32.const 2
+    )
+    (func (;1;) (type 0) (result i32)
+      block (result i32) ;; label = @1
+        i32.const 0
+      end
+    )
+    (export "foo" (func 1))
+    (export "f" (func $f))
+;)

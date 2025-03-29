@@ -8,9 +8,11 @@
   (export "b" (func 1))
   )
 
-;; CHECK: (module
-;; NEXT:    (type
-;; NEXT:    (func
-;; NEXT:    (func
-;; NEXT:    (export
-;; NEXT:    (export
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func))
+    (func $f (;0;) (type 0))
+    (func (;1;) (type 0))
+    (export "a" (func $f))
+    (export "b" (func 1))
+;)

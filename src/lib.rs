@@ -18,12 +18,11 @@ macro_rules! maybe_parallel {
 }
 
 mod arena_set;
+mod const_expr;
 pub mod dot;
 mod emit;
-mod encode;
 mod error;
 mod function_builder;
-mod init_expr;
 pub mod ir;
 mod map;
 mod module;
@@ -32,11 +31,11 @@ pub mod passes;
 mod tombstone_arena;
 mod ty;
 
+pub use crate::const_expr::ConstExpr;
 pub use crate::emit::IdsToIndices;
 pub use crate::error::{ErrorKind, Result};
 pub use crate::function_builder::{FunctionBuilder, InstrSeqBuilder};
-pub use crate::init_expr::InitExpr;
 pub use crate::ir::{Local, LocalId};
 pub use crate::module::*;
 pub use crate::parse::IndicesToIds;
-pub use crate::ty::{Type, TypeId, ValType};
+pub use crate::ty::{RefType, Type, TypeId, ValType};

@@ -1,9 +1,9 @@
 //! Table elements within a wasm module.
 
-use crate::emit::{Emit, EmitContext, Section};
+use crate::emit::{Emit, EmitContext};
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{ir::Value, FunctionId, InitExpr, Module, Result, TableId, ValType};
+use crate::{ir::Value, ConstExpr, FunctionId, Module, RefType, Result, TableId, ValType};
 use anyhow::{bail, Context};
 
 /// A passive element segment identifier
@@ -13,23 +13,38 @@ pub type ElementId = Id<Element>;
 #[derive(Debug)]
 pub struct Element {
     id: Id<Element>,
-
-    /// Whether this segment is passive or active.
+    /// The kind of the element segment.
     pub kind: ElementKind,
-
-    /// The type of elements in this segment
-    pub ty: ValType,
-
-    /// The function members of this passive elements segment.
-    pub members: Vec<Option<FunctionId>>,
+    /// The initial elements of the element segment.
+    pub items: ElementItems,
+    /// The name of this element, used for debugging purposes in the `name`
+    /// custom section.
+    pub name: Option<String>,
 }
 
-#[allow(missing_docs)]
+/// The kind of element segment.
 #[derive(Debug, Copy, Clone)]
 pub enum ElementKind {
+    /// The element segment is passive.
     Passive,
+    /// The element segment is declared.
     Declared,
-    Active { table: TableId, offset: InitExpr },
+    /// The element segment is active.
+    Active {
+        /// The ID of the table being initialized.
+        table: TableId,
+        /// A constant defining an offset into that table.
+        offset: ConstExpr,
+    },
+}
+
+/// Represents the items of an element segment.
+#[derive(Debug, Clone)]
+pub enum ElementItems {
+    /// This element contains function indices.
+    Functions(Vec<FunctionId>),
+    /// This element contains constant expressions used to initialize the table.
+    Expressions(RefType, Vec<ConstExpr>),
 }
 
 impl Element {
@@ -41,7 +56,7 @@ impl Element {
 
 impl Tombstone for Element {
     fn on_delete(&mut self) {
-        self.members = Vec::new();
+        // Nothing to do here
     }
 }
 
@@ -82,18 +97,13 @@ impl ModuleElements {
     }
 
     /// Add an element segment
-    pub fn add(
-        &mut self,
-        kind: ElementKind,
-        ty: ValType,
-        members: Vec<Option<FunctionId>>,
-    ) -> ElementId {
+    pub fn add(&mut self, kind: ElementKind, items: ElementItems) -> ElementId {
         let id = self.arena.next_id();
         let id2 = self.arena.alloc(Element {
             id,
             kind,
-            ty,
-            members,
+            items,
+            name: None,
         });
         debug_assert_eq!(id, id2);
         id
@@ -109,51 +119,90 @@ impl Module {
     ) -> Result<()> {
         log::debug!("parse element section");
         for (i, segment) in section.into_iter().enumerate() {
-            let segment = segment?;
-            let ty = ValType::parse(&segment.ty)?;
-            match ty {
-                ValType::Funcref => {}
-                _ => bail!("only funcref type allowed in element segments"),
-            }
-            let members = segment
-                .items
-                .get_items_reader()?
-                .into_iter()
-                .map(|e| -> Result<_> {
-                    Ok(match e? {
-                        wasmparser::ElementItem::Func(f) => Some(ids.get_func(f)?),
-                        wasmparser::ElementItem::Null(_) => None,
-                    })
-                })
-                .collect::<Result<_>>()?;
+            let element = segment?;
+
+            let items = match element.items {
+                wasmparser::ElementItems::Functions(funcs) => {
+                    let mut function_ids = Vec::with_capacity(funcs.count() as usize);
+                    for func in funcs {
+                        match ids.get_func(func?) {
+                            Ok(func) => function_ids.push(func),
+                            Err(_) => bail!("invalid function index in element segment {}", i),
+                        }
+                    }
+                    ElementItems::Functions(function_ids)
+                }
+                wasmparser::ElementItems::Expressions(ref_type, items) => {
+                    let ty = match ref_type {
+                        wasmparser::RefType::FUNCREF => RefType::Funcref,
+                        wasmparser::RefType::EXTERNREF => RefType::Externref,
+                        _ => bail!("unsupported ref type in element segment {}", i),
+                    };
+                    let mut const_exprs = Vec::with_capacity(items.count() as usize);
+                    for item in items {
+                        let const_expr = item?;
+                        let expr = ConstExpr::eval(&const_expr, ids).with_context(|| {
+                            format!(
+                                "Failed to evaluate a const expr in element segment {}:\n{:?}",
+                                i, const_expr
+                            )
+                        })?;
+                        const_exprs.push(expr);
+                    }
+                    ElementItems::Expressions(ty, const_exprs)
+                }
+            };
+
             let id = self.elements.arena.next_id();
 
-            let kind = match segment.kind {
+            let kind = match element.kind {
                 wasmparser::ElementKind::Passive => ElementKind::Passive,
                 wasmparser::ElementKind::Declared => ElementKind::Declared,
                 wasmparser::ElementKind::Active {
                     table_index,
-                    init_expr,
+                    offset_expr,
                 } => {
-                    let table = ids.get_table(table_index)?;
-                    self.tables.get_mut(table).elem_segments.insert(id);
+                    // TODO: Why table_index is Option?
+                    let table_id = ids.get_table(table_index.unwrap_or_default())?;
+                    let table = self.tables.get_mut(table_id);
+                    table.elem_segments.insert(id);
 
-                    let offset = InitExpr::eval(&init_expr, ids)
-                        .with_context(|| format!("in segment {}", i))?;
-                    match offset {
-                        InitExpr::Value(Value::I32(_)) => {}
-                        InitExpr::Global(global) if self.globals.get(global).ty == ValType::I32 => {
+                    let offset = ConstExpr::eval(&offset_expr, ids).with_context(|| {
+                        format!("failed to evaluate the offset of element {}", i)
+                    })?;
+                    if table.table64 {
+                        match offset {
+                            ConstExpr::Value(Value::I64(_)) => {}
+                            ConstExpr::Global(global)
+                                if self.globals.get(global).ty == ValType::I64 => {}
+                            _ => bail!(
+                                "element {} is active for 64-bit table but has non-i64 offset",
+                                i
+                            ),
                         }
-                        _ => bail!("non-i32 constant in segment {}", i),
+                    } else {
+                        match offset {
+                            ConstExpr::Value(Value::I32(_)) => {}
+                            ConstExpr::Global(global)
+                                if self.globals.get(global).ty == ValType::I32 => {}
+                            _ => bail!(
+                                "element {} is active for 32-bit table but has non-i32 offset",
+                                i
+                            ),
+                        }
                     }
-                    ElementKind::Active { table, offset }
+
+                    ElementKind::Active {
+                        table: table_id,
+                        offset,
+                    }
                 }
             };
             self.elements.arena.alloc(Element {
                 id,
-                ty,
                 kind,
-                members,
+                items,
+                name: None,
             });
             ids.push_element(id);
         }
@@ -166,63 +215,63 @@ impl Emit for ModuleElements {
         if self.arena.len() == 0 {
             return;
         }
-        let mut cx = cx.start_section(Section::Element);
-        cx.encoder.usize(self.arena.len());
+
+        let mut wasm_element_section = wasm_encoder::ElementSection::new();
 
         for (id, element) in self.arena.iter() {
             cx.indices.push_element(id);
-            let exprs = element.members.iter().any(|i| i.is_none());
-            let exprs_bit = if exprs { 0x04 } else { 0x00 };
-            let mut encode_ty = true;
-            match &element.kind {
-                ElementKind::Active { table, offset } => {
-                    let table_index = cx.indices.get_table_index(*table);
-                    if table_index == 0 {
-                        cx.encoder.byte(0x00 | exprs_bit);
-                        offset.emit(&mut cx);
-                        encode_ty = false;
-                    } else {
-                        cx.encoder.byte(0x02 | exprs_bit);
-                        cx.encoder.u32(table_index);
-                        offset.emit(&mut cx);
-                    }
+
+            match &element.items {
+                ElementItems::Functions(function_ids) => {
+                    let idx = function_ids
+                        .iter()
+                        .map(|&func| cx.indices.get_func_index(func))
+                        .collect::<Vec<_>>();
+                    let els = wasm_encoder::Elements::Functions(&idx);
+                    emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
-                ElementKind::Passive => {
-                    cx.encoder.byte(0x01 | exprs_bit);
-                }
-                ElementKind::Declared => {
-                    cx.encoder.byte(0x03 | exprs_bit);
-                }
-            };
-            if encode_ty {
-                if exprs {
-                    element.ty.emit(&mut cx.encoder);
-                } else {
-                    cx.encoder.byte(0x00);
+                ElementItems::Expressions(ty, const_exprs) => {
+                    let ref_type = match ty {
+                        RefType::Funcref => wasm_encoder::RefType::FUNCREF,
+                        RefType::Externref => wasm_encoder::RefType::EXTERNREF,
+                    };
+                    let const_exprs = const_exprs
+                        .iter()
+                        .map(|expr| expr.to_wasmencoder_type(cx))
+                        .collect::<Vec<_>>();
+                    let els = wasm_encoder::Elements::Expressions(ref_type, &const_exprs);
+                    emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
             }
 
-            cx.encoder.usize(element.members.len());
-            for func in element.members.iter() {
-                match func {
-                    Some(id) => {
-                        let index = cx.indices.get_func_index(*id);
-                        if exprs {
-                            cx.encoder.byte(0xd2);
-                            cx.encoder.u32(index);
-                            cx.encoder.byte(0x0b);
-                        } else {
-                            cx.encoder.u32(index);
-                        }
+            fn emit_elem(
+                cx: &mut EmitContext,
+                wasm_element_section: &mut wasm_encoder::ElementSection,
+                kind: &ElementKind,
+                els: wasm_encoder::Elements,
+            ) {
+                match kind {
+                    ElementKind::Active { table, offset } => {
+                        // When the table index is 0, set this to `None` to tell `wasm-encoder` to use
+                        // the backwards-compatible MVP encoding.
+                        let table_index =
+                            Some(cx.indices.get_table_index(*table)).filter(|&index| index != 0);
+                        wasm_element_section.active(
+                            table_index,
+                            &offset.to_wasmencoder_type(cx),
+                            els,
+                        );
                     }
-                    None => {
-                        assert!(exprs);
-                        cx.encoder.byte(0xd0);
-                        element.ty.emit(&mut cx.encoder);
-                        cx.encoder.byte(0x0b);
+                    ElementKind::Passive => {
+                        wasm_element_section.passive(els);
+                    }
+                    ElementKind::Declared => {
+                        wasm_element_section.declared(els);
                     }
                 }
             }
         }
+
+        cx.wasm_module.section(&wasm_element_section);
     }
 }

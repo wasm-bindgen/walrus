@@ -6,10 +6,13 @@
       (i32.const 1)))
   (export "inc" (func $inc)))
 
-;; CHECK: (module
-;; NEXT:    (type (;0;) (func (param i32) (result i32)))
-;; NEXT:    (func $inc (type 0) (param i32) (result i32)
-;; NEXT:      local.get 0
-;; NEXT:      i32.const 1
-;; NEXT:      i32.add)
-;; NEXT:    (export "inc" (func $inc)))
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func (param i32) (result i32)))
+    (func $inc (;0;) (type 0) (param i32) (result i32)
+      local.get 0
+      i32.const 1
+      i32.add
+    )
+    (export "inc" (func $inc))
+;)

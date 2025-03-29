@@ -9,7 +9,8 @@
     (type (;0;) (func (param i32) (result externref)))
     (func (;0;) (type 0) (param i32) (result externref)
       local.get 0
-      table.get 0)
+      table.get 0
+    )
     (table (;0;) 1 externref)
-    (export "a" (func 0)))
+    (export "a" (func 0))
 ;)

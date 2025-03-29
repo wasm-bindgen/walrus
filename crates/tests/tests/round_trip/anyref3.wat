@@ -16,8 +16,9 @@
       local.get 0
       call_indirect (type 0)
       local.get 0
-      table.get 1)
+      table.get 1
+    )
     (table (;0;) 1 funcref)
     (table (;1;) 1 externref)
-    (export "a" (func 0)))
+    (export "a" (func 0))
 ;)

@@ -1,9 +1,19 @@
 //! Functions within a wasm module.
 
+use std::cmp;
+use std::collections::BTreeMap;
+use std::ops::Range;
+
+use anyhow::{bail, Context};
+use wasm_encoder::Encode;
+use wasmparser::{FuncValidator, FunctionBody, ValidatorResources};
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 mod local_function;
 
-use crate::emit::{Emit, EmitContext, Section};
-use crate::encode::Encoder;
+use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
 use crate::ir::InstrLocId;
 use crate::module::imports::ImportId;
@@ -12,16 +22,18 @@ use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
 use crate::ty::TypeId;
 use crate::ty::ValType;
-use std::cmp;
-use wasmparser::{FuncValidator, FunctionBody, ValidatorResources};
-
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
+use crate::{ExportItem, FunctionBuilder, InstrSeqBuilder, LocalId, Memory, MemoryId};
 
 pub use self::local_function::LocalFunction;
 
 /// A function identifier.
 pub type FunctionId = Id<Function>;
+
+/// Parameter(s) to a function
+pub type FuncParams = Vec<ValType>;
+
+/// Result(s) of a given function
+pub type FuncResults = Vec<ValType>;
 
 /// A wasm function.
 ///
@@ -139,6 +151,9 @@ pub struct ImportedFunction {
 pub struct ModuleFunctions {
     /// The arena containing this module's functions.
     arena: TombstoneArena<Function>,
+
+    /// Original code section offset.
+    pub(crate) code_section_offset: usize,
 }
 
 impl ModuleFunctions {
@@ -185,7 +200,7 @@ impl ModuleFunctions {
     /// return the first function in the module with the given name.
     pub fn by_name(&self, name: &str) -> Option<FunctionId> {
         self.arena.iter().find_map(|(id, f)| {
-            if f.name.as_ref().map(|s| s.as_str()) == Some(name) {
+            if f.name.as_deref() == Some(name) {
                 Some(id)
             } else {
                 None
@@ -277,14 +292,13 @@ impl ModuleFunctions {
     pub(crate) fn emit_func_section(&self, cx: &mut EmitContext) {
         log::debug!("emit function section");
         let functions = used_local_functions(cx);
-        if functions.len() == 0 {
+        if functions.is_empty() {
             return;
         }
-        let mut cx = cx.start_section(Section::Function);
-        cx.encoder.usize(functions.len());
+        let mut func_section = wasm_encoder::FunctionSection::new();
         for (id, function, _size) in functions {
             let index = cx.indices.get_type_index(function.ty());
-            cx.encoder.u32(index);
+            func_section.function(index);
 
             // Assign an index to all local defined functions before we start
             // translating them. While translating they may refer to future
@@ -293,6 +307,7 @@ impl ModuleFunctions {
             // section so we should be covered here.
             cx.indices.push_func(id);
         }
+        cx.wasm_module.section(&func_section);
     }
 }
 
@@ -369,7 +384,7 @@ impl Module {
             for _ in 0..reader.read_var_u32()? {
                 let pos = reader.original_position();
                 let count = reader.read_var_u32()?;
-                let ty = reader.read_type()?;
+                let ty = reader.read()?;
                 validator.define_locals(pos, count, ty)?;
                 let ty = ValType::parse(&ty)?;
                 for _ in 0..count {
@@ -414,6 +429,139 @@ impl Module {
 
         Ok(())
     }
+
+    /// Retrieve the ID for the first exported memory.
+    ///
+    /// This method does not work in contexts with [multi-memory enabled](https://github.com/WebAssembly/multi-memory),
+    /// and will error if more than one memory is present.
+    pub fn get_memory_id(&self) -> Result<MemoryId> {
+        if self.memories.len() > 1 {
+            bail!("multiple memories unsupported")
+        }
+
+        self.memories
+            .iter()
+            .next()
+            .map(Memory::id)
+            .context("module does not export a memory")
+    }
+
+    /// Replace a single exported function with the result of the provided builder function.
+    ///
+    /// The builder function is provided a mutable reference to an [`InstrSeqBuilder`] which can be
+    /// used to build the function as necessary.
+    ///
+    /// For example, if you wanted to replace an exported function with a no-op,
+    ///
+    /// ```ignore
+    /// module.replace_exported_func(fid, |(body, arg_locals)| {
+    ///     builder.func_body().unreachable();
+    /// });
+    /// ```
+    ///
+    /// The arguments passed to the original function will be passed to the
+    /// new exported function that was built in your closure.
+    ///
+    /// This function returns the function ID of the *new* function,
+    /// after it has been inserted into the module as an export.
+    pub fn replace_exported_func(
+        &mut self,
+        fid: FunctionId,
+        builder_fn: impl FnOnce((&mut InstrSeqBuilder, &Vec<LocalId>)),
+    ) -> Result<FunctionId> {
+        let original_export_id = self
+            .exports
+            .get_exported_func(fid)
+            .map(|e| e.id())
+            .with_context(|| format!("no exported function with ID [{fid:?}]"))?;
+
+        if let Function {
+            kind: FunctionKind::Local(lf),
+            ..
+        } = self.funcs.get(fid)
+        {
+            // Retrieve the params & result types for the exported (local) function
+            let ty = self.types.get(lf.ty());
+            let (params, results) = (ty.params().to_vec(), ty.results().to_vec());
+
+            // Add the function produced by `fn_builder` as a local function
+            let mut builder = FunctionBuilder::new(&mut self.types, &params, &results);
+            let mut new_fn_body = builder.func_body();
+            builder_fn((&mut new_fn_body, &lf.args));
+            let func = builder.local_func(lf.args.clone());
+            let new_fn_id = self.funcs.add_local(func);
+
+            // Mutate the existing export to use the new local function
+            let export = self.exports.get_mut(original_export_id);
+            export.item = ExportItem::Function(new_fn_id);
+            Ok(new_fn_id)
+        } else {
+            bail!("cannot replace function [{fid:?}], it is not an exported function");
+        }
+    }
+
+    /// Replace a single imported function with the result of the provided builder function.
+    ///
+    /// The builder function is provided a mutable reference to an [`InstrSeqBuilder`] which can be
+    /// used to build the function as necessary.
+    ///
+    /// For example, if you wanted to replace an imported function with a no-op,
+    ///
+    /// ```ignore
+    /// module.replace_imported_func(fid, |(body, arg_locals)| {
+    ///     builder.func_body().unreachable();
+    /// });
+    /// ```
+    ///
+    /// The arguments passed to the original function will be passed to the
+    /// new exported function that was built in your closure.
+    ///
+    /// This function returns the function ID of the *new* function, and
+    /// removes the existing import that has been replaced (the function will become local).
+    pub fn replace_imported_func(
+        &mut self,
+        fid: FunctionId,
+        builder_fn: impl FnOnce((&mut InstrSeqBuilder, &Vec<LocalId>)),
+    ) -> Result<FunctionId> {
+        let original_import_id = self
+            .imports
+            .get_imported_func(fid)
+            .map(|import| import.id())
+            .with_context(|| format!("no exported function with ID [{fid:?}]"))?;
+
+        if let Function {
+            kind: FunctionKind::Import(ImportedFunction { ty: tid, .. }),
+            ..
+        } = self.funcs.get(fid)
+        {
+            // Retrieve the params & result types for the imported function
+            let ty = self.types.get(*tid);
+            let (params, results) = (ty.params().to_vec(), ty.results().to_vec());
+
+            // Build the list LocalIds used by args to match the original function
+            let args = params
+                .iter()
+                .map(|ty| self.locals.add(*ty))
+                .collect::<Vec<_>>();
+
+            // Build the new function
+            let mut builder = FunctionBuilder::new(&mut self.types, &params, &results);
+            let mut new_fn_body = builder.func_body();
+            builder_fn((&mut new_fn_body, &args));
+            let new_func_kind = FunctionKind::Local(builder.local_func(args));
+
+            // Mutate the existing function, changing it from a FunctionKind::ImportedFunction
+            // to the local function produced by running the provided `fn_builder`
+            let func = self.funcs.get_mut(fid);
+            func.kind = new_func_kind;
+
+            self.imports.delete(original_import_id);
+
+            Ok(fid)
+        } else {
+            bail!("cannot replace function [{fid:?}], it is not an imported function");
+        }
+    }
 }
 
 fn used_local_functions<'a>(cx: &mut EmitContext<'a>) -> Vec<(FunctionId, &'a LocalFunction, u64)> {
@@ -441,14 +589,14 @@ fn used_local_functions<'a>(cx: &mut EmitContext<'a>) -> Vec<(FunctionId, &'a Lo
 }
 
 fn collect_non_default_code_offsets(
-    code_transform: &mut Vec<(InstrLocId, usize)>,
+    code_transform: &mut BTreeMap<InstrLocId, usize>,
     code_offset: usize,
     map: Vec<(InstrLocId, usize)>,
 ) {
     for (src, dst) in map {
         let dst = dst + code_offset;
         if !src.is_default() {
-            code_transform.push((src, dst));
+            code_transform.insert(src, dst);
         }
     }
 }
@@ -457,13 +605,11 @@ impl Emit for ModuleFunctions {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit code section");
         let functions = used_local_functions(cx);
-        if functions.len() == 0 {
+        if functions.is_empty() {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Code);
-        cx.encoder.usize(functions.len());
-
+        let mut wasm_code_section = wasm_encoder::CodeSection::new();
         let generate_map = cx.module.config.preserve_code_transform;
 
         // Functions can typically take awhile to serialize, so serialize
@@ -473,25 +619,238 @@ impl Emit for ModuleFunctions {
             .map(|(id, func, _size)| {
                 log::debug!("emit function {:?} {:?}", id, cx.module.funcs.get(id).name);
                 let mut wasm = Vec::new();
-                let mut encoder = Encoder::new(&mut wasm);
                 let mut map = if generate_map { Some(Vec::new()) } else { None };
 
-                let (used_locals, local_indices) = func.emit_locals(cx.module, &mut encoder);
-                func.emit_instructions(cx.indices, &local_indices, &mut encoder, map.as_mut());
-                (wasm, id, used_locals, local_indices, map)
+                let (locals_types, used_locals, local_indices) = func.emit_locals(cx.module);
+                let mut wasm_function = wasm_encoder::Function::new(locals_types);
+                func.emit_instructions(
+                    cx.indices,
+                    &local_indices,
+                    &mut wasm_function,
+                    map.as_mut(),
+                );
+                wasm_function.encode(&mut wasm);
+                (
+                    wasm,
+                    wasm_function.byte_len(),
+                    id,
+                    used_locals,
+                    local_indices,
+                    map,
+                )
             })
             .collect::<Vec<_>>();
 
+        let mut instruction_map = BTreeMap::new();
         cx.indices.locals.reserve(bytes.len());
-        for (wasm, id, used_locals, local_indices, map) in bytes {
-            cx.encoder.usize(wasm.len());
-            let code_offset = cx.encoder.pos();
-            cx.encoder.raw(&wasm);
-            if let Some(map) = map {
-                collect_non_default_code_offsets(&mut cx.code_transform, code_offset, map);
-            }
+
+        let mut offset_data = Vec::new();
+        for (wasm, byte_len, id, used_locals, local_indices, map) in bytes {
+            let leb_len = wasm.len() - byte_len;
+            wasm_code_section.raw(&wasm[leb_len..]);
             cx.indices.locals.insert(id, local_indices);
             cx.locals.insert(id, used_locals);
+            offset_data.push((byte_len, id, map, leb_len));
         }
+        cx.wasm_module.section(&wasm_code_section);
+
+        let code_section_start_offset =
+            cx.wasm_module.as_slice().len() - wasm_code_section.byte_len();
+        let mut cur_offset = code_section_start_offset;
+
+        // update the map afterwards based on final offset differences
+        for (byte_len, id, map, leb_len) in offset_data {
+            // (this assumes the leb encodes the same)
+            let code_start_offset = cur_offset + leb_len;
+            cur_offset += leb_len + byte_len;
+            if let Some(map) = map {
+                collect_non_default_code_offsets(&mut instruction_map, code_start_offset, map);
+            }
+            cx.code_transform.function_ranges.push((
+                id,
+                Range {
+                    // inclusive leb part
+                    start: code_start_offset - leb_len,
+                    end: cur_offset,
+                },
+            ));
+        }
+        cx.code_transform.function_ranges.sort_by_key(|i| i.0);
+        // FIXME: code section start in DWARF debug information expects 2 bytes before actual code section start.
+        cx.code_transform.code_section_start = code_section_start_offset - 2;
+        cx.code_transform.instruction_map = instruction_map.into_iter().collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Export, FunctionBuilder, Module};
+
+    #[test]
+    fn get_memory_id() {
+        let mut module = Module::default();
+        let expected_id = module.memories.add_local(false, false, 0, None, None);
+        assert!(module.get_memory_id().is_ok_and(|id| id == expected_id));
+    }
+
+    /// Running `replace_exported_func` with a closure that builds
+    /// a function should replace the existing function with the new one
+    #[test]
+    fn replace_exported_func() {
+        let mut module = Module::default();
+
+        // Create original function
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder.func_body().i32_const(1234).drop();
+        let original_fn_id: FunctionId = builder.finish(vec![], &mut module.funcs);
+        let original_export_id = module.exports.add("dummy", original_fn_id);
+
+        // Replace the existing function with a new one with a reversed const value
+        let new_fn_id = module
+            .replace_exported_func(original_fn_id, |(body, _)| {
+                body.i32_const(4321).drop();
+            })
+            .expect("function replacement worked");
+
+        assert!(
+            module.exports.get_exported_func(original_fn_id).is_none(),
+            "replaced function cannot be gotten by ID"
+        );
+
+        // Ensure the function was replaced
+        match module
+            .exports
+            .get_exported_func(new_fn_id)
+            .expect("failed to unwrap exported func")
+        {
+            exp @ Export {
+                item: ExportItem::Function(fid),
+                ..
+            } => {
+                assert_eq!(*fid, new_fn_id, "retrieved function ID matches");
+                assert_eq!(exp.id(), original_export_id, "export ID is unchanged");
+            }
+            _ => panic!("expected an Export with a Function inside"),
+        }
+    }
+
+    /// Running `replace_exported_func` with a closure that returns None
+    /// should replace the function with a generated no-op function
+    #[test]
+    fn replace_exported_func_generated_no_op() {
+        let mut module = Module::default();
+
+        // Create original function
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+        builder.func_body().i32_const(1234).drop();
+        let original_fn_id: FunctionId = builder.finish(vec![], &mut module.funcs);
+        let original_export_id = module.exports.add("dummy", original_fn_id);
+
+        // Replace the existing function with a new one with a reversed const value
+        let new_fn_id = module
+            .replace_exported_func(original_fn_id, |(body, _arg_locals)| {
+                body.unreachable();
+            })
+            .expect("export function replacement worked");
+
+        assert!(
+            module.exports.get_exported_func(original_fn_id).is_none(),
+            "replaced export function cannot be gotten by ID"
+        );
+
+        // Ensure the function was replaced
+        match module
+            .exports
+            .get_exported_func(new_fn_id)
+            .expect("failed to unwrap exported func")
+        {
+            exp @ Export {
+                item: ExportItem::Function(fid),
+                name,
+                ..
+            } => {
+                assert_eq!(name, "dummy", "function name on export is unchanged");
+                assert_eq!(*fid, new_fn_id, "retrieved function ID matches");
+                assert_eq!(exp.id(), original_export_id, "export ID is unchanged");
+            }
+            _ => panic!("expected an Export with a Function inside"),
+        }
+    }
+
+    /// Running `replace_imported_func` with a closure that builds
+    /// a function should replace the existing function with the new one
+    #[test]
+    fn replace_imported_func() {
+        let mut module = Module::default();
+
+        // Create original import function
+        let types = module.types.add(&[], &[]);
+        let (original_fn_id, original_import_id) = module.add_import_func("mod", "dummy", types);
+
+        // Replace the existing function with a new one with a reversed const value
+        let new_fn_id = module
+            .replace_imported_func(original_fn_id, |(body, _)| {
+                body.i32_const(4321).drop();
+            })
+            .expect("import fn replacement worked");
+
+        assert!(
+            !module.imports.iter().any(|i| i.id() == original_import_id),
+            "original import is missing",
+        );
+
+        assert!(
+            module.imports.get_imported_func(original_fn_id).is_none(),
+            "replaced import function cannot be gotten by ID"
+        );
+
+        assert!(
+            module.imports.get_imported_func(new_fn_id).is_none(),
+            "new import function cannot be gotten by ID (it is now local)"
+        );
+
+        assert!(
+            matches!(module.funcs.get(new_fn_id).kind, FunctionKind::Local(_)),
+            "new local function has the right kind"
+        );
+    }
+
+    /// Running `replace_imported_func` with a closure that returns None
+    /// should replace the function with a generated no-op function
+    #[test]
+    fn replace_imported_func_generated_no_op() {
+        let mut module = Module::default();
+
+        // Create original import function
+        let types = module.types.add(&[], &[]);
+        let (original_fn_id, original_import_id) = module.add_import_func("mod", "dummy", types);
+
+        // Replace the existing function with a new one with a reversed const value
+        let new_fn_id = module
+            .replace_imported_func(original_fn_id, |(body, _arg_locals)| {
+                body.unreachable();
+            })
+            .expect("import fn replacement worked");
+
+        assert!(
+            !module.imports.iter().any(|i| i.id() == original_import_id),
+            "original import is missing",
+        );
+
+        assert!(
+            module.imports.get_imported_func(original_fn_id).is_none(),
+            "replaced import function cannot be gotten by ID"
+        );
+
+        assert!(
+            module.imports.get_imported_func(new_fn_id).is_none(),
+            "new import function cannot be gotten by ID (it is now local)"
+        );
+
+        assert!(
+            matches!(module.funcs.get(new_fn_id).kind, FunctionKind::Local(_)),
+            "new local function has the right kind"
+        );
     }
 }

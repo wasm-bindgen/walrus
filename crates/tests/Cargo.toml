@@ -16,8 +16,8 @@ serde_json = { version = "1.0.40", features = ['preserve_order'] }
 tempfile = "3.1.0"
 walrus = { path = "../.." }
 walrus-tests-utils = { path = "../tests-utils" }
-wasmprinter = "0.2.25"
-wat = "1.0.36"
+wasmprinter = "=0.2.78"
+wat = "1.0.85"
 
 [features]
 parallel = ['walrus/parallel']

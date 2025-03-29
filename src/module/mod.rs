@@ -3,6 +3,7 @@
 mod config;
 mod custom;
 mod data;
+mod debug;
 mod elements;
 mod exports;
 mod functions;
@@ -14,18 +15,19 @@ mod producers;
 mod tables;
 mod types;
 
-use crate::emit::{Emit, EmitContext, IdsToIndices, Section};
-use crate::encode::Encoder;
+use crate::emit::{Emit, EmitContext, IdsToIndices};
 use crate::error::Result;
 pub use crate::ir::InstrLocId;
 pub use crate::module::custom::{
     CustomSection, CustomSectionId, ModuleCustomSections, RawCustomSection, TypedCustomSectionId,
     UntypedCustomSectionId,
 };
-pub use crate::module::data::{ActiveData, ActiveDataLocation, Data, DataId, DataKind, ModuleData};
-pub use crate::module::elements::ElementKind;
+pub use crate::module::data::{Data, DataId, DataKind, ModuleData};
+pub use crate::module::debug::ModuleDebugData;
 pub use crate::module::elements::{Element, ElementId, ModuleElements};
+pub use crate::module::elements::{ElementItems, ElementKind};
 pub use crate::module::exports::{Export, ExportId, ExportItem, ModuleExports};
+pub use crate::module::functions::{FuncParams, FuncResults};
 pub use crate::module::functions::{Function, FunctionId, ModuleFunctions};
 pub use crate::module::functions::{FunctionKind, ImportedFunction, LocalFunction};
 pub use crate::module::globals::{Global, GlobalId, GlobalKind, ModuleGlobals};
@@ -37,11 +39,13 @@ pub use crate::module::tables::{ModuleTables, Table, TableId};
 pub use crate::module::types::ModuleTypes;
 use crate::parse::IndicesToIds;
 use anyhow::{bail, Context};
+use id_arena::Id;
 use log::warn;
 use std::fs;
 use std::mem;
+use std::ops::Range;
 use std::path::Path;
-use wasmparser::{Parser, Payload, Validator, WasmFeatures};
+use wasmparser::{BinaryReader, Parser, Payload, Validator};
 
 pub use self::config::ModuleConfig;
 
@@ -67,19 +71,31 @@ pub struct Module {
     pub producers: ModuleProducers,
     /// Custom sections found in this module.
     pub customs: ModuleCustomSections,
+    /// Dwarf debug data.
+    pub debug: ModuleDebugData,
     /// The name of this module, used for debugging purposes in the `name`
     /// custom section.
     pub name: Option<String>,
     pub(crate) config: ModuleConfig,
 }
 
-/// Maps from an offset of an instruction in the input Wasm to its offset in the
-/// output Wasm.
-///
-/// Note that an input offset may be mapped to multiple output offsets, and vice
-/// versa, due to transformations like function inlinining or constant
-/// propagation.
-pub type CodeTransform = Vec<(InstrLocId, usize)>;
+/// Code transformation records, which is used to transform DWARF debug entries.
+#[derive(Debug, Default)]
+pub struct CodeTransform {
+    /// Maps from an offset of an instruction in the input Wasm to its offset in the
+    /// output Wasm.
+    ///
+    /// Note that an input offset may be mapped to multiple output offsets, and vice
+    /// versa, due to transformations like function inlinining or constant
+    /// propagation.
+    pub instruction_map: Vec<(InstrLocId, usize)>,
+
+    /// Offset of code section from the front of Wasm binary
+    pub code_section_start: usize,
+
+    /// Emitted binary ranges of functions
+    pub function_ranges: Vec<(Id<Function>, Range<usize>)>,
+}
 
 impl Module {
     /// Create a default, empty module that uses the given configuration.
@@ -113,27 +129,39 @@ impl Module {
         ModuleConfig::new().parse(wasm)
     }
 
+    /// Construct a new module from the in-memory wasm buffer and configuration.
+    pub fn from_buffer_with_config(wasm: &[u8], config: &ModuleConfig) -> Result<Module> {
+        config.parse(wasm)
+    }
+
     fn parse(wasm: &[u8], config: &ModuleConfig) -> Result<Module> {
-        let mut ret = Module::default();
-        ret.config = config.clone();
+        let mut ret = Module {
+            config: config.clone(),
+            ..Default::default()
+        };
         let mut indices = IndicesToIds::default();
-        let mut validator = Validator::new();
-        validator.wasm_features(WasmFeatures {
-            reference_types: !config.only_stable_features,
-            multi_value: true,
-            bulk_memory: !config.only_stable_features,
-            simd: !config.only_stable_features,
-            threads: !config.only_stable_features,
-            multi_memory: !config.only_stable_features,
-            ..WasmFeatures::default()
-        });
+
+        // For now we have the same set of wasm features
+        // regardless of config.only_stable_features. New unstable features
+        // may be enabled under `only_stable_features: false` in future.
+        let wasm_features = config.get_wasmparser_wasm_features();
+
+        let mut validator = Validator::new_with_features(wasm_features);
 
         let mut local_functions = Vec::new();
+        let mut debug_sections = Vec::new();
 
-        for payload in Parser::new(0).parse_all(wasm) {
+        let mut parser = Parser::new(0);
+        parser.set_features(wasm_features);
+
+        for payload in parser.parse_all(wasm) {
             match payload? {
-                Payload::Version { num, range } => {
-                    validator.version(num, &range)?;
+                Payload::Version {
+                    num,
+                    encoding,
+                    range,
+                } => {
+                    validator.version(num, encoding, &range)?;
                 }
                 Payload::DataSection(s) => {
                     validator
@@ -175,7 +203,7 @@ impl Module {
                     validator
                         .export_section(&s)
                         .context("failed to parse export section")?;
-                    ret.parse_exports(s, &mut indices)?;
+                    ret.parse_exports(s, &indices)?;
                 }
                 Payload::ElementSection(s) => {
                     validator
@@ -199,35 +227,46 @@ impl Module {
                 }
                 Payload::CodeSectionStart { count, range, .. } => {
                     validator.code_section_start(count, &range)?;
+                    ret.funcs.code_section_offset = range.start;
                 }
                 Payload::CodeSectionEntry(body) => {
-                    let validator = validator.code_section_entry()?;
+                    let validator = validator
+                        .code_section_entry(&body)?
+                        .into_validator(Default::default());
                     local_functions.push((body, validator));
                 }
-                Payload::CustomSection {
-                    name,
-                    data,
-                    data_offset,
-                    range: _range,
-                } => {
-                    let result = match name {
-                        "producers" => wasmparser::ProducersSectionReader::new(data, data_offset)
+                Payload::CustomSection(s) => {
+                    let result =
+                        match s.name() {
+                            "producers" => wasmparser::ProducersSectionReader::new(
+                                BinaryReader::new(s.data(), s.data_offset(), wasm_features),
+                            )
                             .map_err(anyhow::Error::from)
                             .and_then(|s| ret.parse_producers_section(s)),
-                        "name" => wasmparser::NameSectionReader::new(data, data_offset)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|r| ret.parse_name_section(r, &indices)),
-                        _ => {
-                            log::debug!("parsing custom section `{}`", name);
-                            ret.customs.add(RawCustomSection {
-                                name: name.to_string(),
-                                data: data.to_vec(),
-                            });
-                            continue;
-                        }
-                    };
+                            "name" => {
+                                let name_section_reader = wasmparser::NameSectionReader::new(
+                                    BinaryReader::new(s.data(), s.data_offset(), wasm_features),
+                                );
+                                ret.parse_name_section(name_section_reader, &indices)
+                            }
+                            name => {
+                                log::debug!("parsing custom section `{}`", name);
+                                if name.starts_with(".debug") {
+                                    debug_sections.push(RawCustomSection {
+                                        name: name.to_string(),
+                                        data: s.data().to_vec(),
+                                    });
+                                } else {
+                                    ret.customs.add(RawCustomSection {
+                                        name: name.to_string(),
+                                        data: s.data().to_vec(),
+                                    });
+                                }
+                                continue;
+                            }
+                        };
                     if let Err(e) = result {
-                        log::warn!("failed to parse `{}` custom section {}", name, e);
+                        log::warn!("failed to parse `{}` custom section {}", s.name(), e);
                     }
                 }
                 Payload::UnknownSection { id, range, .. } => {
@@ -235,36 +274,29 @@ impl Module {
                     unreachable!()
                 }
 
-                Payload::End => validator.end()?,
+                Payload::End(offset) => {
+                    validator.end(offset)?;
+                    continue;
+                }
 
-                // the module linking proposal is not implemented yet.
-                Payload::AliasSection(s) => {
-                    validator.alias_section(&s)?;
-                    bail!("not supported yet");
-                }
-                Payload::InstanceSection(s) => {
-                    validator.instance_section(&s)?;
-                    bail!("not supported yet");
-                }
-                Payload::ModuleSectionEntry {
-                    parser: _,
-                    range: _,
-                } => {
-                    validator.module_section_entry();
-                    bail!("not supported yet");
-                }
-                Payload::ModuleSectionStart {
-                    count,
-                    range,
-                    size: _,
-                } => {
-                    validator.module_section_start(count, &range)?;
+                // component module proposal is not implemented yet.
+                Payload::ModuleSection { .. }
+                | Payload::InstanceSection(..)
+                | Payload::CoreTypeSection(..)
+                | Payload::ComponentSection { .. }
+                | Payload::ComponentInstanceSection(..)
+                | Payload::ComponentAliasSection(..)
+                | Payload::ComponentTypeSection(..)
+                | Payload::ComponentCanonicalSection(..)
+                | Payload::ComponentStartSection { .. }
+                | Payload::ComponentImportSection(..)
+                | Payload::ComponentExportSection(..) => {
                     bail!("not supported yet");
                 }
 
                 // exception handling is not implemented yet.
-                Payload::EventSection(reader) => {
-                    validator.event_section(&reader)?;
+                Payload::TagSection(s) => {
+                    validator.tag_section(&s)?;
                     bail!("not supported yet");
                 }
             }
@@ -276,6 +308,9 @@ impl Module {
             config.on_instr_loc.as_ref().map(|f| f.as_ref()),
         )
         .context("failed to parse code section")?;
+
+        ret.parse_debug_sections(debug_sections)
+            .context("failed to parse debug data section")?;
 
         ret.producers
             .add_processed_by("walrus", env!("CARGO_PKG_VERSION"));
@@ -303,29 +338,29 @@ impl Module {
         log::debug!("start emit");
 
         let indices = &mut IdsToIndices::default();
-        let mut wasm = Vec::new();
-        wasm.extend(&[0x00, 0x61, 0x73, 0x6d]); // magic
-        wasm.extend(&[0x01, 0x00, 0x00, 0x00]); // version
 
-        let mut customs = mem::replace(&mut self.customs, ModuleCustomSections::default());
+        let mut customs = mem::take(&mut self.customs);
 
         let mut cx = EmitContext {
             module: self,
             indices,
-            encoder: Encoder::new(&mut wasm),
+            wasm_module: wasm_encoder::Module::new(),
             locals: Default::default(),
-            code_transform: Vec::new(),
+            code_transform: Default::default(),
         };
         self.types.emit(&mut cx);
         self.imports.emit(&mut cx);
         self.funcs.emit_func_section(&mut cx);
         self.tables.emit(&mut cx);
         self.memories.emit(&mut cx);
+        // TODO: tag section
         self.globals.emit(&mut cx);
         self.exports.emit(&mut cx);
         if let Some(start) = self.start {
             let idx = cx.indices.get_func_index(start);
-            cx.start_section(Section::Start).encoder.u32(idx);
+            cx.wasm_module.section(&wasm_encoder::StartSection {
+                function_index: idx,
+            });
         }
         self.elements.emit(&mut cx);
         self.data.emit_data_count(&mut cx);
@@ -339,11 +374,16 @@ impl Module {
             self.producers.emit(&mut cx);
         }
 
-        let indices = mem::replace(cx.indices, Default::default());
+        if self.config.generate_dwarf {
+            self.debug.emit(&mut cx);
+        } else {
+            log::debug!("skipping DWARF custom section");
+        }
+
+        let indices = std::mem::take(cx.indices);
 
         for (_id, section) in customs.iter_mut() {
-            if !self.config.generate_dwarf && section.name().starts_with(".debug") {
-                log::debug!("skipping DWARF custom section {}", section.name());
+            if section.name().starts_with(".debug") {
                 continue;
             }
 
@@ -353,13 +393,22 @@ impl Module {
                 section.apply_code_transform(&cx.code_transform);
             }
 
-            cx.custom_section(&section.name())
-                .encoder
-                .raw(&section.data(&indices));
+            cx.wasm_module.section(&wasm_encoder::CustomSection {
+                name: section.name().into(),
+                data: section.data(&indices),
+            });
         }
 
+        let out = cx.wasm_module.finish();
         log::debug!("emission finished");
-        wasm
+
+        // let mut validator = Validator::new();
+        // if let Err(err) = validator.validate_all(&out) {
+        //     eprintln!("{:?}", err);
+        //     panic!("Unable to validate serialized output");
+        // }
+
+        out
     }
 
     /// Returns an iterator over all functions in this module
@@ -373,32 +422,87 @@ impl Module {
         indices: &IndicesToIds,
     ) -> Result<()> {
         log::debug!("parse name section");
-        for name in names {
-            match name? {
-                wasmparser::Name::Module(m) => {
-                    self.name = Some(m.get_name()?.to_string());
+        for subsection in names {
+            match subsection? {
+                wasmparser::Name::Module {
+                    name,
+                    name_range: _,
+                } => {
+                    self.name = Some(name.to_string());
                 }
-                wasmparser::Name::Function(f) => {
-                    let mut map = f.get_map()?;
-                    for _ in 0..map.get_count() {
-                        let naming = map.read()?;
+                wasmparser::Name::Function(names) => {
+                    for name in names {
+                        let naming = name?;
                         match indices.get_func(naming.index) {
                             Ok(id) => self.funcs.get_mut(id).name = Some(naming.name.to_string()),
-                            // If some tool fails to GC function names properly,
-                            // it doesn't really hurt anything to ignore the
-                            // broken references and keep going.
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
+                wasmparser::Name::Type(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_type(naming.index) {
+                            Ok(id) => self.types.get_mut(id).name = Some(naming.name.to_string()),
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
+                wasmparser::Name::Memory(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_memory(naming.index) {
+                            Ok(id) => {
+                                self.memories.get_mut(id).name = Some(naming.name.to_string())
+                            }
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
+                wasmparser::Name::Table(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_table(naming.index) {
+                            Ok(id) => self.tables.get_mut(id).name = Some(naming.name.to_string()),
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
+                wasmparser::Name::Data(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_data(naming.index) {
+                            Ok(id) => self.data.get_mut(id).name = Some(naming.name.to_string()),
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
+                wasmparser::Name::Element(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_element(naming.index) {
+                            Ok(id) => {
+                                self.elements.get_mut(id).name = Some(naming.name.to_string())
+                            }
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
+                wasmparser::Name::Global(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_global(naming.index) {
+                            Ok(id) => self.globals.get_mut(id).name = Some(naming.name.to_string()),
                             Err(e) => warn!("in name section: {}", e),
                         }
                     }
                 }
                 wasmparser::Name::Local(l) => {
-                    let mut reader = l.get_function_local_reader()?;
-                    for _ in 0..reader.get_count() {
-                        let name = reader.read()?;
-                        let func_id = indices.get_func(name.func_index)?;
-                        let mut map = name.get_map()?;
-                        for _ in 0..map.get_count() {
-                            let naming = map.read()?;
+                    for f in l {
+                        let f = f?;
+                        let func_id = indices.get_func(f.index)?;
+                        for name in f.names {
+                            let naming = name?;
                             // Looks like tools like `wat2wasm` generate empty
                             // names for locals if they aren't specified, so
                             // just ignore empty names which would in theory
@@ -421,6 +525,9 @@ impl Module {
                     }
                 }
                 wasmparser::Name::Unknown { ty, .. } => warn!("unknown name subsection {}", ty),
+                wasmparser::Name::Label(_) => warn!("labels name subsection ignored"),
+                wasmparser::Name::Field(_) => warn!("fields name subsection ignored"),
+                wasmparser::Name::Tag(_) => warn!("tags name subsection ignored"),
             }
         }
         Ok(())
@@ -429,6 +536,9 @@ impl Module {
 
 fn emit_name_section(cx: &mut EmitContext) {
     log::debug!("emit name section");
+
+    let mut wasm_name_section = wasm_encoder::NameSection::new();
+
     let mut funcs = cx
         .module
         .funcs
@@ -452,7 +562,7 @@ fn emit_name_section(cx: &mut EmitContext) {
                     Some((*index, name))
                 })
                 .collect::<Vec<_>>();
-            if local_names.len() == 0 {
+            if local_names.is_empty() {
                 None
             } else {
                 Some((cx.indices.get_func_index(func.id()), local_names))
@@ -461,35 +571,148 @@ fn emit_name_section(cx: &mut EmitContext) {
         .collect::<Vec<_>>();
     locals.sort_by_key(|p| p.0); // sort by index
 
-    if cx.module.name.is_none() && funcs.len() == 0 && locals.len() == 0 {
+    let mut types = cx
+        .module
+        .types
+        .iter()
+        .filter_map(|typ| typ.name.as_ref().map(|name| (typ, name)))
+        .map(|(typ, name)| (cx.indices.get_type_index(typ.id()), name))
+        .collect::<Vec<_>>();
+    types.sort_by_key(|p| p.0); // sort by index
+
+    let mut tables = cx
+        .module
+        .tables
+        .iter()
+        .filter_map(|table| table.name.as_ref().map(|name| (table, name)))
+        .map(|(table, name)| (cx.indices.get_table_index(table.id()), name))
+        .collect::<Vec<_>>();
+    tables.sort_by_key(|p| p.0); // sort by index
+
+    let mut memories = cx
+        .module
+        .memories
+        .iter()
+        .filter_map(|memory| memory.name.as_ref().map(|name| (memory, name)))
+        .map(|(memory, name)| (cx.indices.get_memory_index(memory.id()), name))
+        .collect::<Vec<_>>();
+    memories.sort_by_key(|p| p.0); // sort by index
+
+    let mut globals = cx
+        .module
+        .globals
+        .iter()
+        .filter_map(|global| global.name.as_ref().map(|name| (global, name)))
+        .map(|(global, name)| (cx.indices.get_global_index(global.id()), name))
+        .collect::<Vec<_>>();
+    globals.sort_by_key(|p| p.0); // sort by index
+
+    let mut elements = cx
+        .module
+        .elements
+        .iter()
+        .filter_map(|element| element.name.as_ref().map(|name| (element, name)))
+        .map(|(element, name)| (cx.indices.get_element_index(element.id()), name))
+        .collect::<Vec<_>>();
+    elements.sort_by_key(|p| p.0); // sort by index
+
+    let mut data = cx
+        .module
+        .data
+        .iter()
+        .filter_map(|data| data.name.as_ref().map(|name| (data, name)))
+        .map(|(data, name)| (cx.indices.get_data_index(data.id()), name))
+        .collect::<Vec<_>>();
+    data.sort_by_key(|p| p.0); // sort by index
+
+    if cx.module.name.is_none()
+        && funcs.is_empty()
+        && locals.is_empty()
+        && types.is_empty()
+        && tables.is_empty()
+        && memories.is_empty()
+        && globals.is_empty()
+        && elements.is_empty()
+        && data.is_empty()
+    {
         return;
     }
 
-    let mut cx = cx.custom_section("name");
+    // Order of written subsections must match order defined in
+    // `wasm_encorder::names::Subsection`.
+
     if let Some(name) = &cx.module.name {
-        cx.subsection(0).encoder.str(name);
+        wasm_name_section.module(name);
     }
 
-    if funcs.len() > 0 {
-        let mut cx = cx.subsection(1);
-        cx.encoder.usize(funcs.len());
+    if !funcs.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
         for (index, name) in funcs {
-            cx.encoder.u32(index);
-            cx.encoder.str(name);
+            name_map.append(index, name);
         }
+        wasm_name_section.functions(&name_map);
     }
 
-    if locals.len() > 0 {
-        let mut cx = cx.subsection(2);
-        cx.encoder.usize(locals.len());
+    if !locals.is_empty() {
+        let mut indirect_name_map = wasm_encoder::IndirectNameMap::new();
         for (index, mut map) in locals {
-            cx.encoder.u32(index);
-            cx.encoder.usize(map.len());
+            let mut name_map = wasm_encoder::NameMap::new();
             map.sort_by_key(|p| p.0); // sort by index
             for (index, name) in map {
-                cx.encoder.u32(index);
-                cx.encoder.str(name);
+                name_map.append(index, name);
             }
+            indirect_name_map.append(index, &name_map);
         }
+        wasm_name_section.locals(&indirect_name_map);
     }
+
+    if !types.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in types {
+            name_map.append(index, name);
+        }
+        wasm_name_section.types(&name_map);
+    }
+
+    if !tables.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in tables {
+            name_map.append(index, name);
+        }
+        wasm_name_section.tables(&name_map);
+    }
+
+    if !memories.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in memories {
+            name_map.append(index, name);
+        }
+        wasm_name_section.memories(&name_map);
+    }
+
+    if !globals.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in globals {
+            name_map.append(index, name);
+        }
+        wasm_name_section.globals(&name_map);
+    }
+
+    if !elements.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in elements {
+            name_map.append(index, name);
+        }
+        wasm_name_section.elements(&name_map);
+    }
+
+    if !data.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in data {
+            name_map.append(index, name);
+        }
+        wasm_name_section.data(&name_map);
+    }
+
+    cx.wasm_module.section(&wasm_name_section);
 }

@@ -7,10 +7,9 @@
 mod traversals;
 pub use self::traversals::*;
 
-use crate::encode::Encoder;
 use crate::{
-    DataId, ElementId, FunctionId, GlobalId, LocalFunction, MemoryId, ModuleTypes, TableId, TypeId,
-    ValType,
+    DataId, ElementId, FunctionId, GlobalId, LocalFunction, MemoryId, ModuleTypes, RefType,
+    TableId, TypeId, ValType,
 };
 use id_arena::Id;
 use std::fmt;
@@ -121,7 +120,7 @@ impl From<TypeId> for InstrSeqType {
 }
 
 /// A symbolic original wasm operator source location.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct InstrLocId(u32);
 
 const DEFAULT_INSTR_LOC_ID: u32 = 0xffff_ffff;
@@ -164,6 +163,9 @@ pub struct InstrSeq {
 
     /// The instructions that make up the body of this block.
     pub instrs: Vec<(Instr, InstrLocId)>,
+
+    /// For code address mapping
+    pub end: InstrLocId,
 }
 
 impl Deref for InstrSeq {
@@ -186,7 +188,13 @@ impl InstrSeq {
     /// Construct a new instruction sequence.
     pub(crate) fn new(id: InstrSeqId, ty: InstrSeqType) -> InstrSeq {
         let instrs = vec![];
-        InstrSeq { id, ty, instrs }
+        let end = Default::default();
+        InstrSeq {
+            id,
+            ty,
+            instrs,
+            end,
+        }
     }
 
     /// Get the id of this instruction sequence.
@@ -304,6 +312,13 @@ pub enum Instr {
     Const {
         /// The constant value.
         value: Value,
+    },
+
+    /// Ternary operations, those requiring three operands
+    TernOp {
+        /// The operation being performed
+        #[walrus(skip_visit)]
+        op: TernaryOp,
     },
 
     /// Binary operations, those requiring two operands
@@ -524,7 +539,7 @@ pub enum Instr {
     RefNull {
         /// The type of null that we're producing
         #[walrus(skip_visit)]
-        ty: ValType,
+        ty: RefType,
     },
 
     /// `ref.is_null`
@@ -583,6 +598,20 @@ pub enum Instr {
         /// The destination table
         dst: TableId,
     },
+
+    /// `return_call`
+    ReturnCall {
+        /// The function being invoked.
+        func: FunctionId,
+    },
+
+    /// `return_call_indirect`
+    ReturnCallIndirect {
+        /// The type signature of the function we're calling
+        ty: TypeId,
+        /// The table which `func` below is indexing into
+        table: TableId,
+    },
 }
 
 /// Argument in `V128Shuffle` of lane indices to select
@@ -603,35 +632,6 @@ pub enum Value {
     V128(u128),
 }
 
-impl Value {
-    pub(crate) fn emit(&self, encoder: &mut Encoder) {
-        match *self {
-            Value::I32(n) => {
-                encoder.byte(0x41); // i32.const
-                encoder.i32(n);
-            }
-            Value::I64(n) => {
-                encoder.byte(0x42); // i64.const
-                encoder.i64(n);
-            }
-            Value::F32(n) => {
-                encoder.byte(0x43); // f32.const
-                encoder.f32(n);
-            }
-            Value::F64(n) => {
-                encoder.byte(0x44); // f64.const
-                encoder.f64(n);
-            }
-            Value::V128(n) => {
-                encoder.raw(&[0xfd, 0x0c]); // v128.const
-                for i in 0..16 {
-                    encoder.byte((n >> (i * 8)) as u8);
-                }
-            }
-        }
-    }
-}
-
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -642,6 +642,21 @@ impl fmt::Display for Value {
             Value::V128(i) => i.fmt(f),
         }
     }
+}
+
+/// Possible ternary operations in wasm
+#[allow(missing_docs)]
+#[derive(Copy, Clone, Debug)]
+pub enum TernaryOp {
+    F32x4RelaxedMadd,
+    F32x4RelaxedNmadd,
+    F64x2RelaxedMadd,
+    F64x2RelaxedNmadd,
+    I8x16RelaxedLaneselect,
+    I16x8RelaxedLaneselect,
+    I32x4RelaxedLaneselect,
+    I64x2RelaxedLaneselect,
+    I32x4RelaxedDotI8x16I7x16AddS,
 }
 
 /// Possible binary operations in wasm
@@ -851,8 +866,8 @@ pub enum BinaryOp {
     I8x16NarrowI16x8U,
     I16x8NarrowI32x4S,
     I16x8NarrowI32x4U,
-    I8x16RoundingAverageU,
-    I16x8RoundingAverageU,
+    I8x16AvgrU,
+    I16x8AvgrU,
 
     I8x16MinS,
     I8x16MinU,
@@ -882,6 +897,14 @@ pub enum BinaryOp {
     I64x2ExtMulHighI32x4S,
     I64x2ExtMulLowI32x4U,
     I64x2ExtMulHighI32x4U,
+
+    I8x16RelaxedSwizzle,
+    F32x4RelaxedMin,
+    F32x4RelaxedMax,
+    F64x2RelaxedMin,
+    F64x2RelaxedMax,
+    I16x8RelaxedQ15mulrS,
+    I16x8RelaxedDotI8x16I7x16S,
 }
 
 /// Possible unary operations in wasm
@@ -1036,6 +1059,11 @@ pub enum UnaryOp {
     I32x4WidenLowI16x8U,
     I32x4WidenHighI16x8S,
     I32x4WidenHighI16x8U,
+
+    I32x4RelaxedTruncF32x4S,
+    I32x4RelaxedTruncF32x4U,
+    I32x4RelaxedTruncF64x2SZero,
+    I32x4RelaxedTruncF64x2UZero,
 }
 
 /// The different kinds of load instructions that are part of a `Load` IR node
@@ -1236,7 +1264,12 @@ impl Instr {
     /// (`i32.add`, etc...).
     pub fn following_instructions_are_unreachable(&self) -> bool {
         match *self {
-            Instr::Unreachable(..) | Instr::Br(..) | Instr::BrTable(..) | Instr::Return(..) => true,
+            Instr::Unreachable(..)
+            | Instr::Br(..)
+            | Instr::BrTable(..)
+            | Instr::Return(..)
+            | Instr::ReturnCall(..)
+            | Instr::ReturnCallIndirect(..) => true,
 
             // No `_` arm to make sure that we properly update this function as
             // we add support for new instructions.
@@ -1249,6 +1282,7 @@ impl Instr {
             | Instr::GlobalGet(..)
             | Instr::GlobalSet(..)
             | Instr::Const(..)
+            | Instr::TernOp(..)
             | Instr::Binop(..)
             | Instr::Unop(..)
             | Instr::Select(..)

@@ -36,9 +36,7 @@ pub trait CustomSection: WalrusAny + Debug + Send + Sync {
     /// array provided.
     ///
     /// The default provided method does nothing.
-    fn add_gc_roots(&self, roots: &mut Roots) {
-        drop(roots);
-    }
+    fn add_gc_roots(&self, _roots: &mut Roots) {}
 
     /// Apply the given code transformations to this custom section.
     ///
@@ -195,10 +193,7 @@ where
     T: CustomSection,
 {
     fn clone(&self) -> Self {
-        TypedCustomSectionId {
-            id: self.id,
-            _phantom: PhantomData,
-        }
+        *self
     }
 }
 
@@ -368,26 +363,18 @@ impl ModuleCustomSections {
 
     /// Iterate over shared references to custom sections and their ids.
     pub fn iter(&self) -> impl Iterator<Item = (UntypedCustomSectionId, &dyn CustomSection)> {
-        self.arena.iter().flat_map(|(id, s)| {
-            if let Some(s) = s.as_ref() {
-                Some((UntypedCustomSectionId(id), &**s))
-            } else {
-                None
-            }
-        })
+        self.arena
+            .iter()
+            .flat_map(|(id, s)| Some((UntypedCustomSectionId(id), &**s.as_ref()?)))
     }
 
     /// Iterate over exclusive references to custom sections and their ids.
     pub fn iter_mut(
         &mut self,
     ) -> impl Iterator<Item = (UntypedCustomSectionId, &mut dyn CustomSection)> {
-        self.arena.iter_mut().flat_map(|(id, s)| {
-            if let Some(s) = s.as_mut() {
-                Some((UntypedCustomSectionId(id), &mut **s))
-            } else {
-                None
-            }
-        })
+        self.arena
+            .iter_mut()
+            .flat_map(|(id, s)| Some((UntypedCustomSectionId(id), &mut **s.as_mut()?)))
     }
 
     /// Remove a custom section (by type) from the module.

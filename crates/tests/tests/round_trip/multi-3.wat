@@ -19,13 +19,14 @@
       local.get 2
       local.get 1
       local.get 0
-      if (param i64 i64) (result i64 i64)  ;; label = @1
+      if (type 1) (param i64 i64) (result i64 i64) ;; label = @1
         return
       else
         drop
         drop
         i64.const 0
         i64.const 0
-      end)
-    (export "multiLoop" (func 0)))
+      end
+    )
+    (export "multiLoop" (func 0))
 ;)

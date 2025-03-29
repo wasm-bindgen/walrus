@@ -2,4 +2,4 @@
   (func
     nop))
 
-;; CHECK: (module)
+;; CHECK: (module

@@ -8,9 +8,10 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func))
-    (func $b (type 0)
-      data.drop 0)
+    (func $b (;0;) (type 0)
+      data.drop 0
+    )
     (memory (;0;) 1)
     (export "" (func $b))
-    (data (;0;) (i32.const 0) ""))
+    (data (;0;) (i32.const 0) "")
 ;)

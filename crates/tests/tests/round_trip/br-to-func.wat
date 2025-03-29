@@ -3,5 +3,5 @@
     i32.const 0
     br 0))
 
-;; CHECK: (module)
+;; CHECK: (module
 

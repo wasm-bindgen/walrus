@@ -83,7 +83,7 @@ impl Module {
         for field in data {
             let field = field?;
             let mut values = Vec::new();
-            for value in field.get_producer_field_values_reader()? {
+            for value in field.values {
                 let value = value?;
                 values.push(Value {
                     name: value.name.to_string(),
@@ -101,22 +101,17 @@ impl Module {
 impl Emit for ModuleProducers {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit producers section");
-        if self.fields.len() > 0 {
-            cx.custom_section("producers").list(&self.fields);
+        if self.fields.is_empty() {
+            return;
         }
-    }
-}
-
-impl Emit for Field {
-    fn emit(&self, cx: &mut EmitContext) {
-        cx.encoder.str(&self.name);
-        cx.list(&self.values);
-    }
-}
-
-impl Emit for Value {
-    fn emit(&self, cx: &mut EmitContext) {
-        cx.encoder.str(&self.name);
-        cx.encoder.str(&self.version);
+        let mut wasm_producers_section = wasm_encoder::ProducersSection::new();
+        for field in &self.fields {
+            let mut producers_field = wasm_encoder::ProducersField::new();
+            for value in &field.values {
+                producers_field.value(&value.name, &value.version);
+            }
+            wasm_producers_section.field(&field.name, &producers_field);
+        }
+        cx.wasm_module.section(&wasm_producers_section);
     }
 }

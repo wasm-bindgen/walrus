@@ -13,7 +13,7 @@
   (module
     (type (;0;) (func (result i32)))
     (type (;1;) (func (param i32) (result i32)))
-    (import "env" "blackbox" (func $blackbox (type 1)))
+    (import "env" "blackbox" (func $blackbox (;0;) (type 1)))
     (func (;1;) (type 0) (result i32)
       i32.const 1
       call $blackbox
@@ -22,6 +22,7 @@
       drop
       i32.const 3
       call $blackbox
-      i32.add)
-    (export "$f" (func 1)))
+      i32.add
+    )
+    (export "$f" (func 1))
 ;)

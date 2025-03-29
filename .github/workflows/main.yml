@@ -9,32 +9,24 @@ jobs:
       matrix:
         rust: [stable, beta, nightly]
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v4
       with:
         submodules: true
     - name: Install Rust
       run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
-
-    # Build an up-to-date version of wabt since the releases don't always have
-    # all the features we want.
-    - uses: actions/checkout@v2
-      with:
-        repository: WebAssembly/wabt
-        ref: aa0515b3c808da880942db8658abeaa969534667
-        path: wabt
-    - name: Build wabt
+    - uses: cargo-bins/cargo-binstall@main
+    - name: Install wasm-tools (need json-from-wast subcommand)
+      run: cargo binstall wasm-tools -y
+    - name: Install wabt
       run: |
         set -e
-        cd wabt
-        cmake . -DBUILD_TESTS=OFF
-        make -j$(nproc) wast2json spectest-interp wasm-interp
-        echo `pwd` > $GITHUB_PATH
-
+        curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.35/wabt-1.0.35-ubuntu-20.04.tar.gz | tar xzf -
+        echo "`pwd`/wabt-1.0.35/bin" > $GITHUB_PATH
     - name: Install binaryen
       run: |
         set -e
-        curl -L https://github.com/WebAssembly/binaryen/releases/download/1.39.1/binaryen-1.39.1-x86_64-linux.tar.gz | tar xzf -
-        echo "`pwd`/binaryen-1.39.1" > $GITHUB_PATH
+        curl -L https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz | tar xzf -
+        echo "`pwd`/binaryen-version_117/bin" > $GITHUB_PATH
     - run: cargo build --all
     - run: cargo test --all
     - run: cargo check --benches
@@ -45,19 +37,19 @@ jobs:
     name: Fuzz Crate
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v4
     - name: Install Rust
       run: rustup update stable && rustup default stable
     - name: Install wabt
       run: |
         set -e
-        curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.13/wabt-1.0.13-linux.tar.gz | tar xzf -
-        echo "`pwd`/wabt-1.0.13" > $GITHUB_PATH
+        curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.35/wabt-1.0.35-ubuntu-20.04.tar.gz | tar xzf -
+        echo "`pwd`/wabt-1.0.35/bin" > $GITHUB_PATH
     - name: Install binaryen
       run: |
         set -e
-        curl -L https://github.com/WebAssembly/binaryen/releases/download/1.39.1/binaryen-1.39.1-x86_64-linux.tar.gz | tar xzf -
-        echo "`pwd`/binaryen-1.39.1" > $GITHUB_PATH
+        curl -L https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz | tar xzf -
+        echo "`pwd`/binaryen-version_117/bin" > $GITHUB_PATH
     - name: Run fuzzer
       run: cargo test -p walrus-fuzz-utils > fuzz.log || (tail -n 1000 fuzz.log && exit 1)
       env:
@@ -71,20 +63,20 @@ jobs:
       matrix:
         test: [watgen, wasm-opt-ttf, raw]
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v4
     - name: Install Rust
       run: rustup update nightly && rustup default nightly
     - run: cargo install cargo-fuzz
     - name: Install wabt
       run: |
         set -e
-        curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.13/wabt-1.0.13-linux.tar.gz | tar xzf -
-        echo "`pwd`/wabt-1.0.13" > $GITHUB_PATH
+        curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.35/wabt-1.0.35-ubuntu-20.04.tar.gz | tar xzf -
+        echo "`pwd`/wabt-1.0.35/bin" > $GITHUB_PATH
     - name: Install binaryen
       run: |
         set -e
-        curl -L https://github.com/WebAssembly/binaryen/releases/download/1.39.1/binaryen-1.39.1-x86_64-linux.tar.gz | tar xzf -
-        echo "`pwd`/binaryen-1.39.1" > $GITHUB_PATH
+        curl -L https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz | tar xzf -
+        echo "`pwd`/binaryen-version_117/bin" > $GITHUB_PATH
     - name: Run fuzzer
       run: |
         cargo fuzz run ${{ matrix.test }} -- -max_total_time=300 -rss_limit_mb=4096 > fuzz.log 2>&1 || (tail -n 1000 fuzz.log && exit 1)
@@ -93,7 +85,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v4
     - name: Install Rust
       run: rustup update stable && rustup default stable && rustup component add rustfmt
     - run: cargo fmt -- --check

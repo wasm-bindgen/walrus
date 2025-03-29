@@ -3,7 +3,7 @@
 extern crate proc_macro;
 
 use self::proc_macro::TokenStream;
-use heck::SnakeCase;
+use heck::ToSnakeCase;
 use proc_macro2::Span;
 use quote::quote;
 use syn::ext::IdentExt;
@@ -103,7 +103,7 @@ impl Parse for WalrusFieldOpts {
                 if attr == "skip_visit" {
                     return Ok(Attr::SkipVisit);
                 }
-                return Err(Error::new(attr.span(), "unexpected attribute"));
+                Err(Error::new(attr.span(), "unexpected attribute"))
             }
         }
     }
@@ -144,7 +144,7 @@ impl Parse for WalrusVariantOpts {
                 if attr == "skip_builder" {
                     return Ok(Attr::SkipBuilder);
                 }
-                return Err(Error::new(attr.span(), "unexpected attribute"));
+                Err(Error::new(attr.span(), "unexpected attribute"))
             }
         }
     }
@@ -154,18 +154,19 @@ fn walrus_attrs(attrs: &mut Vec<syn::Attribute>) -> TokenStream {
     let mut ret = proc_macro2::TokenStream::new();
     let ident = syn::Path::from(syn::Ident::new("walrus", Span::call_site()));
     for i in (0..attrs.len()).rev() {
-        if attrs[i].path != ident {
+        if attrs[i].path() != &ident {
             continue;
         }
         let attr = attrs.remove(i);
-        let group = match attr.tokens.into_iter().next().unwrap() {
-            proc_macro2::TokenTree::Group(g) => g,
-            _ => panic!("#[walrus(...)] expected"),
+        let group = if let syn::Meta::List(syn::MetaList { tokens, .. }) = attr.meta {
+            tokens
+        } else {
+            panic!("#[walrus(...)] expected")
         };
-        ret.extend(group.stream());
+        ret.extend(group);
         ret.extend(quote! { , });
     }
-    return ret.into();
+    ret.into()
 }
 
 fn create_types(attrs: &[syn::Attribute], variants: &[WalrusVariant]) -> impl quote::ToTokens {
@@ -327,10 +328,10 @@ fn create_types(attrs: &[syn::Attribute], variants: &[WalrusVariant]) -> impl qu
     }
 }
 
-fn visit_fields<'a>(
-    variant: &'a WalrusVariant,
+fn visit_fields(
+    variant: &WalrusVariant,
     allow_skip: bool,
-) -> impl Iterator<Item = (syn::Ident, proc_macro2::TokenStream, bool)> + 'a {
+) -> impl Iterator<Item = (syn::Ident, proc_macro2::TokenStream, bool)> + '_ {
     return variant
         .syn
         .fields
@@ -438,7 +439,7 @@ fn create_visit(variants: &[WalrusVariant]) -> impl quote::ToTokens {
             }
         });
 
-        let doc = format!("Visit `{}`.", name.to_string());
+        let doc = format!("Visit `{}`.", name);
         visitor_trait_methods.push(quote! {
             #[doc=#doc]
             #[inline]
@@ -722,13 +723,13 @@ fn create_builder(variants: &[WalrusVariant]) -> impl quote::ToTokens {
 
         let doc = format!(
             "Push a new `{}` instruction onto this builder's block.",
-            name.to_string()
+            name
         );
         let at_doc = format!(
             "Splice a new `{}` instruction into this builder's block at the given index.\n\n\
              # Panics\n\n\
              Panics if `position > self.instrs.len()`.",
-            name.to_string()
+            name
         );
 
         let arg_names = &arg_names;

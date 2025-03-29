@@ -54,6 +54,7 @@ pub(crate) struct ValidationContext<'a> {
 
 #[derive(Debug)]
 pub struct IfElseState {
+    pub start: InstrLocId,
     pub consequent: InstrSeqId,
     pub alternative: Option<InstrSeqId>,
 }
@@ -109,7 +110,7 @@ impl<'a> ValidationContext<'a> {
     }
 
     pub fn pop_control(&mut self) -> Result<(ControlFrame, InstrSeqId)> {
-        let frame = impl_pop_control(&mut self.controls)?;
+        let frame = impl_pop_control(self.controls)?;
         let block = frame.block;
         Ok((frame, block))
     }
@@ -213,7 +214,7 @@ fn impl_push_control_with_ty(
 fn impl_pop_control(controls: &mut ControlStack) -> Result<ControlFrame> {
     controls
         .last()
-        .ok_or_else(|| ErrorKind::InvalidWasm)
+        .ok_or(ErrorKind::InvalidWasm)
         .context("attempted to pop a frame from an empty control stack")?;
     let frame = controls.pop().unwrap();
     Ok(frame)

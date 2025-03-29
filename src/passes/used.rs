@@ -1,7 +1,7 @@
 use crate::ir::*;
 use crate::map::IdHashSet;
-use crate::{ActiveDataLocation, Data, DataId, DataKind, Element, ExportItem, Function, InitExpr};
-use crate::{ElementId, ElementKind, Module, Type, TypeId};
+use crate::{ConstExpr, Data, DataId, DataKind, Element, ExportItem, Function};
+use crate::{ElementId, ElementItems, ElementKind, Module, RefType, Type, TypeId};
 use crate::{FunctionId, FunctionKind, Global, GlobalId};
 use crate::{GlobalKind, Memory, MemoryId, Table, TableId};
 
@@ -130,9 +130,15 @@ impl Used {
         for elem in module.elements.iter() {
             match elem.kind {
                 // Active segments are rooted because they initialize imported
-                // or exported tables. Declared segments can probably get gc'd
-                // but for now we're conservative and we root them.
-                ElementKind::Active { .. } | ElementKind::Declared => {
+                // tables.
+                ElementKind::Active { table, .. } => {
+                    if module.tables.get(table).import.is_some() {
+                        stack.push_element(elem.id());
+                    }
+                }
+                // Declared segments can probably get gc'd but for now we're
+                // conservative and we root them
+                ElementKind::Declared => {
                     stack.push_element(elem.id());
                 }
                 ElementKind::Passive => {}
@@ -145,12 +151,12 @@ impl Used {
         }
 
         // Iteratively visit all items until our stack is empty
-        while stack.funcs.len() > 0
-            || stack.tables.len() > 0
-            || stack.memories.len() > 0
-            || stack.globals.len() > 0
-            || stack.datas.len() > 0
-            || stack.elements.len() > 0
+        while !stack.funcs.is_empty()
+            || !stack.tables.is_empty()
+            || !stack.memories.is_empty()
+            || !stack.globals.is_empty()
+            || !stack.datas.is_empty()
+            || !stack.elements.is_empty()
         {
             while let Some(f) = stack.funcs.pop() {
                 let func = module.funcs.get(f);
@@ -175,14 +181,14 @@ impl Used {
             while let Some(t) = stack.globals.pop() {
                 match &module.globals.get(t).kind {
                     GlobalKind::Import(_) => {}
-                    GlobalKind::Local(InitExpr::Global(global)) => {
+                    GlobalKind::Local(ConstExpr::Global(global)) => {
                         stack.push_global(*global);
                     }
-                    GlobalKind::Local(InitExpr::RefFunc(func)) => {
+                    GlobalKind::Local(ConstExpr::RefFunc(func)) => {
                         stack.push_func(*func);
                     }
-                    GlobalKind::Local(InitExpr::Value(_))
-                    | GlobalKind::Local(InitExpr::RefNull(_)) => {}
+                    GlobalKind::Local(ConstExpr::Value(_))
+                    | GlobalKind::Local(ConstExpr::RefNull(_)) => {}
                 }
             }
 
@@ -194,23 +200,36 @@ impl Used {
 
             while let Some(d) = stack.datas.pop() {
                 let d = module.data.get(d);
-                if let DataKind::Active(a) = &d.kind {
-                    stack.push_memory(a.memory);
-                    if let ActiveDataLocation::Relative(g) = a.location {
-                        stack.push_global(g);
+                if let DataKind::Active { memory, offset } = &d.kind {
+                    stack.push_memory(*memory);
+                    if let ConstExpr::Global(g) = offset {
+                        stack.push_global(*g);
                     }
                 }
             }
 
             while let Some(e) = stack.elements.pop() {
                 let e = module.elements.get(e);
-                for func in e.members.iter() {
-                    if let Some(func) = func {
-                        stack.push_func(*func);
+                if let ElementItems::Functions(function_ids) = &e.items {
+                    function_ids.iter().for_each(|f| {
+                        stack.push_func(*f);
+                    });
+                }
+                if let ElementItems::Expressions(RefType::Funcref, items) = &e.items {
+                    for item in items {
+                        match item {
+                            ConstExpr::Global(g) => {
+                                stack.push_global(*g);
+                            }
+                            ConstExpr::RefFunc(f) => {
+                                stack.push_func(*f);
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 if let ElementKind::Active { offset, table } = &e.kind {
-                    if let InitExpr::Global(g) = offset {
+                    if let ConstExpr::Global(g) = offset {
                         stack.push_global(*g);
                     }
                     stack.push_table(*table);
@@ -225,7 +244,7 @@ impl Used {
         // Let's keep `wabt` passing though and just say that if there are data
         // segments kept, but no memories, then we try to add the first memory,
         // if any, to the used set.
-        if stack.used.data.len() > 0 && stack.used.memories.len() == 0 {
+        if !stack.used.data.is_empty() && stack.used.memories.is_empty() {
             if let Some(mem) = module.memories.iter().next() {
                 stack.used.memories.insert(mem.id());
             }

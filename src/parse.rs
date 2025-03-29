@@ -66,7 +66,7 @@ define_push_get!(push_data, get_data, DataId, data);
 impl IndicesToIds {
     /// Pushes a new local ID to map it to the next index internally
     pub(crate) fn push_local(&mut self, function: FunctionId, id: LocalId) -> u32 {
-        let list = self.locals.entry(function).or_insert(Vec::new());
+        let list = self.locals.entry(function).or_default();
         list.push(id);
         (list.len() as u32) - 1
     }

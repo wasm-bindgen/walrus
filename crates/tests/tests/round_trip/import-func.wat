@@ -4,7 +4,9 @@
   (export "b" (func 0))
   )
 
-;; CHECK: (module
-;; NEXT:    (type (;0;) (func))
-;; NEXT:    (import "" "" (func (;0;) (type 0)))
-;; NEXT:    (export "b" (func 0)))
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func))
+    (import "" "" (func (;0;) (type 0)))
+    (export "b" (func 0))
+;)

@@ -5,4 +5,4 @@
     end
     ))
 
-;; CHECK: (module)
+;; CHECK: (module

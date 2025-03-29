@@ -7,7 +7,13 @@
   (export "foo" (func $foo))
   )
 
-;; CHECK: (func $foo
-;; NEXT:    (local i32 i32)
-;; NEXT:    local.get 0
-;; NEXT:    local.set 1)
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func))
+    (func $foo (;0;) (type 0)
+      (local i32 i32)
+      local.get 0
+      local.set 1
+    )
+    (export "foo" (func $foo))
+;)

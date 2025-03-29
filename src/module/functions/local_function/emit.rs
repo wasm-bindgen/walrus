@@ -1,15 +1,15 @@
 use crate::emit::IdsToIndices;
-use crate::encode::Encoder;
-use crate::ir::*;
 use crate::map::IdHashMap;
 use crate::module::functions::LocalFunction;
 use crate::module::memories::MemoryId;
+use crate::{ir::*, RefType};
+use wasm_encoder::Instruction;
 
 pub(crate) fn run(
     func: &LocalFunction,
     indices: &IdsToIndices,
     local_indices: &IdHashMap<Local, u32>,
-    encoder: &mut Encoder,
+    encoder: &mut wasm_encoder::Function,
     map: Option<&mut Vec<(InstrLocId, usize)>>,
 ) {
     let v = &mut Emit {
@@ -26,7 +26,7 @@ pub(crate) fn run(
     debug_assert!(v.block_kinds.is_empty());
 }
 
-struct Emit<'a, 'b> {
+struct Emit<'a> {
     // Needed so we can map locals to their indices.
     indices: &'a IdsToIndices,
     local_indices: &'a IdHashMap<Local, u32>,
@@ -43,29 +43,29 @@ struct Emit<'a, 'b> {
     block_kinds: Vec<BlockKind>,
 
     // The instruction sequence we are building up to emit.
-    encoder: &'a mut Encoder<'b>,
+    encoder: &'a mut wasm_encoder::Function,
 
     // Encoded ExprId -> offset map.
     map: Option<&'a mut Vec<(InstrLocId, usize)>>,
 }
 
-impl<'instr> Visitor<'instr> for Emit<'_, '_> {
+impl<'instr> Visitor<'instr> for Emit<'_> {
     fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
         self.blocks.push(seq.id());
         debug_assert_eq!(self.blocks.len(), self.block_kinds.len());
 
         match self.block_kinds.last().unwrap() {
             BlockKind::Block => {
-                self.encoder.byte(0x02); // block
-                self.block_type(seq.ty);
+                self.encoder
+                    .instruction(&Instruction::Block(self.block_type(seq.ty)));
             }
             BlockKind::Loop => {
-                self.encoder.byte(0x03); // loop
-                self.block_type(seq.ty);
+                self.encoder
+                    .instruction(&Instruction::Loop(self.block_type(seq.ty)));
             }
             BlockKind::If => {
-                self.encoder.byte(0x04); // if
-                self.block_type(seq.ty);
+                self.encoder
+                    .instruction(&Instruction::If(self.block_type(seq.ty)));
             }
             // Function entries are implicitly started, and don't need any
             // opcode to start them. `Else` blocks are started when `If` blocks
@@ -84,14 +84,20 @@ impl<'instr> Visitor<'instr> for Emit<'_, '_> {
 
         debug_assert_eq!(self.blocks.len(), self.block_kinds.len());
 
+        if let Some(map) = self.map.as_mut() {
+            let pos = self.encoder.byte_len();
+            // Save the encoded_at position for the specified ExprId.
+            map.push((seq.end, pos));
+        }
+
         if let BlockKind::If = popped_kind.unwrap() {
             // We're about to visit the `else` block, so push its kind.
             //
             // TODO: don't emit `else` for empty else blocks
             self.block_kinds.push(BlockKind::Else);
-            self.encoder.byte(0x05); // else
+            self.encoder.instruction(&Instruction::Else);
         } else {
-            self.encoder.byte(0x0b); // end
+            self.encoder.instruction(&Instruction::End);
         }
     }
 
@@ -99,320 +105,352 @@ impl<'instr> Visitor<'instr> for Emit<'_, '_> {
         use self::Instr::*;
 
         if let Some(map) = self.map.as_mut() {
-            let pos = self.encoder.pos();
+            let pos = self.encoder.byte_len();
             // Save the encoded_at position for the specified ExprId.
-            map.push((instr_loc.clone(), pos));
+            map.push((*instr_loc, pos));
         }
 
-        match instr {
-            Block(_) => self.block_kinds.push(BlockKind::Block),
-            Loop(_) => self.block_kinds.push(BlockKind::Loop),
+        let is_block = match instr {
+            Block(_) => {
+                self.block_kinds.push(BlockKind::Block);
+                true
+            }
+            Loop(_) => {
+                self.block_kinds.push(BlockKind::Loop);
+                true
+            }
 
             // Push the `if` block kind, and then when we finish encoding the
             // `if` block, we'll pop the `if` kind and push the `else`
             // kind. This allows us to maintain the `self.blocks.len() ==
             // self.block_kinds.len()` invariant.
-            IfElse(_) => self.block_kinds.push(BlockKind::If),
+            IfElse(_) => {
+                self.block_kinds.push(BlockKind::If);
+                true
+            }
+            _ => false,
+        };
+
+        if is_block {
+            return;
+        }
+
+        self.encoder.instruction(&match instr {
+            Block(_) | Loop(_) | IfElse(_) => unreachable!(),
 
             BrTable(e) => {
-                self.encoder.byte(0x0e); // br_table
-                self.encoder.usize(e.blocks.len());
-                for b in e.blocks.iter() {
-                    let target = self.branch_target(*b);
-                    self.encoder.u32(target);
-                }
                 let default = self.branch_target(e.default);
-                self.encoder.u32(default);
+                let targets: Vec<u32> = e.blocks.iter().map(|b| self.branch_target(*b)).collect();
+                Instruction::BrTable(targets.into(), default)
             }
 
-            Const(e) => e.value.emit(self.encoder),
-            Drop(_) => self.encoder.byte(0x1a),   // drop
-            Return(_) => self.encoder.byte(0x0f), // return
+            Const(c) => match &c.value {
+                Value::I32(v) => Instruction::I32Const(*v),
+                Value::I64(v) => Instruction::I64Const(*v),
+                Value::F32(v) => Instruction::F32Const(*v),
+                Value::F64(v) => Instruction::F64Const(*v),
+                Value::V128(v) => Instruction::V128Const(*v as i128),
+            },
+
+            Drop(_) => Instruction::Drop,
+            Return(_) => Instruction::Return,
 
             MemorySize(e) => {
                 let idx = self.indices.get_memory_index(e.memory);
-                self.encoder.byte(0x3f); // memory.size
-                self.encoder.u32(idx);
+                Instruction::MemorySize(idx)
             }
 
             MemoryGrow(e) => {
                 let idx = self.indices.get_memory_index(e.memory);
-                self.encoder.byte(0x40); // memory.grow
-                self.encoder.u32(idx);
+                Instruction::MemoryGrow(idx)
             }
 
             MemoryInit(e) => {
-                self.encoder.raw(&[0xfc, 0x08]); // memory.init
-                let idx = self.indices.get_data_index(e.data);
-                self.encoder.u32(idx);
-                let idx = self.indices.get_memory_index(e.memory);
-                assert_eq!(idx, 0);
-                self.encoder.u32(idx);
+                let data_index = self.indices.get_data_index(e.data);
+                let mem = self.indices.get_memory_index(e.memory);
+                Instruction::MemoryInit { mem, data_index }
             }
 
             DataDrop(e) => {
-                self.encoder.raw(&[0xfc, 0x09]); // data.drop
                 let idx = self.indices.get_data_index(e.data);
-                self.encoder.u32(idx);
+                Instruction::DataDrop(idx)
             }
 
             MemoryCopy(e) => {
-                self.encoder.raw(&[0xfc, 0x0a]); // memory.copy
-                let idx = self.indices.get_memory_index(e.src);
-                assert_eq!(idx, 0);
-                self.encoder.u32(idx);
-                let idx = self.indices.get_memory_index(e.dst);
-                assert_eq!(idx, 0);
-                self.encoder.u32(idx);
+                let src_mem = self.indices.get_memory_index(e.src);
+                let dst_mem = self.indices.get_memory_index(e.dst);
+                Instruction::MemoryCopy { src_mem, dst_mem }
             }
 
             MemoryFill(e) => {
-                self.encoder.raw(&[0xfc, 0x0b]); // memory.fill
                 let idx = self.indices.get_memory_index(e.memory);
-                assert_eq!(idx, 0);
-                self.encoder.u32(idx);
+                Instruction::MemoryFill(idx)
+            }
+
+            TernOp(e) => {
+                use crate::ir::TernaryOp::*;
+
+                match e.op {
+                    F32x4RelaxedMadd => Instruction::F32x4RelaxedMadd,
+                    F32x4RelaxedNmadd => Instruction::F32x4RelaxedNmadd,
+                    F64x2RelaxedMadd => Instruction::F64x2RelaxedMadd,
+                    F64x2RelaxedNmadd => Instruction::F64x2RelaxedNmadd,
+                    I8x16RelaxedLaneselect => Instruction::I8x16RelaxedLaneselect,
+                    I16x8RelaxedLaneselect => Instruction::I16x8RelaxedLaneselect,
+                    I32x4RelaxedLaneselect => Instruction::I32x4RelaxedLaneselect,
+                    I64x2RelaxedLaneselect => Instruction::I64x2RelaxedLaneselect,
+                    I32x4RelaxedDotI8x16I7x16AddS => Instruction::I32x4RelaxedDotI8x16I7x16AddS,
+                }
             }
 
             Binop(e) => {
                 use crate::ir::BinaryOp::*;
 
                 match e.op {
-                    I32Eq => self.encoder.byte(0x46),
-                    I32Ne => self.encoder.byte(0x47),
-                    I32LtS => self.encoder.byte(0x48),
-                    I32LtU => self.encoder.byte(0x49),
-                    I32GtS => self.encoder.byte(0x4a),
-                    I32GtU => self.encoder.byte(0x4b),
-                    I32LeS => self.encoder.byte(0x4c),
-                    I32LeU => self.encoder.byte(0x4d),
-                    I32GeS => self.encoder.byte(0x4e),
-                    I32GeU => self.encoder.byte(0x4f),
+                    I32Eq => Instruction::I32Eq,
+                    I32Ne => Instruction::I32Ne,
+                    I32LtS => Instruction::I32LtS,
+                    I32LtU => Instruction::I32LtU,
+                    I32GtS => Instruction::I32GtS,
+                    I32GtU => Instruction::I32GtU,
+                    I32LeS => Instruction::I32LeS,
+                    I32LeU => Instruction::I32LeU,
+                    I32GeS => Instruction::I32GeS,
+                    I32GeU => Instruction::I32GeU,
 
-                    I64Eq => self.encoder.byte(0x51),
-                    I64Ne => self.encoder.byte(0x52),
-                    I64LtS => self.encoder.byte(0x53),
-                    I64LtU => self.encoder.byte(0x54),
-                    I64GtS => self.encoder.byte(0x55),
-                    I64GtU => self.encoder.byte(0x56),
-                    I64LeS => self.encoder.byte(0x57),
-                    I64LeU => self.encoder.byte(0x58),
-                    I64GeS => self.encoder.byte(0x59),
-                    I64GeU => self.encoder.byte(0x5a),
+                    I64Eq => Instruction::I64Eq,
+                    I64Ne => Instruction::I64Ne,
+                    I64LtS => Instruction::I64LtS,
+                    I64LtU => Instruction::I64LtU,
+                    I64GtS => Instruction::I64GtS,
+                    I64GtU => Instruction::I64GtU,
+                    I64LeS => Instruction::I64LeS,
+                    I64LeU => Instruction::I64LeU,
+                    I64GeS => Instruction::I64GeS,
+                    I64GeU => Instruction::I64GeU,
 
-                    F32Eq => self.encoder.byte(0x5b),
-                    F32Ne => self.encoder.byte(0x5c),
-                    F32Lt => self.encoder.byte(0x5d),
-                    F32Gt => self.encoder.byte(0x5e),
-                    F32Le => self.encoder.byte(0x5f),
-                    F32Ge => self.encoder.byte(0x60),
+                    F32Eq => Instruction::F32Eq,
+                    F32Ne => Instruction::F32Ne,
+                    F32Lt => Instruction::F32Lt,
+                    F32Gt => Instruction::F32Gt,
+                    F32Le => Instruction::F32Le,
+                    F32Ge => Instruction::F32Ge,
 
-                    F64Eq => self.encoder.byte(0x61),
-                    F64Ne => self.encoder.byte(0x62),
-                    F64Lt => self.encoder.byte(0x63),
-                    F64Gt => self.encoder.byte(0x64),
-                    F64Le => self.encoder.byte(0x65),
-                    F64Ge => self.encoder.byte(0x66),
+                    F64Eq => Instruction::F64Eq,
+                    F64Ne => Instruction::F64Ne,
+                    F64Lt => Instruction::F64Lt,
+                    F64Gt => Instruction::F64Gt,
+                    F64Le => Instruction::F64Le,
+                    F64Ge => Instruction::F64Ge,
 
-                    I32Add => self.encoder.byte(0x6a),
-                    I32Sub => self.encoder.byte(0x6b),
-                    I32Mul => self.encoder.byte(0x6c),
-                    I32DivS => self.encoder.byte(0x6d),
-                    I32DivU => self.encoder.byte(0x6e),
-                    I32RemS => self.encoder.byte(0x6f),
-                    I32RemU => self.encoder.byte(0x70),
-                    I32And => self.encoder.byte(0x71),
-                    I32Or => self.encoder.byte(0x72),
-                    I32Xor => self.encoder.byte(0x73),
-                    I32Shl => self.encoder.byte(0x74),
-                    I32ShrS => self.encoder.byte(0x75),
-                    I32ShrU => self.encoder.byte(0x76),
-                    I32Rotl => self.encoder.byte(0x77),
-                    I32Rotr => self.encoder.byte(0x78),
+                    I32Add => Instruction::I32Add,
+                    I32Sub => Instruction::I32Sub,
+                    I32Mul => Instruction::I32Mul,
+                    I32DivS => Instruction::I32DivS,
+                    I32DivU => Instruction::I32DivU,
+                    I32RemS => Instruction::I32RemS,
+                    I32RemU => Instruction::I32RemU,
+                    I32And => Instruction::I32And,
+                    I32Or => Instruction::I32Or,
+                    I32Xor => Instruction::I32Xor,
+                    I32Shl => Instruction::I32Shl,
+                    I32ShrS => Instruction::I32ShrS,
+                    I32ShrU => Instruction::I32ShrU,
+                    I32Rotl => Instruction::I32Rotl,
+                    I32Rotr => Instruction::I32Rotr,
 
-                    I64Add => self.encoder.byte(0x7c),
-                    I64Sub => self.encoder.byte(0x7d),
-                    I64Mul => self.encoder.byte(0x7e),
-                    I64DivS => self.encoder.byte(0x7f),
-                    I64DivU => self.encoder.byte(0x80),
-                    I64RemS => self.encoder.byte(0x81),
-                    I64RemU => self.encoder.byte(0x82),
-                    I64And => self.encoder.byte(0x83),
-                    I64Or => self.encoder.byte(0x84),
-                    I64Xor => self.encoder.byte(0x85),
-                    I64Shl => self.encoder.byte(0x86),
-                    I64ShrS => self.encoder.byte(0x87),
-                    I64ShrU => self.encoder.byte(0x88),
-                    I64Rotl => self.encoder.byte(0x89),
-                    I64Rotr => self.encoder.byte(0x8a),
+                    I64Add => Instruction::I64Add,
+                    I64Sub => Instruction::I64Sub,
+                    I64Mul => Instruction::I64Mul,
+                    I64DivS => Instruction::I64DivS,
+                    I64DivU => Instruction::I64DivU,
+                    I64RemS => Instruction::I64RemS,
+                    I64RemU => Instruction::I64RemU,
+                    I64And => Instruction::I64And,
+                    I64Or => Instruction::I64Or,
+                    I64Xor => Instruction::I64Xor,
+                    I64Shl => Instruction::I64Shl,
+                    I64ShrS => Instruction::I64ShrS,
+                    I64ShrU => Instruction::I64ShrU,
+                    I64Rotl => Instruction::I64Rotl,
+                    I64Rotr => Instruction::I64Rotr,
 
-                    F32Add => self.encoder.byte(0x92),
-                    F32Sub => self.encoder.byte(0x93),
-                    F32Mul => self.encoder.byte(0x94),
-                    F32Div => self.encoder.byte(0x95),
-                    F32Min => self.encoder.byte(0x96),
-                    F32Max => self.encoder.byte(0x97),
-                    F32Copysign => self.encoder.byte(0x98),
+                    F32Add => Instruction::F32Add,
+                    F32Sub => Instruction::F32Sub,
+                    F32Mul => Instruction::F32Mul,
+                    F32Div => Instruction::F32Div,
+                    F32Min => Instruction::F32Min,
+                    F32Max => Instruction::F32Max,
+                    F32Copysign => Instruction::F32Copysign,
 
-                    F64Add => self.encoder.byte(0xa0),
-                    F64Sub => self.encoder.byte(0xa1),
-                    F64Mul => self.encoder.byte(0xa2),
-                    F64Div => self.encoder.byte(0xa3),
-                    F64Min => self.encoder.byte(0xa4),
-                    F64Max => self.encoder.byte(0xa5),
-                    F64Copysign => self.encoder.byte(0xa6),
+                    F64Add => Instruction::F64Add,
+                    F64Sub => Instruction::F64Sub,
+                    F64Mul => Instruction::F64Mul,
+                    F64Div => Instruction::F64Div,
+                    F64Min => Instruction::F64Min,
+                    F64Max => Instruction::F64Max,
+                    F64Copysign => Instruction::F64Copysign,
 
-                    I8x16ReplaceLane { idx } => self.encoder.raw(&[0xfd, 23, idx]),
-                    I16x8ReplaceLane { idx } => self.encoder.raw(&[0xfd, 26, idx]),
-                    I32x4ReplaceLane { idx } => self.encoder.raw(&[0xfd, 28, idx]),
-                    I64x2ReplaceLane { idx } => self.encoder.raw(&[0xfd, 30, idx]),
-                    F32x4ReplaceLane { idx } => self.encoder.raw(&[0xfd, 32, idx]),
-                    F64x2ReplaceLane { idx } => self.encoder.raw(&[0xfd, 34, idx]),
+                    I8x16ReplaceLane { idx } => Instruction::I8x16ReplaceLane(idx),
+                    I16x8ReplaceLane { idx } => Instruction::I16x8ReplaceLane(idx),
+                    I32x4ReplaceLane { idx } => Instruction::I32x4ReplaceLane(idx),
+                    I64x2ReplaceLane { idx } => Instruction::I64x2ReplaceLane(idx),
+                    F32x4ReplaceLane { idx } => Instruction::F32x4ReplaceLane(idx),
+                    F64x2ReplaceLane { idx } => Instruction::F64x2ReplaceLane(idx),
 
-                    I8x16Eq => self.simd(0x23),
-                    I8x16Ne => self.simd(0x24),
-                    I8x16LtS => self.simd(0x25),
-                    I8x16LtU => self.simd(0x26),
-                    I8x16GtS => self.simd(0x27),
-                    I8x16GtU => self.simd(0x28),
-                    I8x16LeS => self.simd(0x29),
-                    I8x16LeU => self.simd(0x2a),
-                    I8x16GeS => self.simd(0x2b),
-                    I8x16GeU => self.simd(0x2c),
+                    I8x16Eq => Instruction::I8x16Eq,
+                    I8x16Ne => Instruction::I8x16Ne,
+                    I8x16LtS => Instruction::I8x16LtS,
+                    I8x16LtU => Instruction::I8x16LtU,
+                    I8x16GtS => Instruction::I8x16GtS,
+                    I8x16GtU => Instruction::I8x16GtU,
+                    I8x16LeS => Instruction::I8x16LeS,
+                    I8x16LeU => Instruction::I8x16LeU,
+                    I8x16GeS => Instruction::I8x16GeS,
+                    I8x16GeU => Instruction::I8x16GeU,
 
-                    I16x8Eq => self.simd(0x2d),
-                    I16x8Ne => self.simd(0x2e),
-                    I16x8LtS => self.simd(0x2f),
-                    I16x8LtU => self.simd(0x30),
-                    I16x8GtS => self.simd(0x31),
-                    I16x8GtU => self.simd(0x32),
-                    I16x8LeS => self.simd(0x33),
-                    I16x8LeU => self.simd(0x34),
-                    I16x8GeS => self.simd(0x35),
-                    I16x8GeU => self.simd(0x36),
+                    I16x8Eq => Instruction::I16x8Eq,
+                    I16x8Ne => Instruction::I16x8Ne,
+                    I16x8LtS => Instruction::I16x8LtS,
+                    I16x8LtU => Instruction::I16x8LtU,
+                    I16x8GtS => Instruction::I16x8GtS,
+                    I16x8GtU => Instruction::I16x8GtU,
+                    I16x8LeS => Instruction::I16x8LeS,
+                    I16x8LeU => Instruction::I16x8LeU,
+                    I16x8GeS => Instruction::I16x8GeS,
+                    I16x8GeU => Instruction::I16x8GeU,
 
-                    I32x4Eq => self.simd(0x37),
-                    I32x4Ne => self.simd(0x38),
-                    I32x4LtS => self.simd(0x39),
-                    I32x4LtU => self.simd(0x3a),
-                    I32x4GtS => self.simd(0x3b),
-                    I32x4GtU => self.simd(0x3c),
-                    I32x4LeS => self.simd(0x3d),
-                    I32x4LeU => self.simd(0x3e),
-                    I32x4GeS => self.simd(0x3f),
-                    I32x4GeU => self.simd(0x40),
+                    I32x4Eq => Instruction::I32x4Eq,
+                    I32x4Ne => Instruction::I32x4Ne,
+                    I32x4LtS => Instruction::I32x4LtS,
+                    I32x4LtU => Instruction::I32x4LtU,
+                    I32x4GtS => Instruction::I32x4GtS,
+                    I32x4GtU => Instruction::I32x4GtU,
+                    I32x4LeS => Instruction::I32x4LeS,
+                    I32x4LeU => Instruction::I32x4LeU,
+                    I32x4GeS => Instruction::I32x4GeS,
+                    I32x4GeU => Instruction::I32x4GeU,
 
-                    I64x2Eq => self.simd(214),
-                    I64x2Ne => self.simd(215),
-                    I64x2LtS => self.simd(216),
-                    I64x2GtS => self.simd(217),
-                    I64x2LeS => self.simd(218),
-                    I64x2GeS => self.simd(219),
+                    I64x2Eq => Instruction::I64x2Eq,
+                    I64x2Ne => Instruction::I64x2Ne,
+                    I64x2LtS => Instruction::I64x2LtS,
+                    I64x2GtS => Instruction::I64x2GtS,
+                    I64x2LeS => Instruction::I64x2LeS,
+                    I64x2GeS => Instruction::I64x2GeS,
 
-                    F32x4Eq => self.simd(0x41),
-                    F32x4Ne => self.simd(0x42),
-                    F32x4Lt => self.simd(0x43),
-                    F32x4Gt => self.simd(0x44),
-                    F32x4Le => self.simd(0x45),
-                    F32x4Ge => self.simd(0x46),
+                    F32x4Eq => Instruction::F32x4Eq,
+                    F32x4Ne => Instruction::F32x4Ne,
+                    F32x4Lt => Instruction::F32x4Lt,
+                    F32x4Gt => Instruction::F32x4Gt,
+                    F32x4Le => Instruction::F32x4Le,
+                    F32x4Ge => Instruction::F32x4Ge,
 
-                    F64x2Eq => self.simd(0x47),
-                    F64x2Ne => self.simd(0x48),
-                    F64x2Lt => self.simd(0x49),
-                    F64x2Gt => self.simd(0x4a),
-                    F64x2Le => self.simd(0x4b),
-                    F64x2Ge => self.simd(0x4c),
+                    F64x2Eq => Instruction::F64x2Eq,
+                    F64x2Ne => Instruction::F64x2Ne,
+                    F64x2Lt => Instruction::F64x2Lt,
+                    F64x2Gt => Instruction::F64x2Gt,
+                    F64x2Le => Instruction::F64x2Le,
+                    F64x2Ge => Instruction::F64x2Ge,
 
-                    V128And => self.simd(0x4e),
-                    V128AndNot => self.simd(0x4f),
-                    V128Or => self.simd(0x50),
-                    V128Xor => self.simd(0x51),
+                    V128And => Instruction::V128And,
+                    V128AndNot => Instruction::V128AndNot,
+                    V128Or => Instruction::V128Or,
+                    V128Xor => Instruction::V128Xor,
 
-                    I8x16NarrowI16x8S => self.simd(0x65),
-                    I8x16NarrowI16x8U => self.simd(0x66),
-                    I8x16Shl => self.simd(0x6b),
-                    I8x16ShrS => self.simd(0x6c),
-                    I8x16ShrU => self.simd(0x6d),
-                    I8x16Add => self.simd(0x6e),
-                    I8x16AddSatS => self.simd(0x6f),
-                    I8x16AddSatU => self.simd(0x70),
-                    I8x16Sub => self.simd(0x71),
-                    I8x16SubSatS => self.simd(0x72),
-                    I8x16SubSatU => self.simd(0x73),
-                    I8x16MinS => self.simd(0x76),
-                    I8x16MinU => self.simd(0x77),
-                    I8x16MaxS => self.simd(0x78),
-                    I8x16MaxU => self.simd(0x79),
-                    I8x16RoundingAverageU => self.simd(0x7b),
+                    I8x16NarrowI16x8S => Instruction::I8x16NarrowI16x8S,
+                    I8x16NarrowI16x8U => Instruction::I8x16NarrowI16x8U,
+                    I8x16Shl => Instruction::I8x16Shl,
+                    I8x16ShrS => Instruction::I8x16ShrS,
+                    I8x16ShrU => Instruction::I8x16ShrU,
+                    I8x16Add => Instruction::I8x16Add,
+                    I8x16AddSatS => Instruction::I8x16AddSatS,
+                    I8x16AddSatU => Instruction::I8x16AddSatU,
+                    I8x16Sub => Instruction::I8x16Sub,
+                    I8x16SubSatS => Instruction::I8x16SubSatS,
+                    I8x16SubSatU => Instruction::I8x16SubSatU,
+                    I8x16MinS => Instruction::I8x16MinS,
+                    I8x16MinU => Instruction::I8x16MinU,
+                    I8x16MaxS => Instruction::I8x16MaxS,
+                    I8x16MaxU => Instruction::I8x16MaxU,
+                    I8x16AvgrU => Instruction::I8x16AvgrU,
 
-                    I16x8NarrowI32x4S => self.simd(0x85),
-                    I16x8NarrowI32x4U => self.simd(0x86),
-                    I16x8Shl => self.simd(0x8b),
-                    I16x8ShrS => self.simd(0x8c),
-                    I16x8ShrU => self.simd(0x8d),
-                    I16x8Add => self.simd(0x8e),
-                    I16x8AddSatS => self.simd(0x8f),
-                    I16x8AddSatU => self.simd(0x90),
-                    I16x8Sub => self.simd(0x91),
-                    I16x8SubSatS => self.simd(0x92),
-                    I16x8SubSatU => self.simd(0x93),
-                    I16x8Mul => self.simd(0x95),
-                    I16x8MinS => self.simd(0x96),
-                    I16x8MinU => self.simd(0x97),
-                    I16x8MaxS => self.simd(0x98),
-                    I16x8MaxU => self.simd(0x99),
-                    I16x8RoundingAverageU => self.simd(0x9b),
+                    I16x8NarrowI32x4S => Instruction::I16x8NarrowI32x4S,
+                    I16x8NarrowI32x4U => Instruction::I16x8NarrowI32x4U,
+                    I16x8Shl => Instruction::I16x8Shl,
+                    I16x8ShrS => Instruction::I16x8ShrS,
+                    I16x8ShrU => Instruction::I16x8ShrU,
+                    I16x8Add => Instruction::I16x8Add,
+                    I16x8AddSatS => Instruction::I16x8AddSatS,
+                    I16x8AddSatU => Instruction::I16x8AddSatU,
+                    I16x8Sub => Instruction::I16x8Sub,
+                    I16x8SubSatS => Instruction::I16x8SubSatS,
+                    I16x8SubSatU => Instruction::I16x8SubSatU,
+                    I16x8Mul => Instruction::I16x8Mul,
+                    I16x8MinS => Instruction::I16x8MinS,
+                    I16x8MinU => Instruction::I16x8MinU,
+                    I16x8MaxS => Instruction::I16x8MaxS,
+                    I16x8MaxU => Instruction::I16x8MaxU,
+                    I16x8AvgrU => Instruction::I16x8AvgrU,
 
-                    I32x4Shl => self.simd(0xab),
-                    I32x4ShrS => self.simd(0xac),
-                    I32x4ShrU => self.simd(0xad),
-                    I32x4Add => self.simd(0xae),
-                    I32x4Sub => self.simd(0xb1),
-                    I32x4Mul => self.simd(0xb5),
-                    I32x4MinS => self.simd(0xb6),
-                    I32x4MinU => self.simd(0xb7),
-                    I32x4MaxS => self.simd(0xb8),
-                    I32x4MaxU => self.simd(0xb9),
+                    I32x4Shl => Instruction::I32x4Shl,
+                    I32x4ShrS => Instruction::I32x4ShrS,
+                    I32x4ShrU => Instruction::I32x4ShrU,
+                    I32x4Add => Instruction::I32x4Add,
+                    I32x4Sub => Instruction::I32x4Sub,
+                    I32x4Mul => Instruction::I32x4Mul,
+                    I32x4MinS => Instruction::I32x4MinS,
+                    I32x4MinU => Instruction::I32x4MinU,
+                    I32x4MaxS => Instruction::I32x4MaxS,
+                    I32x4MaxU => Instruction::I32x4MaxU,
 
-                    I64x2Shl => self.simd(0xcb),
-                    I64x2ShrS => self.simd(0xcc),
-                    I64x2ShrU => self.simd(0xcd),
-                    I64x2Add => self.simd(0xce),
-                    I64x2Sub => self.simd(0xd1),
-                    I64x2Mul => self.simd(0xd5),
+                    I64x2Shl => Instruction::I64x2Shl,
+                    I64x2ShrS => Instruction::I64x2ShrS,
+                    I64x2ShrU => Instruction::I64x2ShrU,
+                    I64x2Add => Instruction::I64x2Add,
+                    I64x2Sub => Instruction::I64x2Sub,
+                    I64x2Mul => Instruction::I64x2Mul,
 
-                    F32x4Add => self.simd(0xe4),
-                    F32x4Sub => self.simd(0xe5),
-                    F32x4Mul => self.simd(0xe6),
-                    F32x4Div => self.simd(0xe7),
-                    F32x4Min => self.simd(0xe8),
-                    F32x4Max => self.simd(0xe9),
-                    F32x4PMin => self.simd(0xea),
-                    F32x4PMax => self.simd(0xeb),
+                    F32x4Add => Instruction::F32x4Add,
+                    F32x4Sub => Instruction::F32x4Sub,
+                    F32x4Mul => Instruction::F32x4Mul,
+                    F32x4Div => Instruction::F32x4Div,
+                    F32x4Min => Instruction::F32x4Min,
+                    F32x4Max => Instruction::F32x4Max,
+                    F32x4PMin => Instruction::F32x4PMin,
+                    F32x4PMax => Instruction::F32x4PMax,
 
-                    F64x2Add => self.simd(0xf0),
-                    F64x2Sub => self.simd(0xf1),
-                    F64x2Mul => self.simd(0xf2),
-                    F64x2Div => self.simd(0xf3),
-                    F64x2Min => self.simd(0xf4),
-                    F64x2Max => self.simd(0xf5),
-                    F64x2PMin => self.simd(0xf6),
-                    F64x2PMax => self.simd(0xf7),
+                    F64x2Add => Instruction::F64x2Add,
+                    F64x2Sub => Instruction::F64x2Sub,
+                    F64x2Mul => Instruction::F64x2Mul,
+                    F64x2Div => Instruction::F64x2Div,
+                    F64x2Min => Instruction::F64x2Min,
+                    F64x2Max => Instruction::F64x2Max,
+                    F64x2PMin => Instruction::F64x2PMin,
+                    F64x2PMax => Instruction::F64x2PMax,
 
-                    I32x4DotI16x8S => self.simd(0xba),
+                    I32x4DotI16x8S => Instruction::I32x4DotI16x8S,
 
-                    I16x8Q15MulrSatS => self.simd(130),
-                    I16x8ExtMulLowI8x16S => self.simd(156),
-                    I16x8ExtMulHighI8x16S => self.simd(157),
-                    I16x8ExtMulLowI8x16U => self.simd(158),
-                    I16x8ExtMulHighI8x16U => self.simd(159),
-                    I32x4ExtMulLowI16x8S => self.simd(188),
-                    I32x4ExtMulHighI16x8S => self.simd(189),
-                    I32x4ExtMulLowI16x8U => self.simd(190),
-                    I32x4ExtMulHighI16x8U => self.simd(191),
-                    I64x2ExtMulLowI32x4S => self.simd(220),
-                    I64x2ExtMulHighI32x4S => self.simd(221),
-                    I64x2ExtMulLowI32x4U => self.simd(222),
-                    I64x2ExtMulHighI32x4U => self.simd(223),
+                    I16x8Q15MulrSatS => Instruction::I16x8Q15MulrSatS,
+                    I16x8ExtMulLowI8x16S => Instruction::I16x8ExtMulLowI8x16S,
+                    I16x8ExtMulHighI8x16S => Instruction::I16x8ExtMulHighI8x16S,
+                    I16x8ExtMulLowI8x16U => Instruction::I16x8ExtMulLowI8x16U,
+                    I16x8ExtMulHighI8x16U => Instruction::I16x8ExtMulHighI8x16U,
+                    I32x4ExtMulLowI16x8S => Instruction::I32x4ExtMulLowI16x8S,
+                    I32x4ExtMulHighI16x8S => Instruction::I32x4ExtMulHighI16x8S,
+                    I32x4ExtMulLowI16x8U => Instruction::I32x4ExtMulLowI16x8U,
+                    I32x4ExtMulHighI16x8U => Instruction::I32x4ExtMulHighI16x8U,
+                    I64x2ExtMulLowI32x4S => Instruction::I64x2ExtMulLowI32x4S,
+                    I64x2ExtMulHighI32x4S => Instruction::I64x2ExtMulHighI32x4S,
+                    I64x2ExtMulLowI32x4U => Instruction::I64x2ExtMulLowI32x4U,
+                    I64x2ExtMulHighI32x4U => Instruction::I64x2ExtMulHighI32x4U,
+
+                    I8x16RelaxedSwizzle => Instruction::I8x16RelaxedSwizzle,
+                    F32x4RelaxedMin => Instruction::F32x4RelaxedMin,
+                    F32x4RelaxedMax => Instruction::F32x4RelaxedMax,
+                    F64x2RelaxedMin => Instruction::F64x2RelaxedMin,
+                    F64x2RelaxedMax => Instruction::F64x2RelaxedMax,
+                    I16x8RelaxedQ15mulrS => Instruction::I16x8RelaxedQ15mulrS,
+                    I16x8RelaxedDotI8x16I7x16S => Instruction::I16x8RelaxedDotI8x16I7x16S,
                 }
             }
 
@@ -420,553 +458,466 @@ impl<'instr> Visitor<'instr> for Emit<'_, '_> {
                 use crate::ir::UnaryOp::*;
 
                 match e.op {
-                    I32Eqz => self.encoder.byte(0x45),
-                    I32Clz => self.encoder.byte(0x67),
-                    I32Ctz => self.encoder.byte(0x68),
-                    I32Popcnt => self.encoder.byte(0x69),
+                    I32Eqz => Instruction::I32Eqz,
+                    I32Clz => Instruction::I32Clz,
+                    I32Ctz => Instruction::I32Ctz,
+                    I32Popcnt => Instruction::I32Popcnt,
 
-                    I64Eqz => self.encoder.byte(0x50),
-                    I64Clz => self.encoder.byte(0x79),
-                    I64Ctz => self.encoder.byte(0x7a),
-                    I64Popcnt => self.encoder.byte(0x7b),
+                    I64Eqz => Instruction::I64Eqz,
+                    I64Clz => Instruction::I64Clz,
+                    I64Ctz => Instruction::I64Ctz,
+                    I64Popcnt => Instruction::I64Popcnt,
 
-                    F32Abs => self.encoder.byte(0x8b),
-                    F32Neg => self.encoder.byte(0x8c),
-                    F32Ceil => self.encoder.byte(0x8d),
-                    F32Floor => self.encoder.byte(0x8e),
-                    F32Trunc => self.encoder.byte(0x8f),
-                    F32Nearest => self.encoder.byte(0x90),
-                    F32Sqrt => self.encoder.byte(0x91),
+                    F32Abs => Instruction::F32Abs,
+                    F32Neg => Instruction::F32Neg,
+                    F32Ceil => Instruction::F32Ceil,
+                    F32Floor => Instruction::F32Floor,
+                    F32Trunc => Instruction::F32Trunc,
+                    F32Nearest => Instruction::F32Nearest,
+                    F32Sqrt => Instruction::F32Sqrt,
 
-                    F64Abs => self.encoder.byte(0x99),
-                    F64Neg => self.encoder.byte(0x9a),
-                    F64Ceil => self.encoder.byte(0x9b),
-                    F64Floor => self.encoder.byte(0x9c),
-                    F64Trunc => self.encoder.byte(0x9d),
-                    F64Nearest => self.encoder.byte(0x9e),
-                    F64Sqrt => self.encoder.byte(0x9f),
+                    F64Abs => Instruction::F64Abs,
+                    F64Neg => Instruction::F64Neg,
+                    F64Ceil => Instruction::F64Ceil,
+                    F64Floor => Instruction::F64Floor,
+                    F64Trunc => Instruction::F64Trunc,
+                    F64Nearest => Instruction::F64Nearest,
+                    F64Sqrt => Instruction::F64Sqrt,
 
-                    I32WrapI64 => self.encoder.byte(0xa7),
-                    I32TruncSF32 => self.encoder.byte(0xa8),
-                    I32TruncUF32 => self.encoder.byte(0xa9),
-                    I32TruncSF64 => self.encoder.byte(0xaa),
-                    I32TruncUF64 => self.encoder.byte(0xab),
-                    I64ExtendSI32 => self.encoder.byte(0xac),
-                    I64ExtendUI32 => self.encoder.byte(0xad),
-                    I64TruncSF32 => self.encoder.byte(0xae),
-                    I64TruncUF32 => self.encoder.byte(0xaf),
-                    I64TruncSF64 => self.encoder.byte(0xb0),
-                    I64TruncUF64 => self.encoder.byte(0xb1),
+                    I32WrapI64 => Instruction::I32WrapI64,
+                    I32TruncSF32 => Instruction::I32TruncF32S,
+                    I32TruncUF32 => Instruction::I32TruncF32U,
+                    I32TruncSF64 => Instruction::I32TruncF64S,
+                    I32TruncUF64 => Instruction::I32TruncF64U,
+                    I64ExtendSI32 => Instruction::I64ExtendI32S,
+                    I64ExtendUI32 => Instruction::I64ExtendI32U,
+                    I64TruncSF32 => Instruction::I64TruncF32S,
+                    I64TruncUF32 => Instruction::I64TruncF32U,
+                    I64TruncSF64 => Instruction::I64TruncF64S,
+                    I64TruncUF64 => Instruction::I64TruncF64U,
 
-                    F32ConvertSI32 => self.encoder.byte(0xb2),
-                    F32ConvertUI32 => self.encoder.byte(0xb3),
-                    F32ConvertSI64 => self.encoder.byte(0xb4),
-                    F32ConvertUI64 => self.encoder.byte(0xb5),
-                    F32DemoteF64 => self.encoder.byte(0xb6),
-                    F64ConvertSI32 => self.encoder.byte(0xb7),
-                    F64ConvertUI32 => self.encoder.byte(0xb8),
-                    F64ConvertSI64 => self.encoder.byte(0xb9),
-                    F64ConvertUI64 => self.encoder.byte(0xba),
-                    F64PromoteF32 => self.encoder.byte(0xbb),
+                    F32ConvertSI32 => Instruction::F32ConvertI32S,
+                    F32ConvertUI32 => Instruction::F32ConvertI32U,
+                    F32ConvertSI64 => Instruction::F32ConvertI64S,
+                    F32ConvertUI64 => Instruction::F32ConvertI64U,
+                    F32DemoteF64 => Instruction::F32DemoteF64,
+                    F64ConvertSI32 => Instruction::F64ConvertI32S,
+                    F64ConvertUI32 => Instruction::F64ConvertI32U,
+                    F64ConvertSI64 => Instruction::F64ConvertI64S,
+                    F64ConvertUI64 => Instruction::F64ConvertI64U,
+                    F64PromoteF32 => Instruction::F64PromoteF32,
 
-                    I32ReinterpretF32 => self.encoder.byte(0xbc),
-                    I64ReinterpretF64 => self.encoder.byte(0xbd),
-                    F32ReinterpretI32 => self.encoder.byte(0xbe),
-                    F64ReinterpretI64 => self.encoder.byte(0xbf),
+                    I32ReinterpretF32 => Instruction::I32ReinterpretF32,
+                    I64ReinterpretF64 => Instruction::I64ReinterpretF64,
+                    F32ReinterpretI32 => Instruction::F32ReinterpretI32,
+                    F64ReinterpretI64 => Instruction::F64ReinterpretI64,
 
-                    I32Extend8S => self.encoder.byte(0xc0),
-                    I32Extend16S => self.encoder.byte(0xc1),
-                    I64Extend8S => self.encoder.byte(0xc2),
-                    I64Extend16S => self.encoder.byte(0xc3),
-                    I64Extend32S => self.encoder.byte(0xc4),
+                    I32Extend8S => Instruction::I32Extend8S,
+                    I32Extend16S => Instruction::I32Extend16S,
+                    I64Extend8S => Instruction::I64Extend8S,
+                    I64Extend16S => Instruction::I64Extend16S,
+                    I64Extend32S => Instruction::I64Extend32S,
 
-                    I8x16Splat => self.simd(15),
-                    I16x8Splat => self.simd(16),
-                    I32x4Splat => self.simd(17),
-                    I64x2Splat => self.simd(18),
-                    F32x4Splat => self.simd(19),
-                    F64x2Splat => self.simd(20),
-                    I8x16ExtractLaneS { idx } => {
-                        self.simd(21);
-                        self.encoder.byte(idx);
-                    }
-                    I8x16ExtractLaneU { idx } => {
-                        self.simd(22);
-                        self.encoder.byte(idx);
-                    }
-                    I16x8ExtractLaneS { idx } => {
-                        self.simd(24);
-                        self.encoder.byte(idx);
-                    }
-                    I16x8ExtractLaneU { idx } => {
-                        self.simd(25);
-                        self.encoder.byte(idx);
-                    }
-                    I32x4ExtractLane { idx } => {
-                        self.simd(27);
-                        self.encoder.byte(idx);
-                    }
-                    I64x2ExtractLane { idx } => {
-                        self.simd(29);
-                        self.encoder.byte(idx);
-                    }
-                    F32x4ExtractLane { idx } => {
-                        self.simd(31);
-                        self.encoder.byte(idx);
-                    }
-                    F64x2ExtractLane { idx } => {
-                        self.simd(33);
-                        self.encoder.byte(idx);
-                    }
+                    I8x16Splat => Instruction::I8x16Splat,
+                    I16x8Splat => Instruction::I16x8Splat,
+                    I32x4Splat => Instruction::I32x4Splat,
+                    I64x2Splat => Instruction::I64x2Splat,
+                    F32x4Splat => Instruction::F32x4Splat,
+                    F64x2Splat => Instruction::F64x2Splat,
+                    I8x16ExtractLaneS { idx } => Instruction::I8x16ExtractLaneS(idx),
+                    I8x16ExtractLaneU { idx } => Instruction::I8x16ExtractLaneU(idx),
+                    I16x8ExtractLaneS { idx } => Instruction::I16x8ExtractLaneS(idx),
+                    I16x8ExtractLaneU { idx } => Instruction::I16x8ExtractLaneU(idx),
+                    I32x4ExtractLane { idx } => Instruction::I32x4ExtractLane(idx),
+                    I64x2ExtractLane { idx } => Instruction::I64x2ExtractLane(idx),
+                    F32x4ExtractLane { idx } => Instruction::F32x4ExtractLane(idx),
+                    F64x2ExtractLane { idx } => Instruction::F64x2ExtractLane(idx),
 
-                    V128Not => self.simd(0x4d),
+                    V128Not => Instruction::V128Not,
 
-                    V128AnyTrue => self.simd(0x53),
+                    V128AnyTrue => Instruction::V128AnyTrue,
 
-                    I8x16Abs => self.simd(0x60),
-                    I8x16Popcnt => self.simd(98),
-                    I8x16Neg => self.simd(0x61),
-                    I8x16AllTrue => self.simd(99),
-                    I8x16Bitmask => self.simd(0x64),
+                    I8x16Abs => Instruction::I8x16Abs,
+                    I8x16Popcnt => Instruction::I8x16Popcnt,
+                    I8x16Neg => Instruction::I8x16Neg,
+                    I8x16AllTrue => Instruction::I8x16AllTrue,
+                    I8x16Bitmask => Instruction::I8x16Bitmask,
 
-                    I16x8Abs => self.simd(0x80),
-                    I16x8Neg => self.simd(0x81),
-                    I16x8AllTrue => self.simd(131),
-                    I16x8Bitmask => self.simd(0x84),
-                    I16x8WidenLowI8x16S => self.simd(0x87),
-                    I16x8WidenHighI8x16S => self.simd(0x88),
-                    I16x8WidenLowI8x16U => self.simd(0x89),
-                    I16x8WidenHighI8x16U => self.simd(0x8a),
+                    I16x8Abs => Instruction::I16x8Abs,
+                    I16x8Neg => Instruction::I16x8Neg,
+                    I16x8AllTrue => Instruction::I16x8AllTrue,
+                    I16x8Bitmask => Instruction::I16x8Bitmask,
+                    I16x8WidenLowI8x16S => Instruction::I16x8ExtendLowI8x16S,
+                    I16x8WidenHighI8x16S => Instruction::I16x8ExtendHighI8x16S,
+                    I16x8WidenLowI8x16U => Instruction::I16x8ExtendLowI8x16U,
+                    I16x8WidenHighI8x16U => Instruction::I16x8ExtendHighI8x16U,
 
-                    I32x4Abs => self.simd(0xa0),
-                    I32x4Neg => self.simd(0xa1),
-                    I32x4AllTrue => self.simd(163),
-                    I32x4Bitmask => self.simd(0xa4),
-                    I32x4WidenLowI16x8S => self.simd(0xa7),
-                    I32x4WidenHighI16x8S => self.simd(0xa8),
-                    I32x4WidenLowI16x8U => self.simd(0xa9),
-                    I32x4WidenHighI16x8U => self.simd(0xaa),
+                    I32x4Abs => Instruction::I32x4Abs,
+                    I32x4Neg => Instruction::I32x4Neg,
+                    I32x4AllTrue => Instruction::I32x4AllTrue,
+                    I32x4Bitmask => Instruction::I32x4Bitmask,
+                    I32x4WidenLowI16x8S => Instruction::I32x4ExtendLowI16x8S,
+                    I32x4WidenHighI16x8S => Instruction::I32x4ExtendHighI16x8S,
+                    I32x4WidenLowI16x8U => Instruction::I32x4ExtendLowI16x8U,
+                    I32x4WidenHighI16x8U => Instruction::I32x4ExtendHighI16x8U,
 
-                    I64x2Abs => self.simd(192),
-                    I64x2Neg => self.simd(193),
-                    I64x2AllTrue => self.simd(195),
-                    I64x2Bitmask => self.simd(196),
+                    I64x2Abs => Instruction::I64x2Abs,
+                    I64x2Neg => Instruction::I64x2Neg,
+                    I64x2AllTrue => Instruction::I64x2AllTrue,
+                    I64x2Bitmask => Instruction::I64x2Bitmask,
 
-                    F32x4Abs => self.simd(224),
-                    F32x4Neg => self.simd(225),
-                    F32x4Sqrt => self.simd(227),
-                    F32x4Ceil => self.simd(103),
-                    F32x4Floor => self.simd(104),
-                    F32x4Trunc => self.simd(105),
-                    F32x4Nearest => self.simd(106),
+                    F32x4Abs => Instruction::F32x4Abs,
+                    F32x4Neg => Instruction::F32x4Neg,
+                    F32x4Sqrt => Instruction::F32x4Sqrt,
+                    F32x4Ceil => Instruction::F32x4Ceil,
+                    F32x4Floor => Instruction::F32x4Floor,
+                    F32x4Trunc => Instruction::F32x4Trunc,
+                    F32x4Nearest => Instruction::F32x4Nearest,
 
-                    F64x2Abs => self.simd(236),
-                    F64x2Neg => self.simd(237),
-                    F64x2Sqrt => self.simd(239),
-                    F64x2Ceil => self.simd(116),
-                    F64x2Floor => self.simd(117),
-                    F64x2Trunc => self.simd(122),
-                    F64x2Nearest => self.simd(148),
+                    F64x2Abs => Instruction::F64x2Abs,
+                    F64x2Neg => Instruction::F64x2Neg,
+                    F64x2Sqrt => Instruction::F64x2Sqrt,
+                    F64x2Ceil => Instruction::F64x2Ceil,
+                    F64x2Floor => Instruction::F64x2Floor,
+                    F64x2Trunc => Instruction::F64x2Trunc,
+                    F64x2Nearest => Instruction::F64x2Nearest,
 
-                    I32x4TruncSatF32x4S => self.simd(248),
-                    I32x4TruncSatF32x4U => self.simd(249),
-                    F32x4ConvertI32x4S => self.simd(250),
-                    F32x4ConvertI32x4U => self.simd(251),
+                    I32x4TruncSatF32x4S => Instruction::I32x4TruncSatF32x4S,
+                    I32x4TruncSatF32x4U => Instruction::I32x4TruncSatF32x4U,
+                    F32x4ConvertI32x4S => Instruction::F32x4ConvertI32x4S,
+                    F32x4ConvertI32x4U => Instruction::F32x4ConvertI32x4U,
 
-                    I32TruncSSatF32 => self.encoder.raw(&[0xfc, 0x00]),
-                    I32TruncUSatF32 => self.encoder.raw(&[0xfc, 0x01]),
-                    I32TruncSSatF64 => self.encoder.raw(&[0xfc, 0x02]),
-                    I32TruncUSatF64 => self.encoder.raw(&[0xfc, 0x03]),
-                    I64TruncSSatF32 => self.encoder.raw(&[0xfc, 0x04]),
-                    I64TruncUSatF32 => self.encoder.raw(&[0xfc, 0x05]),
-                    I64TruncSSatF64 => self.encoder.raw(&[0xfc, 0x06]),
-                    I64TruncUSatF64 => self.encoder.raw(&[0xfc, 0x07]),
+                    I32TruncSSatF32 => Instruction::I32TruncSatF32S,
+                    I32TruncUSatF32 => Instruction::I32TruncSatF32U,
+                    I32TruncSSatF64 => Instruction::I32TruncSatF64S,
+                    I32TruncUSatF64 => Instruction::I32TruncSatF64U,
+                    I64TruncSSatF32 => Instruction::I64TruncSatF32S,
+                    I64TruncUSatF32 => Instruction::I64TruncSatF32U,
+                    I64TruncSSatF64 => Instruction::I64TruncSatF64S,
+                    I64TruncUSatF64 => Instruction::I64TruncSatF64U,
 
-                    I16x8ExtAddPairwiseI8x16S => self.simd(124),
-                    I16x8ExtAddPairwiseI8x16U => self.simd(125),
-                    I32x4ExtAddPairwiseI16x8S => self.simd(126),
-                    I32x4ExtAddPairwiseI16x8U => self.simd(127),
-                    I64x2ExtendLowI32x4S => self.simd(199),
-                    I64x2ExtendHighI32x4S => self.simd(200),
-                    I64x2ExtendLowI32x4U => self.simd(201),
-                    I64x2ExtendHighI32x4U => self.simd(202),
-                    I32x4TruncSatF64x2SZero => self.simd(252),
-                    I32x4TruncSatF64x2UZero => self.simd(253),
-                    F64x2ConvertLowI32x4S => self.simd(254),
-                    F64x2ConvertLowI32x4U => self.simd(255),
-                    F32x4DemoteF64x2Zero => self.simd(94),
-                    F64x2PromoteLowF32x4 => self.simd(95),
+                    I16x8ExtAddPairwiseI8x16S => Instruction::I16x8ExtAddPairwiseI8x16S,
+                    I16x8ExtAddPairwiseI8x16U => Instruction::I16x8ExtAddPairwiseI8x16U,
+                    I32x4ExtAddPairwiseI16x8S => Instruction::I32x4ExtAddPairwiseI16x8S,
+                    I32x4ExtAddPairwiseI16x8U => Instruction::I32x4ExtAddPairwiseI16x8U,
+                    I64x2ExtendLowI32x4S => Instruction::I64x2ExtendLowI32x4S,
+                    I64x2ExtendHighI32x4S => Instruction::I64x2ExtendHighI32x4S,
+                    I64x2ExtendLowI32x4U => Instruction::I64x2ExtendLowI32x4U,
+                    I64x2ExtendHighI32x4U => Instruction::I64x2ExtendHighI32x4U,
+                    I32x4TruncSatF64x2SZero => Instruction::I32x4TruncSatF64x2SZero,
+                    I32x4TruncSatF64x2UZero => Instruction::I32x4TruncSatF64x2UZero,
+                    F64x2ConvertLowI32x4S => Instruction::F64x2ConvertLowI32x4S,
+                    F64x2ConvertLowI32x4U => Instruction::F64x2ConvertLowI32x4U,
+                    F32x4DemoteF64x2Zero => Instruction::F32x4DemoteF64x2Zero,
+                    F64x2PromoteLowF32x4 => Instruction::F64x2PromoteLowF32x4,
+
+                    I32x4RelaxedTruncF32x4S => Instruction::I32x4RelaxedTruncF32x4S,
+                    I32x4RelaxedTruncF32x4U => Instruction::I32x4RelaxedTruncF32x4U,
+                    I32x4RelaxedTruncF64x2SZero => Instruction::I32x4RelaxedTruncF64x2SZero,
+                    I32x4RelaxedTruncF64x2UZero => Instruction::I32x4RelaxedTruncF64x2UZero,
                 }
             }
 
-            Select(e) => {
-                match e.ty {
-                    Some(ty) => {
-                        self.encoder.byte(0x1c);
-                        self.encoder.byte(0x01);
-                        ty.emit(self.encoder);
-                    }
-                    None => {
-                        self.encoder.byte(0x1b); // select
-                    }
-                }
-            }
+            Select(e) => match e.ty {
+                Some(ty) => Instruction::TypedSelect(ty.to_wasmencoder_type()),
+                None => Instruction::Select,
+            },
 
-            Unreachable(_) => {
-                self.encoder.byte(0x00); // unreachable
-            }
+            Unreachable(_) => Instruction::Unreachable,
 
-            Br(e) => {
-                let target = self.branch_target(e.block);
-                self.encoder.byte(0x0c); // br
-                self.encoder.u32(target);
-            }
+            Br(e) => Instruction::Br(self.branch_target(e.block)),
 
-            BrIf(e) => {
-                let target = self.branch_target(e.block);
-                self.encoder.byte(0x0d); // br_if
-                self.encoder.u32(target);
-            }
+            BrIf(e) => Instruction::BrIf(self.branch_target(e.block)),
 
-            Call(e) => {
-                let idx = self.indices.get_func_index(e.func);
-                self.encoder.byte(0x10); // call
-                self.encoder.u32(idx);
-            }
+            Call(e) => Instruction::Call(self.indices.get_func_index(e.func)),
 
             CallIndirect(e) => {
-                let idx = self.indices.get_type_index(e.ty);
-                let table = self.indices.get_table_index(e.table);
-                self.encoder.byte(0x11); // call_indirect
-                self.encoder.u32(idx);
-                self.encoder.u32(table);
+                let type_index = self.indices.get_type_index(e.ty);
+                let table_index = self.indices.get_table_index(e.table);
+                Instruction::CallIndirect {
+                    type_index,
+                    table_index,
+                }
             }
 
-            LocalGet(e) => {
-                let idx = self.local_indices[&e.local];
-                self.encoder.byte(0x20); // local.get
-                self.encoder.u32(idx);
-            }
+            LocalGet(e) => Instruction::LocalGet(self.local_indices[&e.local]),
 
-            LocalSet(e) => {
-                let idx = self.local_indices[&e.local];
-                self.encoder.byte(0x21); // local.set
-                self.encoder.u32(idx);
-            }
+            LocalSet(e) => Instruction::LocalSet(self.local_indices[&e.local]),
 
-            LocalTee(e) => {
-                let idx = self.local_indices[&e.local];
-                self.encoder.byte(0x22); // local.tee
-                self.encoder.u32(idx);
-            }
+            LocalTee(e) => Instruction::LocalTee(self.local_indices[&e.local]),
 
-            GlobalGet(e) => {
-                let idx = self.indices.get_global_index(e.global);
-                self.encoder.byte(0x23); // global.get
-                self.encoder.u32(idx);
-            }
+            GlobalGet(e) => Instruction::GlobalGet(self.indices.get_global_index(e.global)),
 
-            GlobalSet(e) => {
-                let idx = self.indices.get_global_index(e.global);
-                self.encoder.byte(0x24); // global.set
-                self.encoder.u32(idx);
-            }
+            GlobalSet(e) => Instruction::GlobalSet(self.indices.get_global_index(e.global)),
 
             Load(e) => {
                 use crate::ir::ExtendedLoad::*;
                 use crate::ir::LoadKind::*;
+                let memarg = self.memarg(e.memory, &e.arg);
                 match e.kind {
-                    I32 { atomic: false } => self.encoder.byte(0x28), // i32.load
-                    I32 { atomic: true } => self.encoder.raw(&[0xfe, 0x10]), // i32.atomic.load
-                    I64 { atomic: false } => self.encoder.byte(0x29), // i64.load
-                    I64 { atomic: true } => self.encoder.raw(&[0xfe, 0x11]), // i64.atomic.load
-                    F32 => self.encoder.byte(0x2a),                   // f32.load
-                    F64 => self.encoder.byte(0x2b),                   // f64.load
-                    V128 => self.simd(0),
-                    I32_8 { kind: SignExtend } => self.encoder.byte(0x2c),
-                    I32_8 { kind: ZeroExtend } => self.encoder.byte(0x2d),
+                    I32 { atomic: false } => Instruction::I32Load(memarg),
+                    I32 { atomic: true } => Instruction::I32AtomicLoad(memarg),
+                    I64 { atomic: false } => Instruction::I64Load(memarg),
+                    I64 { atomic: true } => Instruction::I64AtomicLoad(memarg),
+                    F32 => Instruction::F32Load(memarg),
+                    F64 => Instruction::F64Load(memarg),
+                    V128 => Instruction::V128Load(memarg),
+                    I32_8 { kind: SignExtend } => Instruction::I32Load8S(memarg),
+                    I32_8 { kind: ZeroExtend } => Instruction::I32Load8U(memarg),
                     I32_8 {
                         kind: ZeroExtendAtomic,
-                    } => self.encoder.raw(&[0xfe, 0x12]),
-                    I32_16 { kind: SignExtend } => self.encoder.byte(0x2e),
-                    I32_16 { kind: ZeroExtend } => self.encoder.byte(0x2f),
+                    } => Instruction::I32AtomicLoad8U(memarg),
+                    I32_16 { kind: SignExtend } => Instruction::I32Load16S(memarg),
+                    I32_16 { kind: ZeroExtend } => Instruction::I32Load16U(memarg),
                     I32_16 {
                         kind: ZeroExtendAtomic,
-                    } => self.encoder.raw(&[0xfe, 0x13]),
-                    I64_8 { kind: SignExtend } => self.encoder.byte(0x30),
-                    I64_8 { kind: ZeroExtend } => self.encoder.byte(0x31),
+                    } => Instruction::I32AtomicLoad16U(memarg),
+                    I64_8 { kind: SignExtend } => Instruction::I64Load8S(memarg),
+                    I64_8 { kind: ZeroExtend } => Instruction::I64Load8U(memarg),
                     I64_8 {
                         kind: ZeroExtendAtomic,
-                    } => self.encoder.raw(&[0xfe, 0x14]),
-                    I64_16 { kind: SignExtend } => self.encoder.byte(0x32),
-                    I64_16 { kind: ZeroExtend } => self.encoder.byte(0x33),
+                    } => Instruction::I64AtomicLoad8U(memarg),
+                    I64_16 { kind: SignExtend } => Instruction::I64Load16S(memarg),
+                    I64_16 { kind: ZeroExtend } => Instruction::I64Load16U(memarg),
                     I64_16 {
                         kind: ZeroExtendAtomic,
-                    } => self.encoder.raw(&[0xfe, 0x15]),
-                    I64_32 { kind: SignExtend } => self.encoder.byte(0x34),
-                    I64_32 { kind: ZeroExtend } => self.encoder.byte(0x35),
+                    } => Instruction::I64AtomicLoad16U(memarg),
+                    I64_32 { kind: SignExtend } => Instruction::I64Load32S(memarg),
+                    I64_32 { kind: ZeroExtend } => Instruction::I64Load32U(memarg),
                     I64_32 {
                         kind: ZeroExtendAtomic,
-                    } => self.encoder.raw(&[0xfe, 0x16]),
+                    } => Instruction::I64AtomicLoad32U(memarg),
                 }
-                self.memarg(e.memory, &e.arg);
             }
 
             Store(e) => {
                 use crate::ir::StoreKind::*;
+                let memarg = self.memarg(e.memory, &e.arg);
                 match e.kind {
-                    I32 { atomic: false } => self.encoder.byte(0x36), // i32.store
-                    I32 { atomic: true } => self.encoder.raw(&[0xfe, 0x17]), // i32.atomic.store
-                    I64 { atomic: false } => self.encoder.byte(0x37), // i64.store
-                    I64 { atomic: true } => self.encoder.raw(&[0xfe, 0x18]), // i64.atomic.store
-                    F32 => self.encoder.byte(0x38),                   // f32.store
-                    F64 => self.encoder.byte(0x39),                   // f64.store
-                    V128 => self.simd(11),                            // v128.store
-                    I32_8 { atomic: false } => self.encoder.byte(0x3a), // i32.store8
-                    I32_8 { atomic: true } => self.encoder.raw(&[0xfe, 0x19]), // i32.atomic.store8
-                    I32_16 { atomic: false } => self.encoder.byte(0x3b), // i32.store16
-                    I32_16 { atomic: true } => self.encoder.raw(&[0xfe, 0x1a]), // i32.atomic.store16
-                    I64_8 { atomic: false } => self.encoder.byte(0x3c),         // i64.store8
-                    I64_8 { atomic: true } => self.encoder.raw(&[0xfe, 0x1b]),  // i64.atomic.store8
-                    I64_16 { atomic: false } => self.encoder.byte(0x3d),        // i64.store16
-                    I64_16 { atomic: true } => self.encoder.raw(&[0xfe, 0x1c]), // i64.atomic.store16
-                    I64_32 { atomic: false } => self.encoder.byte(0x3e),        // i64.store32
-                    I64_32 { atomic: true } => self.encoder.raw(&[0xfe, 0x1d]), // i64.atomic.store32
+                    I32 { atomic: false } => Instruction::I32Store(memarg),
+                    I32 { atomic: true } => Instruction::I32AtomicStore(memarg),
+                    I64 { atomic: false } => Instruction::I64Store(memarg),
+                    I64 { atomic: true } => Instruction::I64AtomicStore(memarg),
+                    F32 => Instruction::F32Store(memarg),
+                    F64 => Instruction::F64Store(memarg),
+                    V128 => Instruction::V128Store(memarg),
+                    I32_8 { atomic: false } => Instruction::I32Store8(memarg),
+                    I32_8 { atomic: true } => Instruction::I32AtomicStore8(memarg),
+                    I32_16 { atomic: false } => Instruction::I32Store16(memarg),
+                    I32_16 { atomic: true } => Instruction::I32AtomicStore16(memarg),
+                    I64_8 { atomic: false } => Instruction::I64Store8(memarg),
+                    I64_8 { atomic: true } => Instruction::I64AtomicStore8(memarg),
+                    I64_16 { atomic: false } => Instruction::I64Store16(memarg),
+                    I64_16 { atomic: true } => Instruction::I64AtomicStore16(memarg),
+                    I64_32 { atomic: false } => Instruction::I64Store32(memarg),
+                    I64_32 { atomic: true } => Instruction::I64AtomicStore32(memarg),
                 }
-                self.memarg(e.memory, &e.arg);
             }
 
             AtomicRmw(e) => {
                 use crate::ir::AtomicOp::*;
                 use crate::ir::AtomicWidth::*;
 
-                self.encoder.byte(0xfe);
-                self.encoder.byte(match (e.op, e.width) {
-                    (Add, I32) => 0x1e,
-                    (Add, I64) => 0x1f,
-                    (Add, I32_8) => 0x20,
-                    (Add, I32_16) => 0x21,
-                    (Add, I64_8) => 0x22,
-                    (Add, I64_16) => 0x23,
-                    (Add, I64_32) => 0x24,
+                let memarg = self.memarg(e.memory, &e.arg);
 
-                    (Sub, I32) => 0x25,
-                    (Sub, I64) => 0x26,
-                    (Sub, I32_8) => 0x27,
-                    (Sub, I32_16) => 0x28,
-                    (Sub, I64_8) => 0x29,
-                    (Sub, I64_16) => 0x2a,
-                    (Sub, I64_32) => 0x2b,
+                match (e.op, e.width) {
+                    (Add, I32) => Instruction::I32AtomicRmwAdd(memarg),
+                    (Add, I64) => Instruction::I64AtomicRmwAdd(memarg),
+                    (Add, I32_8) => Instruction::I32AtomicRmw8AddU(memarg),
+                    (Add, I32_16) => Instruction::I32AtomicRmw16AddU(memarg),
+                    (Add, I64_8) => Instruction::I64AtomicRmw16AddU(memarg),
+                    (Add, I64_16) => Instruction::I64AtomicRmw16AddU(memarg),
+                    (Add, I64_32) => Instruction::I64AtomicRmw32AddU(memarg),
 
-                    (And, I32) => 0x2c,
-                    (And, I64) => 0x2d,
-                    (And, I32_8) => 0x2e,
-                    (And, I32_16) => 0x2f,
-                    (And, I64_8) => 0x30,
-                    (And, I64_16) => 0x31,
-                    (And, I64_32) => 0x32,
+                    (Sub, I32) => Instruction::I32AtomicRmwSub(memarg),
+                    (Sub, I64) => Instruction::I64AtomicRmwSub(memarg),
+                    (Sub, I32_8) => Instruction::I32AtomicRmw8SubU(memarg),
+                    (Sub, I32_16) => Instruction::I32AtomicRmw16SubU(memarg),
+                    (Sub, I64_8) => Instruction::I64AtomicRmw16SubU(memarg),
+                    (Sub, I64_16) => Instruction::I64AtomicRmw16SubU(memarg),
+                    (Sub, I64_32) => Instruction::I64AtomicRmw32SubU(memarg),
 
-                    (Or, I32) => 0x33,
-                    (Or, I64) => 0x34,
-                    (Or, I32_8) => 0x35,
-                    (Or, I32_16) => 0x36,
-                    (Or, I64_8) => 0x37,
-                    (Or, I64_16) => 0x38,
-                    (Or, I64_32) => 0x39,
+                    (And, I32) => Instruction::I32AtomicRmwAnd(memarg),
+                    (And, I64) => Instruction::I64AtomicRmwAnd(memarg),
+                    (And, I32_8) => Instruction::I32AtomicRmw8AndU(memarg),
+                    (And, I32_16) => Instruction::I32AtomicRmw16AndU(memarg),
+                    (And, I64_8) => Instruction::I64AtomicRmw16AndU(memarg),
+                    (And, I64_16) => Instruction::I64AtomicRmw16AndU(memarg),
+                    (And, I64_32) => Instruction::I64AtomicRmw32AndU(memarg),
 
-                    (Xor, I32) => 0x3a,
-                    (Xor, I64) => 0x3b,
-                    (Xor, I32_8) => 0x3c,
-                    (Xor, I32_16) => 0x3d,
-                    (Xor, I64_8) => 0x3e,
-                    (Xor, I64_16) => 0x3f,
-                    (Xor, I64_32) => 0x40,
+                    (Or, I32) => Instruction::I32AtomicRmwOr(memarg),
+                    (Or, I64) => Instruction::I64AtomicRmwOr(memarg),
+                    (Or, I32_8) => Instruction::I32AtomicRmw8OrU(memarg),
+                    (Or, I32_16) => Instruction::I32AtomicRmw16OrU(memarg),
+                    (Or, I64_8) => Instruction::I64AtomicRmw16OrU(memarg),
+                    (Or, I64_16) => Instruction::I64AtomicRmw16OrU(memarg),
+                    (Or, I64_32) => Instruction::I64AtomicRmw32OrU(memarg),
 
-                    (Xchg, I32) => 0x41,
-                    (Xchg, I64) => 0x42,
-                    (Xchg, I32_8) => 0x43,
-                    (Xchg, I32_16) => 0x44,
-                    (Xchg, I64_8) => 0x45,
-                    (Xchg, I64_16) => 0x46,
-                    (Xchg, I64_32) => 0x47,
-                });
+                    (Xor, I32) => Instruction::I32AtomicRmwXor(memarg),
+                    (Xor, I64) => Instruction::I64AtomicRmwXor(memarg),
+                    (Xor, I32_8) => Instruction::I32AtomicRmw8XorU(memarg),
+                    (Xor, I32_16) => Instruction::I32AtomicRmw16XorU(memarg),
+                    (Xor, I64_8) => Instruction::I64AtomicRmw16XorU(memarg),
+                    (Xor, I64_16) => Instruction::I64AtomicRmw16XorU(memarg),
+                    (Xor, I64_32) => Instruction::I64AtomicRmw32XorU(memarg),
 
-                self.memarg(e.memory, &e.arg);
+                    (Xchg, I32) => Instruction::I32AtomicRmwXchg(memarg),
+                    (Xchg, I64) => Instruction::I64AtomicRmwXchg(memarg),
+                    (Xchg, I32_8) => Instruction::I32AtomicRmw8XchgU(memarg),
+                    (Xchg, I32_16) => Instruction::I32AtomicRmw16XchgU(memarg),
+                    (Xchg, I64_8) => Instruction::I64AtomicRmw16XchgU(memarg),
+                    (Xchg, I64_16) => Instruction::I64AtomicRmw16XchgU(memarg),
+                    (Xchg, I64_32) => Instruction::I64AtomicRmw32XchgU(memarg),
+                }
             }
 
             Cmpxchg(e) => {
                 use crate::ir::AtomicWidth::*;
-
-                self.encoder.byte(0xfe);
-                self.encoder.byte(match e.width {
-                    I32 => 0x48,
-                    I64 => 0x49,
-                    I32_8 => 0x4a,
-                    I32_16 => 0x4b,
-                    I64_8 => 0x4c,
-                    I64_16 => 0x4d,
-                    I64_32 => 0x4e,
-                });
-
-                self.memarg(e.memory, &e.arg);
+                let memarg = self.memarg(e.memory, &e.arg);
+                match e.width {
+                    I32 => Instruction::I32AtomicRmwCmpxchg(memarg),
+                    I64 => Instruction::I64AtomicRmwCmpxchg(memarg),
+                    I32_8 => Instruction::I32AtomicRmw8CmpxchgU(memarg),
+                    I32_16 => Instruction::I32AtomicRmw16CmpxchgU(memarg),
+                    I64_8 => Instruction::I64AtomicRmw8CmpxchgU(memarg),
+                    I64_16 => Instruction::I64AtomicRmw16CmpxchgU(memarg),
+                    I64_32 => Instruction::I64AtomicRmw32CmpxchgU(memarg),
+                }
             }
 
-            AtomicNotify(e) => {
-                self.encoder.byte(0xfe);
-                self.encoder.byte(0x00);
-                self.memarg(e.memory, &e.arg);
-            }
+            AtomicNotify(e) => Instruction::MemoryAtomicNotify(self.memarg(e.memory, &e.arg)),
 
             AtomicWait(e) => {
-                self.encoder.byte(0xfe);
-                self.encoder.byte(if e.sixty_four { 0x02 } else { 0x01 });
-                self.memarg(e.memory, &e.arg);
-            }
-
-            AtomicFence(_e) => {
-                self.encoder.byte(0xfe);
-                self.encoder.byte(0x03);
-                self.encoder.byte(0x00);
-            }
-
-            TableGet(e) => {
-                self.encoder.byte(0x25);
-                let idx = self.indices.get_table_index(e.table);
-                self.encoder.u32(idx);
-            }
-            TableSet(e) => {
-                self.encoder.byte(0x26);
-                let idx = self.indices.get_table_index(e.table);
-                self.encoder.u32(idx);
-            }
-            TableGrow(e) => {
-                self.encoder.raw(&[0xfc, 0x0f]);
-                let idx = self.indices.get_table_index(e.table);
-                self.encoder.u32(idx);
-            }
-            TableSize(e) => {
-                self.encoder.raw(&[0xfc, 0x10]);
-                let idx = self.indices.get_table_index(e.table);
-                self.encoder.u32(idx);
-            }
-            TableFill(e) => {
-                self.encoder.raw(&[0xfc, 0x11]);
-                let idx = self.indices.get_table_index(e.table);
-                self.encoder.u32(idx);
-            }
-            RefNull(e) => {
-                self.encoder.byte(0xd0);
-                e.ty.emit(self.encoder);
-            }
-            RefIsNull(_e) => {
-                self.encoder.byte(0xd1);
-            }
-            RefFunc(e) => {
-                self.encoder.byte(0xd2);
-                let idx = self.indices.get_func_index(e.func);
-                self.encoder.u32(idx);
-            }
-
-            V128Bitselect(_) => {
-                self.simd(0x52);
-            }
-            I8x16Shuffle(e) => {
-                self.simd(13);
-                self.encoder.raw(&e.indices);
-            }
-            I8x16Swizzle(_) => {
-                self.simd(14);
-            }
-            LoadSimd(e) => {
-                match e.kind {
-                    LoadSimdKind::V128Load8x8S => self.simd(1),
-                    LoadSimdKind::V128Load8x8U => self.simd(2),
-                    LoadSimdKind::V128Load16x4S => self.simd(3),
-                    LoadSimdKind::V128Load16x4U => self.simd(4),
-                    LoadSimdKind::V128Load32x2S => self.simd(5),
-                    LoadSimdKind::V128Load32x2U => self.simd(6),
-                    LoadSimdKind::Splat8 => self.simd(7),
-                    LoadSimdKind::Splat16 => self.simd(8),
-                    LoadSimdKind::Splat32 => self.simd(9),
-                    LoadSimdKind::Splat64 => self.simd(10),
-                    LoadSimdKind::V128Load32Zero => self.simd(92),
-                    LoadSimdKind::V128Load64Zero => self.simd(93),
-                    LoadSimdKind::V128Load8Lane(_) => self.simd(84),
-                    LoadSimdKind::V128Load16Lane(_) => self.simd(85),
-                    LoadSimdKind::V128Load32Lane(_) => self.simd(86),
-                    LoadSimdKind::V128Load64Lane(_) => self.simd(87),
-                    LoadSimdKind::V128Store8Lane(_) => self.simd(88),
-                    LoadSimdKind::V128Store16Lane(_) => self.simd(89),
-                    LoadSimdKind::V128Store32Lane(_) => self.simd(90),
-                    LoadSimdKind::V128Store64Lane(_) => self.simd(91),
+                let memarg = self.memarg(e.memory, &e.arg);
+                if e.sixty_four {
+                    Instruction::MemoryAtomicWait64(memarg)
+                } else {
+                    Instruction::MemoryAtomicWait32(memarg)
                 }
-                self.memarg(e.memory, &e.arg);
+            }
+
+            AtomicFence(_) => Instruction::AtomicFence,
+
+            TableGet(e) => Instruction::TableGet(self.indices.get_table_index(e.table)),
+            TableSet(e) => Instruction::TableSet(self.indices.get_table_index(e.table)),
+            TableGrow(e) => Instruction::TableGrow(self.indices.get_table_index(e.table)),
+            TableSize(e) => Instruction::TableSize(self.indices.get_table_index(e.table)),
+            TableFill(e) => Instruction::TableFill(self.indices.get_table_index(e.table)),
+            RefNull(e) => Instruction::RefNull(match &e.ty {
+                RefType::Externref => wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Extern,
+                },
+                RefType::Funcref => wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Func,
+                },
+            }),
+            RefIsNull(_) => Instruction::RefIsNull,
+            RefFunc(e) => Instruction::RefFunc(self.indices.get_func_index(e.func)),
+
+            V128Bitselect(_) => Instruction::V128Bitselect,
+            I8x16Shuffle(e) => Instruction::I8x16Shuffle(e.indices),
+            I8x16Swizzle(_) => Instruction::I8x16Swizzle,
+            LoadSimd(e) => {
+                let memarg = self.memarg(e.memory, &e.arg);
                 match e.kind {
-                    LoadSimdKind::V128Load8Lane(l)
-                    | LoadSimdKind::V128Load16Lane(l)
-                    | LoadSimdKind::V128Load32Lane(l)
-                    | LoadSimdKind::V128Load64Lane(l)
-                    | LoadSimdKind::V128Store8Lane(l)
-                    | LoadSimdKind::V128Store16Lane(l)
-                    | LoadSimdKind::V128Store32Lane(l)
-                    | LoadSimdKind::V128Store64Lane(l) => self.encoder.byte(l),
-                    _ => {}
+                    LoadSimdKind::V128Load8x8S => Instruction::V128Load8x8S(memarg),
+                    LoadSimdKind::V128Load8x8U => Instruction::V128Load8x8U(memarg),
+                    LoadSimdKind::V128Load16x4S => Instruction::V128Load16x4S(memarg),
+                    LoadSimdKind::V128Load16x4U => Instruction::V128Load16x4U(memarg),
+                    LoadSimdKind::V128Load32x2S => Instruction::V128Load32x2S(memarg),
+                    LoadSimdKind::V128Load32x2U => Instruction::V128Load32x2U(memarg),
+                    LoadSimdKind::Splat8 => Instruction::V128Load8Splat(memarg),
+                    LoadSimdKind::Splat16 => Instruction::V128Load16Splat(memarg),
+                    LoadSimdKind::Splat32 => Instruction::V128Load32Splat(memarg),
+                    LoadSimdKind::Splat64 => Instruction::V128Load64Splat(memarg),
+                    LoadSimdKind::V128Load32Zero => Instruction::V128Load32Zero(memarg),
+                    LoadSimdKind::V128Load64Zero => Instruction::V128Load64Zero(memarg),
+                    LoadSimdKind::V128Load8Lane(lane) => {
+                        Instruction::V128Load8Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Load16Lane(lane) => {
+                        Instruction::V128Load16Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Load32Lane(lane) => {
+                        Instruction::V128Load32Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Load64Lane(lane) => {
+                        Instruction::V128Load64Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Store8Lane(lane) => {
+                        Instruction::V128Store8Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Store16Lane(lane) => {
+                        Instruction::V128Store16Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Store32Lane(lane) => {
+                        Instruction::V128Store32Lane { memarg, lane }
+                    }
+                    LoadSimdKind::V128Store64Lane(lane) => {
+                        Instruction::V128Store64Lane { memarg, lane }
+                    }
                 }
             }
             TableInit(e) => {
-                self.encoder.raw(&[0xfc, 0x0c]);
-                self.encoder.u32(self.indices.get_element_index(e.elem));
-                self.encoder.u32(self.indices.get_table_index(e.table));
+                let elem_index = self.indices.get_element_index(e.elem);
+                let table = self.indices.get_table_index(e.table);
+                Instruction::TableInit { elem_index, table }
             }
             TableCopy(e) => {
-                self.encoder.raw(&[0xfc, 0x0e]);
-                self.encoder.u32(self.indices.get_table_index(e.dst));
-                self.encoder.u32(self.indices.get_table_index(e.src));
+                let dst_table = self.indices.get_table_index(e.dst);
+                let src_table = self.indices.get_table_index(e.src);
+                Instruction::TableCopy {
+                    src_table,
+                    dst_table,
+                }
             }
-            ElemDrop(e) => {
-                self.encoder.raw(&[0xfc, 0x0d]);
-                self.encoder.u32(self.indices.get_element_index(e.elem));
+            ElemDrop(e) => Instruction::ElemDrop(self.indices.get_element_index(e.elem)),
+            ReturnCall(e) => Instruction::ReturnCall(self.indices.get_func_index(e.func)),
+            ReturnCallIndirect(e) => {
+                let type_index = self.indices.get_type_index(e.ty);
+                let table_index = self.indices.get_table_index(e.table);
+                Instruction::ReturnCallIndirect {
+                    type_index,
+                    table_index,
+                }
             }
-        }
+        });
     }
 }
 
-impl Emit<'_, '_> {
+impl Emit<'_> {
     fn branch_target(&self, block: InstrSeqId) -> u32 {
         self.blocks.iter().rev().position(|b| *b == block).expect(
             "attempt to branch to invalid block; bad transformation pass introduced bad branching?",
         ) as u32
     }
 
-    fn block_type(&mut self, ty: InstrSeqType) {
+    fn block_type(&self, ty: InstrSeqType) -> wasm_encoder::BlockType {
         match ty {
-            InstrSeqType::Simple(None) => self.encoder.byte(0x40),
-            InstrSeqType::Simple(Some(ty)) => ty.emit(self.encoder),
+            InstrSeqType::Simple(None) => wasm_encoder::BlockType::Empty,
+            InstrSeqType::Simple(Some(ty)) => {
+                wasm_encoder::BlockType::Result(ty.to_wasmencoder_type())
+            }
             InstrSeqType::MultiValue(ty) => {
-                let index = self.indices.get_type_index(ty);
-                assert!(index < std::i32::MAX as u32);
-                self.encoder.i32(index as i32);
+                wasm_encoder::BlockType::FunctionType(self.indices.get_type_index(ty))
             }
         }
     }
 
-    fn memarg(&mut self, id: MemoryId, arg: &MemArg) {
-        let mem_index = self.indices.get_memory_index(id);
-        if mem_index == 0 {
-            self.encoder.u32(arg.align.trailing_zeros());
-            self.encoder.u32(arg.offset);
-        } else {
-            assert!(arg.align.trailing_zeros() < (1 << 6), "alignment too large");
-            let multi_memory_flag = 1 << 6;
-            let flags = arg.align.trailing_zeros() | multi_memory_flag;
-            self.encoder.u32(flags);
-            self.encoder.u32(arg.offset);
-            self.encoder.u32(mem_index);
-        };
-    }
-
-    fn simd(&mut self, opcode: u32) {
-        self.encoder.byte(0xfd);
-        self.encoder.u32(opcode);
+    fn memarg(&self, id: MemoryId, arg: &MemArg) -> wasm_encoder::MemArg {
+        let memory_index = self.indices.get_memory_index(id);
+        let MemArg { mut align, offset } = *arg;
+        let mut align_exponent: u32 = 0;
+        while align > 1 {
+            align_exponent += 1;
+            align >>= 1;
+        }
+        wasm_encoder::MemArg {
+            offset: offset as u64,
+            align: align_exponent,
+            memory_index,
+        }
     }
 }

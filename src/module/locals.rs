@@ -20,17 +20,17 @@ impl ModuleLocals {
         id
     }
 
-    /// Get the local for an ID
+    /// Gets a reference to a local given its id
     pub fn get(&self, id: LocalId) -> &Local {
         &self.arena[id]
     }
 
-    /// Get the set of locals for this module.
+    /// Gets a reference to a local given its id
     pub fn get_mut(&mut self, id: LocalId) -> &mut Local {
         &mut self.arena[id]
     }
 
-    /// Get a shared reference to this module's globals.
+    /// Get a shared reference to this module's locals.
     pub fn iter(&self) -> impl Iterator<Item = &Local> {
         self.arena.iter().map(|(_, f)| f)
     }

@@ -18,7 +18,8 @@
       drop
       i32.const 2
       f32.const 0x1.8p+1 (;=3;)
-      f32.store)
+      f32.store
+    )
     (memory (;0;) 0)
-    (export "f" (func 0)))
+    (export "f" (func 0))
 ;)

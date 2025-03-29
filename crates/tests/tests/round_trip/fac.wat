@@ -28,26 +28,29 @@
     local.get 1)
   (export "fac" (func $fac)))
 
-;; CHECK: (module
-;; NEXT:    (type (;0;) (func (param i32) (result i32)))
-;; NEXT:    (func $fac (type 0) (param i32) (result i32)
-;; NEXT:      (local i32)
-;; NEXT:      block  ;; label = @1
-;; NEXT:        local.get 0
-;; NEXT:        local.set 1
-;; NEXT:        loop  ;; label = @2
-;; NEXT:          local.get 0
-;; NEXT:          i32.eqz
-;; NEXT:          br_if 1 (;@1;)
-;; NEXT:          local.get 1
-;; NEXT:          local.get 0
-;; NEXT:          i32.mul
-;; NEXT:          local.set 1
-;; NEXT:          local.get 0
-;; NEXT:          i32.const 1
-;; NEXT:          i32.sub
-;; NEXT:          local.set 0
-;; NEXT:        end
-;; NEXT:      end
-;; NEXT:      local.get 1)
-;; NEXT:    (export "fac" (func $fac)))
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func (param i32) (result i32)))
+    (func $fac (;0;) (type 0) (param i32) (result i32)
+      (local i32)
+      block ;; label = @1
+        local.get 0
+        local.set 1
+        loop ;; label = @2
+          local.get 0
+          i32.eqz
+          br_if 1 (;@1;)
+          local.get 1
+          local.get 0
+          i32.mul
+          local.set 1
+          local.get 0
+          i32.const 1
+          i32.sub
+          local.set 0
+        end
+      end
+      local.get 1
+    )
+    (export "fac" (func $fac))
+;)

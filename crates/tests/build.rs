@@ -54,7 +54,7 @@ fn generate_tests(name: &str) {
             ""
         };
         tests.push_str(&format!(
-            "#[test] {} fn {}() {{ walrus_tests_utils::handle(run(\"{}\".as_ref())); }}\n",
+            "#[test] {} fn {}() {{ walrus_tests_utils::handle(run({:?}.as_ref())); }}\n",
             ignore_test,
             test_name,
             path.display(),

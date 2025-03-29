@@ -2,25 +2,18 @@
 //! structures. E.g. translating from globally unique identifiers down to the
 //! raw wasm structure's index spaces.
 
-use crate::encode::{Encoder, MAX_U32_LENGTH};
 use crate::ir::Local;
 use crate::map::{IdHashMap, IdHashSet};
 use crate::{CodeTransform, Global, GlobalId, Memory, MemoryId, Module, Table, TableId};
 use crate::{Data, DataId, Element, ElementId, Function, FunctionId};
 use crate::{Type, TypeId};
-use std::ops::{Deref, DerefMut};
 
 pub struct EmitContext<'a> {
     pub module: &'a Module,
     pub indices: &'a mut IdsToIndices,
-    pub encoder: Encoder<'a>,
+    pub wasm_module: wasm_encoder::Module,
     pub locals: IdHashMap<Function, IdHashSet<Local>>,
     pub code_transform: CodeTransform,
-}
-
-pub struct SubContext<'a, 'cx> {
-    cx: &'cx mut EmitContext<'a>,
-    write_size_to: usize,
 }
 
 /// Anything that can be lowered to raw wasm structures.
@@ -114,76 +107,4 @@ impl IdsToIndices {
     pub(crate) fn set_data_index(&mut self, id: DataId, idx: u32) {
         self.data.insert(id, idx);
     }
-}
-
-impl<'a> EmitContext<'a> {
-    pub fn start_section<'b>(&'b mut self, id: Section) -> SubContext<'a, 'b> {
-        self.subsection(id as u8)
-    }
-
-    pub fn subsection<'b>(&'b mut self, id: u8) -> SubContext<'a, 'b> {
-        self.encoder.byte(id);
-        let start = self.encoder.reserve_u32();
-        SubContext {
-            cx: self,
-            write_size_to: start,
-        }
-    }
-
-    pub fn custom_section<'b>(&'b mut self, name: &str) -> SubContext<'a, 'b> {
-        let mut cx = self.start_section(Section::Custom);
-        cx.encoder.str(name);
-        return cx;
-    }
-
-    pub fn list<T>(&mut self, list: T)
-    where
-        T: IntoIterator,
-        T::IntoIter: ExactSizeIterator,
-        T::Item: Emit,
-    {
-        let list = list.into_iter();
-        self.encoder.usize(list.len());
-        for item in list {
-            item.emit(self);
-        }
-    }
-}
-
-impl<'a> Deref for SubContext<'a, '_> {
-    type Target = EmitContext<'a>;
-
-    fn deref(&self) -> &EmitContext<'a> {
-        &self.cx
-    }
-}
-
-impl<'a> DerefMut for SubContext<'a, '_> {
-    fn deref_mut(&mut self) -> &mut EmitContext<'a> {
-        &mut self.cx
-    }
-}
-
-impl Drop for SubContext<'_, '_> {
-    fn drop(&mut self) {
-        let amt = self.cx.encoder.pos() - self.write_size_to - MAX_U32_LENGTH;
-        assert!(amt <= u32::max_value() as usize);
-        self.cx.encoder.u32_at(self.write_size_to, amt as u32);
-    }
-}
-
-pub enum Section {
-    Custom = 0,
-    Type = 1,
-    Import = 2,
-    Function = 3,
-    Table = 4,
-    Memory = 5,
-    Global = 6,
-    Export = 7,
-    Start = 8,
-    Element = 9,
-    Code = 10,
-    Data = 11,
-    DataCount = 12,
 }

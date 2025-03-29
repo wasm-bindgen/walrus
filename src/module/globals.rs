@@ -1,8 +1,8 @@
 //! Globals within a wasm module.
-use crate::emit::{Emit, EmitContext, Section};
+use crate::emit::{Emit, EmitContext};
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{ImportId, InitExpr, Module, Result, ValType};
+use crate::{ConstExpr, ImportId, Module, Result, ValType};
 
 /// The id of a global.
 pub type GlobalId = Id<Global>;
@@ -13,15 +13,17 @@ pub struct Global {
     // NB: Not public so that it can't get out of sync with the arena this is
     // contained within.
     id: GlobalId,
-
     /// This global's type.
     pub ty: ValType,
-
     /// Whether this global is mutable or not.
     pub mutable: bool,
-
+    /// Whether this global is shared or not.
+    pub shared: bool,
     /// The kind of global this is
     pub kind: GlobalKind,
+    /// The name of this data, used for debugging purposes in the `name`
+    /// custom section.
+    pub name: Option<String>,
 }
 
 impl Tombstone for Global {}
@@ -32,20 +34,13 @@ pub enum GlobalKind {
     /// An imported global without a known initializer
     Import(ImportId),
     /// A locally declare global with the specified identifier
-    Local(InitExpr),
+    Local(ConstExpr),
 }
 
 impl Global {
     /// Get this global's id.
     pub fn id(&self) -> GlobalId {
         self.id
-    }
-}
-
-impl Emit for Global {
-    fn emit(&self, cx: &mut EmitContext) {
-        Emit::emit(&self.ty, cx);
-        cx.encoder.byte(self.mutable as u8);
     }
 }
 
@@ -58,32 +53,48 @@ pub struct ModuleGlobals {
 
 impl ModuleGlobals {
     /// Adds a new imported global to this list.
-    pub fn add_import(&mut self, ty: ValType, mutable: bool, import_id: ImportId) -> GlobalId {
+    pub fn add_import(
+        &mut self,
+        ty: ValType,
+        mutable: bool,
+        shared: bool,
+        import_id: ImportId,
+    ) -> GlobalId {
         self.arena.alloc_with_id(|id| Global {
             id,
             ty,
             mutable,
+            shared,
             kind: GlobalKind::Import(import_id),
+            name: None,
         })
     }
 
     /// Construct a new global, that does not originate from any of the input
     /// wasm globals.
-    pub fn add_local(&mut self, ty: ValType, mutable: bool, init: InitExpr) -> GlobalId {
+    pub fn add_local(
+        &mut self,
+        ty: ValType,
+        mutable: bool,
+        shared: bool,
+        init: ConstExpr,
+    ) -> GlobalId {
         self.arena.alloc_with_id(|id| Global {
             id,
             ty,
             mutable,
+            shared,
             kind: GlobalKind::Local(init),
+            name: None,
         })
     }
 
-    /// Gets a reference to a memory given its id
+    /// Gets a reference to a global given its id
     pub fn get(&self, id: GlobalId) -> &Global {
         &self.arena[id]
     }
 
-    /// Gets a reference to a memory given its id
+    /// Gets a reference to a global given its id
     pub fn get_mut(&mut self, id: GlobalId) -> &mut Global {
         &mut self.arena[id]
     }
@@ -115,7 +126,8 @@ impl Module {
             let id = self.globals.add_local(
                 ValType::parse(&g.ty.content_type)?,
                 g.ty.mutable,
-                InitExpr::eval(&g.init_expr, ids)?,
+                g.ty.shared,
+                ConstExpr::eval(&g.init_expr, ids)?,
             );
             ids.push_global(id);
         }
@@ -126,7 +138,9 @@ impl Module {
 impl Emit for ModuleGlobals {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit global section");
-        fn get_local(global: &Global) -> Option<(&Global, &InitExpr)> {
+        let mut wasm_global_section = wasm_encoder::GlobalSection::new();
+
+        fn get_local(global: &Global) -> Option<(&Global, &ConstExpr)> {
             match &global.kind {
                 GlobalKind::Import(_) => None,
                 GlobalKind::Local(local) => Some((global, local)),
@@ -140,12 +154,19 @@ impl Emit for ModuleGlobals {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Global);
-        cx.encoder.usize(globals);
         for (global, local) in self.iter().filter_map(get_local) {
             cx.indices.push_global(global.id());
-            global.emit(&mut cx);
-            local.emit(&mut cx);
+
+            wasm_global_section.global(
+                wasm_encoder::GlobalType {
+                    val_type: global.ty.to_wasmencoder_type(),
+                    mutable: global.mutable,
+                    shared: global.shared,
+                },
+                &local.to_wasmencoder_type(cx),
+            );
         }
+
+        cx.wasm_module.section(&wasm_global_section);
     }
 }

@@ -1,6 +1,5 @@
 //! Error types and utilities.
 
-pub use anyhow::Error;
 use std::fmt;
 
 /// Either `Ok(T)` or `Err(failure::Error)`.

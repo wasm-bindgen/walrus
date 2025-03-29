@@ -1,10 +1,12 @@
 //! Tables within a wasm module.
 
-use crate::emit::{Emit, EmitContext, Section};
+use std::convert::TryInto;
+
+use crate::emit::{Emit, EmitContext};
 use crate::map::IdHashSet;
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{Element, ImportId, Module, Result, ValType};
+use crate::{Element, ImportId, Module, RefType, Result};
 use anyhow::bail;
 
 /// The id of a table.
@@ -14,16 +16,21 @@ pub type TableId = Id<Table>;
 #[derive(Debug)]
 pub struct Table {
     id: TableId,
+    /// Whether or not this is a 64-bit table.
+    pub table64: bool,
     /// The initial size of this table
-    pub initial: u32,
+    pub initial: u64,
     /// The maximum size of this table
-    pub maximum: Option<u32>,
+    pub maximum: Option<u64>,
     /// The type of the elements in this table
-    pub element_ty: ValType,
+    pub element_ty: RefType,
     /// Whether or not this table is imported, and if so what imports it.
     pub import: Option<ImportId>,
     /// Active data segments that will be used to initialize this memory.
     pub elem_segments: IdHashSet<Element>,
+    /// The name of this table, used for debugging purposes in the `name`
+    /// custom section.
+    pub name: Option<String>,
 }
 
 impl Tombstone for Table {}
@@ -32,17 +39,6 @@ impl Table {
     /// Get this table's id.
     pub fn id(&self) -> TableId {
         self.id
-    }
-}
-
-impl Emit for Table {
-    fn emit(&self, cx: &mut EmitContext) {
-        self.element_ty.emit(&mut cx.encoder);
-        cx.encoder.byte(self.maximum.is_some() as u8);
-        cx.encoder.u32(self.initial);
-        if let Some(m) = self.maximum {
-            cx.encoder.u32(m);
-        }
     }
 }
 
@@ -57,33 +53,44 @@ impl ModuleTables {
     /// Adds a new imported table to this list of tables
     pub fn add_import(
         &mut self,
-        initial: u32,
-        max: Option<u32>,
-        element_ty: ValType,
+        table64: bool,
+        initial: u64,
+        maximum: Option<u64>,
+        element_ty: RefType,
         import: ImportId,
     ) -> TableId {
         let id = self.arena.next_id();
         self.arena.alloc(Table {
             id,
+            table64,
             initial,
-            maximum: max,
+            maximum,
             element_ty,
             import: Some(import),
             elem_segments: Default::default(),
+            name: None,
         })
     }
 
     /// Construct a new table, that does not originate from any of the input
     /// wasm tables.
-    pub fn add_local(&mut self, initial: u32, max: Option<u32>, element_ty: ValType) -> TableId {
+    pub fn add_local(
+        &mut self,
+        table64: bool,
+        initial: u64,
+        maximum: Option<u64>,
+        element_ty: RefType,
+    ) -> TableId {
         let id = self.arena.next_id();
         let id2 = self.arena.alloc(Table {
             id,
+            table64,
             initial,
-            maximum: max,
+            maximum,
             element_ty,
             import: None,
             elem_segments: Default::default(),
+            name: None,
         });
         debug_assert_eq!(id, id2);
         id
@@ -123,7 +130,7 @@ impl ModuleTables {
     ///
     /// Returns an error if there are two function tables in this module
     pub fn main_function_table(&self) -> Result<Option<TableId>> {
-        let mut tables = self.iter().filter(|t| t.element_ty == ValType::Funcref);
+        let mut tables = self.iter().filter(|t| t.element_ty == RefType::Funcref);
         let id = match tables.next() {
             Some(t) => t.id(),
             None => return Ok(None),
@@ -151,9 +158,10 @@ impl Module {
         for t in section {
             let t = t?;
             let id = self.tables.add_local(
-                t.limits.initial,
-                t.limits.maximum,
-                ValType::parse(&t.element_type)?,
+                t.ty.table64,
+                t.ty.initial,
+                t.ty.maximum,
+                t.ty.element_type.try_into()?,
             );
             ids.push_table(id);
         }
@@ -164,17 +172,30 @@ impl Module {
 impl Emit for ModuleTables {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit table section");
+
+        let mut wasm_table_section = wasm_encoder::TableSection::new();
+
         // Skip imported tables because those are emitted in the import section.
         let tables = self.iter().filter(|t| t.import.is_none()).count();
         if tables == 0 {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Table);
-        cx.encoder.usize(tables);
         for table in self.iter().filter(|t| t.import.is_none()) {
             cx.indices.push_table(table.id());
-            table.emit(&mut cx);
+
+            wasm_table_section.table(wasm_encoder::TableType {
+                table64: table.table64,
+                minimum: table.initial,
+                maximum: table.maximum,
+                element_type: match table.element_ty {
+                    RefType::Externref => wasm_encoder::RefType::EXTERNREF,
+                    RefType::Funcref => wasm_encoder::RefType::FUNCREF,
+                },
+                shared: false,
+            });
         }
+
+        cx.wasm_module.section(&wasm_table_section);
     }
 }

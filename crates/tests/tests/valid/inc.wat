@@ -4,5 +4,5 @@
     local.get 0
     i32.const 1
     i32.add)
-  (table (;0;) 1 1 anyfunc)
+  (table (;0;) 1 1 funcref)
   (memory (;0;) 16))

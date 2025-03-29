@@ -1,12 +1,11 @@
 //! WebAssembly function and value types.
 
-use crate::emit::{Emit, EmitContext};
-use crate::encode::Encoder;
 use crate::error::Result;
 use crate::tombstone_arena::Tombstone;
 use anyhow::bail;
 use id_arena::Id;
 use std::cmp::Ordering;
+use std::convert::TryFrom;
 use std::fmt;
 use std::hash;
 
@@ -110,26 +109,17 @@ impl Type {
     /// Get the parameters to this function type.
     #[inline]
     pub fn params(&self) -> &[ValType] {
-        &*self.params
+        &self.params
     }
 
     /// Get the results of this function type.
     #[inline]
     pub fn results(&self) -> &[ValType] {
-        &*self.results
+        &self.results
     }
 
     pub(crate) fn is_for_function_entry(&self) -> bool {
         self.is_for_function_entry
-    }
-}
-
-impl Emit for Type {
-    fn emit(&self, cx: &mut EmitContext) {
-        assert!(!self.is_for_function_entry());
-        cx.encoder.byte(0x60);
-        cx.list(self.params.iter());
-        cx.list(self.results.iter());
     }
 }
 
@@ -146,43 +136,66 @@ pub enum ValType {
     F64,
     /// 128-bit vector.
     V128,
-    /// The `externref` opaque value type
-    Externref,
-    /// The `funcref` value type, representing a callable function
+    /// Reference.
+    Ref(RefType),
+}
+
+/// A reference type.
+///
+/// The "function references" and "gc" proposals will add more reference types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum RefType {
+    /// A nullable reference to an untyped function
     Funcref,
+    /// A nullable reference to an extern object
+    Externref,
+}
+
+impl TryFrom<wasmparser::RefType> for RefType {
+    type Error = anyhow::Error;
+
+    fn try_from(ref_type: wasmparser::RefType) -> Result<RefType> {
+        match ref_type {
+            wasmparser::RefType::FUNCREF => Ok(RefType::Funcref),
+            wasmparser::RefType::EXTERNREF => Ok(RefType::Externref),
+            _ => bail!("unsupported ref type {:?}", ref_type),
+        }
+    }
 }
 
 impl ValType {
-    pub(crate) fn from_wasmparser_type(ty: wasmparser::Type) -> Result<Box<[ValType]>> {
-        let v = match ty {
-            wasmparser::Type::EmptyBlockType => Vec::new(),
-            _ => vec![ValType::parse(&ty)?],
-        };
+    pub(crate) fn from_wasmparser_type(ty: wasmparser::ValType) -> Result<Box<[ValType]>> {
+        let v = vec![ValType::parse(&ty)?];
         Ok(v.into_boxed_slice())
     }
 
-    pub(crate) fn parse(input: &wasmparser::Type) -> Result<ValType> {
-        match input {
-            wasmparser::Type::I32 => Ok(ValType::I32),
-            wasmparser::Type::I64 => Ok(ValType::I64),
-            wasmparser::Type::F32 => Ok(ValType::F32),
-            wasmparser::Type::F64 => Ok(ValType::F64),
-            wasmparser::Type::V128 => Ok(ValType::V128),
-            wasmparser::Type::ExternRef => Ok(ValType::Externref),
-            wasmparser::Type::FuncRef => Ok(ValType::Funcref),
-            _ => bail!("not a value type"),
+    pub(crate) fn to_wasmencoder_type(&self) -> wasm_encoder::ValType {
+        match self {
+            ValType::I32 => wasm_encoder::ValType::I32,
+            ValType::I64 => wasm_encoder::ValType::I64,
+            ValType::F32 => wasm_encoder::ValType::F32,
+            ValType::F64 => wasm_encoder::ValType::F64,
+            ValType::V128 => wasm_encoder::ValType::V128,
+            ValType::Ref(ref_type) => match ref_type {
+                RefType::Externref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::EXTERNREF),
+                RefType::Funcref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::FUNCREF),
+            },
         }
     }
 
-    pub(crate) fn emit(&self, encoder: &mut Encoder) {
-        match self {
-            ValType::I32 => encoder.byte(0x7f),
-            ValType::I64 => encoder.byte(0x7e),
-            ValType::F32 => encoder.byte(0x7d),
-            ValType::F64 => encoder.byte(0x7c),
-            ValType::V128 => encoder.byte(0x7b),
-            ValType::Funcref => encoder.byte(0x70),
-            ValType::Externref => encoder.byte(0x6f),
+    pub(crate) fn parse(input: &wasmparser::ValType) -> Result<ValType> {
+        match input {
+            wasmparser::ValType::I32 => Ok(ValType::I32),
+            wasmparser::ValType::I64 => Ok(ValType::I64),
+            wasmparser::ValType::F32 => Ok(ValType::F32),
+            wasmparser::ValType::F64 => Ok(ValType::F64),
+            wasmparser::ValType::V128 => Ok(ValType::V128),
+            wasmparser::ValType::Ref(ref_type) => match *ref_type {
+                wasmparser::RefType::EXTERNREF => Ok(ValType::Ref(RefType::Externref)),
+                wasmparser::RefType::FUNCREF => Ok(ValType::Ref(RefType::Funcref)),
+                _ => bail!("unsupported ref type {:?}", ref_type),
+            },
         }
     }
 }
@@ -198,15 +211,9 @@ impl fmt::Display for ValType {
                 ValType::F32 => "f32",
                 ValType::F64 => "f64",
                 ValType::V128 => "v128",
-                ValType::Externref => "externref",
-                ValType::Funcref => "funcref",
+                ValType::Ref(RefType::Externref) => "externref",
+                ValType::Ref(RefType::Funcref) => "funcref",
             }
         )
-    }
-}
-
-impl Emit for ValType {
-    fn emit(&self, cx: &mut EmitContext) {
-        self.emit(&mut cx.encoder);
     }
 }

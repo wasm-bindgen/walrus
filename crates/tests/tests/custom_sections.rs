@@ -86,9 +86,9 @@ fn smoke_test_code_transform() {
 
         fn apply_code_transform(&mut self, transform: &CodeTransform) {
             APPLIED_CODE_TRANSFORM.store(1, Ordering::SeqCst);
-            assert!(!transform.is_empty());
-            for (input_offset, output_offset) in transform.iter().cloned() {
-                assert_eq!(input_offset.data() as usize + 3, output_offset);
+            assert!(!transform.instruction_map.is_empty());
+            for (input_offset, output_offset) in transform.instruction_map.iter() {
+                assert_eq!(input_offset.data() as usize + 3, *output_offset);
             }
         }
     }

@@ -67,7 +67,7 @@ where
     cmd.arg(input);
     cmd.arg("-o");
     cmd.arg(tmp.path());
-    cmd.args(&[
+    cmd.args([
         "--enable-threads",
         "--enable-bulk-memory",
         // "--enable-reference-types",

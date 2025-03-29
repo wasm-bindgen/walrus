@@ -4,4 +4,4 @@
     if
     end))
 
-;; CHECK: (module)
+;; CHECK: (module

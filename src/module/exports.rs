@@ -1,6 +1,8 @@
 //! Exported items in a wasm module.
 
-use crate::emit::{Emit, EmitContext, Section};
+use anyhow::Context;
+
+use crate::emit::{Emit, EmitContext};
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
 use crate::{FunctionId, GlobalId, MemoryId, Module, Result, TableId};
@@ -100,6 +102,16 @@ impl ModuleExports {
         })
     }
 
+    /// Retrieve an exported function by export name
+    pub fn get_func(&self, name: impl AsRef<str>) -> Result<FunctionId> {
+        self.iter()
+            .find_map(|expt| match expt.item {
+                ExportItem::Function(fid) if expt.name == name.as_ref() => Some(fid),
+                _ => None,
+            })
+            .with_context(|| format!("unable to find function export '{}'", name.as_ref()))
+    }
+
     /// Get a reference to a table export given its table id.
     pub fn get_exported_table(&self, t: TableId) -> Option<&Export> {
         self.iter().find(|e| match e.item {
@@ -123,6 +135,20 @@ impl ModuleExports {
             _ => false,
         })
     }
+
+    /// Delete an export by name from this module.
+    pub fn remove(&mut self, name: impl AsRef<str>) -> Result<()> {
+        let export = self
+            .iter()
+            .find(|e| e.name == name.as_ref())
+            .with_context(|| {
+                format!("failed to find exported func with name [{}]", name.as_ref())
+            })?;
+
+        self.delete(export.id());
+
+        Ok(())
+    }
 }
 
 impl Module {
@@ -138,20 +164,17 @@ impl Module {
         for entry in section {
             let entry = entry?;
             let item = match entry.kind {
-                Function => ExportItem::Function(ids.get_func(entry.index)?),
+                Func => ExportItem::Function(ids.get_func(entry.index)?),
                 Table => ExportItem::Table(ids.get_table(entry.index)?),
                 Memory => ExportItem::Memory(ids.get_memory(entry.index)?),
                 Global => ExportItem::Global(ids.get_global(entry.index)?),
-                Type | Module | Instance => {
-                    unimplemented!("module linking not supported");
-                }
-                Event => {
+                Tag => {
                     unimplemented!("exception handling not supported");
                 }
             };
             self.exports.arena.alloc_with_id(|id| Export {
                 id,
-                name: entry.field.to_string(),
+                name: entry.name.to_string(),
                 item,
             });
         }
@@ -162,6 +185,8 @@ impl Module {
 impl Emit for ModuleExports {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emit export section");
+        let mut wasm_export_section = wasm_encoder::ExportSection::new();
+
         // NB: exports are always considered used. They are the roots that the
         // used analysis searches out from.
 
@@ -170,34 +195,40 @@ impl Emit for ModuleExports {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Export);
-        cx.encoder.usize(count);
-
         for export in self.iter() {
-            cx.encoder.str(&export.name);
             match export.item {
                 ExportItem::Function(id) => {
                     let index = cx.indices.get_func_index(id);
-                    cx.encoder.byte(0x00);
-                    cx.encoder.u32(index);
+                    wasm_export_section.export(&export.name, wasm_encoder::ExportKind::Func, index);
                 }
                 ExportItem::Table(id) => {
                     let index = cx.indices.get_table_index(id);
-                    cx.encoder.byte(0x01);
-                    cx.encoder.u32(index);
+                    wasm_export_section.export(
+                        &export.name,
+                        wasm_encoder::ExportKind::Table,
+                        index,
+                    );
                 }
                 ExportItem::Memory(id) => {
                     let index = cx.indices.get_memory_index(id);
-                    cx.encoder.byte(0x02);
-                    cx.encoder.u32(index);
+                    wasm_export_section.export(
+                        &export.name,
+                        wasm_encoder::ExportKind::Memory,
+                        index,
+                    );
                 }
                 ExportItem::Global(id) => {
                     let index = cx.indices.get_global_index(id);
-                    cx.encoder.byte(0x03);
-                    cx.encoder.u32(index);
+                    wasm_export_section.export(
+                        &export.name,
+                        wasm_encoder::ExportKind::Global,
+                        index,
+                    );
                 }
             }
         }
+
+        cx.wasm_module.section(&wasm_export_section);
     }
 }
 
@@ -344,6 +375,16 @@ mod tests {
         module.exports.delete(export_id);
 
         assert!(module.exports.get_exported_func(fn_id).is_none());
+    }
+
+    #[test]
+    fn get_func_by_name() {
+        let mut module = Module::default();
+        let fn_id: FunctionId = always_the_same_id();
+        let export_id: ExportId = module.exports.add("dummy", fn_id);
+        assert!(module.exports.get_func("dummy").is_ok());
+        module.exports.delete(export_id);
+        assert!(module.exports.get_func("dummy").is_err());
     }
 
     #[test]

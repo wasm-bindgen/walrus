@@ -40,10 +40,11 @@
       i32.const 1
       i32.const 2
       i32.const 3
-      memory.fill)
+      memory.fill
+    )
     (memory (;0;) 1)
     (export "a" (func 0))
     (data (;0;) "A")
     (data (;1;) (i32.const 0) "b")
-    (data (;2;) "C"))
+    (data (;2;) "C")
 ;)

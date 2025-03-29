@@ -1,7 +1,7 @@
 //! Types in a wasm module.
 
 use crate::arena_set::ArenaSet;
-use crate::emit::{Emit, EmitContext, Section};
+use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
 use crate::module::Module;
 use crate::parse::IndicesToIds;
@@ -48,7 +48,7 @@ impl ModuleTypes {
     /// preserve type names from the WAT.
     pub fn by_name(&self, name: &str) -> Option<TypeId> {
         self.arena.iter().find_map(|(id, ty)| {
-            if ty.name.as_ref().map(|s| s.as_str()) == Some(name) {
+            if ty.name.as_deref() == Some(name) {
                 Some(id)
             } else {
                 None
@@ -118,20 +118,17 @@ impl Module {
         ids: &mut IndicesToIds,
     ) -> Result<()> {
         log::debug!("parsing type section");
-        for ty in section {
-            let fun_ty = match ty? {
-                wasmparser::TypeDef::Func(ty) => ty,
-                _ => unimplemented!("module linking not supported"),
-            };
+        for ty in section.into_iter_err_on_gc_types() {
+            let fun_ty = ty?;
             let id = self.types.arena.next_id();
             let params = fun_ty
-                .params
+                .params()
                 .iter()
                 .map(ValType::parse)
                 .collect::<Result<Vec<_>>>()?
                 .into_boxed_slice();
             let results = fun_ty
-                .returns
+                .results()
                 .iter()
                 .map(ValType::parse)
                 .collect::<Result<Vec<_>>>()?
@@ -148,6 +145,8 @@ impl Emit for ModuleTypes {
     fn emit(&self, cx: &mut EmitContext) {
         log::debug!("emitting type section");
 
+        let mut wasm_type_section = wasm_encoder::TypeSection::new();
+
         let mut tys = self
             .arena
             .iter()
@@ -158,15 +157,17 @@ impl Emit for ModuleTypes {
             return;
         }
 
-        let mut cx = cx.start_section(Section::Type);
-        cx.encoder.usize(tys.len());
-
         // Sort for deterministic ordering.
         tys.sort_by_key(|&(_, ty)| ty);
 
         for (id, ty) in tys {
             cx.indices.push_type(id);
-            ty.emit(&mut cx);
+            wasm_type_section.function(
+                ty.params().iter().map(ValType::to_wasmencoder_type),
+                ty.results().iter().map(ValType::to_wasmencoder_type),
+            );
         }
+
+        cx.wasm_module.section(&wasm_type_section);
     }
 }

@@ -118,7 +118,7 @@ impl ModuleImports {
                 }
                 _ => None,
             })
-            .with_context(|| format!("unable to find function export '{}'", name.as_ref()))
+            .with_context(|| format!("unable to find function import '{}'", name.as_ref()))
     }
 
     /// Retrieve an imported function by ID

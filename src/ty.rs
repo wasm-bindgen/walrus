@@ -118,6 +118,18 @@ impl Type {
         &self.results
     }
 
+    /// Get the parameters to this function type.
+    #[inline]
+    pub fn params_mut(&mut self) -> &mut [ValType] {
+        &mut *self.params
+    }
+
+    /// Get the results of this function type.
+    #[inline]
+    pub fn results_mut(&mut self) -> &mut [ValType] {
+        &mut *self.results
+    }
+
     pub(crate) fn is_for_function_entry(&self) -> bool {
         self.is_for_function_entry
     }

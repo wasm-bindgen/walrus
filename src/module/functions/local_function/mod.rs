@@ -85,7 +85,7 @@ impl LocalFunction {
         let mut ops_reader = body.get_operators_reader()?;
         while !ops_reader.eof() {
             let pos = ops_reader.original_position();
-            let inst : Operator = ops_reader.read()?;
+            let inst: Operator = ops_reader.read()?;
             let loc = if let Some(ref on_instr_pos) = on_instr_pos {
                 on_instr_pos(&pos)
             } else {
@@ -1614,11 +1614,24 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         | Operator::BrOnNull { relative_depth: _ }
         | Operator::BrOnNonNull { relative_depth: _ }
         | Operator::ContNew { cont_type_index: _ }
-        | Operator::ContBind { argument_index: _, result_index: _ }
+        | Operator::ContBind {
+            argument_index: _,
+            result_index: _,
+        }
         | Operator::Suspend { tag_index: _ }
-        | Operator::Resume { cont_type_index: _, resume_table: _ }
-        | Operator::ResumeThrow { cont_type_index: _, tag_index: _, resume_table: _ }
-        | Operator::Switch { cont_type_index: _, tag_index: _ }
+        | Operator::Resume {
+            cont_type_index: _,
+            resume_table: _,
+        }
+        | Operator::ResumeThrow {
+            cont_type_index: _,
+            tag_index: _,
+            resume_table: _,
+        }
+        | Operator::Switch {
+            cont_type_index: _,
+            tag_index: _,
+        }
         | Operator::I64Add128
         | Operator::I64Sub128
         | Operator::I64MulWideS

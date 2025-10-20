@@ -239,7 +239,10 @@ impl Emit for ModuleElements {
                         .iter()
                         .map(|expr| expr.to_wasmencoder_type(cx))
                         .collect::<Vec<_>>();
-                    let els = wasm_encoder::Elements::Expressions(ref_type, std::borrow::Cow::Borrowed(&const_exprs));
+                    let els = wasm_encoder::Elements::Expressions(
+                        ref_type,
+                        std::borrow::Cow::Borrowed(&const_exprs),
+                    );
                     emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
             }

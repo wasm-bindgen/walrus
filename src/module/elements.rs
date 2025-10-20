@@ -227,7 +227,7 @@ impl Emit for ModuleElements {
                         .iter()
                         .map(|&func| cx.indices.get_func_index(func))
                         .collect::<Vec<_>>();
-                    let els = wasm_encoder::Elements::Functions(&idx);
+                    let els = wasm_encoder::Elements::Functions(std::borrow::Cow::Borrowed(&idx));
                     emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
                 ElementItems::Expressions(ty, const_exprs) => {
@@ -239,7 +239,7 @@ impl Emit for ModuleElements {
                         .iter()
                         .map(|expr| expr.to_wasmencoder_type(cx))
                         .collect::<Vec<_>>();
-                    let els = wasm_encoder::Elements::Expressions(ref_type, &const_exprs);
+                    let els = wasm_encoder::Elements::Expressions(ref_type, std::borrow::Cow::Borrowed(&const_exprs));
                     emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
             }

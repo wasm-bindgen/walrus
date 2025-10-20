@@ -50,7 +50,7 @@ impl LocalFunction {
         id: FunctionId,
         ty: TypeId,
         args: Vec<LocalId>,
-        mut body: wasmparser::BinaryReader<'_>,
+        body: wasmparser::FunctionBody<'_>,
         on_instr_pos: Option<&(dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static)>,
         mut validator: FuncValidator<ValidatorResources>,
     ) -> Result<LocalFunction> {
@@ -82,9 +82,10 @@ impl LocalFunction {
         let entry = ctx.push_control_with_ty(BlockKind::FunctionEntry, ty);
         let mut instruction_mapping = BTreeMap::new();
         ctx.func.builder.entry = Some(entry);
-        while !body.eof() {
-            let pos = body.original_position();
-            let inst = body.read_operator()?;
+        let mut ops_reader = body.get_operators_reader()?;
+        while !ops_reader.eof() {
+            let pos = ops_reader.original_position();
+            let inst : Operator = ops_reader.read()?;
             let loc = if let Some(ref on_instr_pos) = on_instr_pos {
                 on_instr_pos(&pos)
             } else {
@@ -95,7 +96,7 @@ impl LocalFunction {
             instruction_mapping.insert(pos - code_address_offset, loc);
         }
         ctx.func.instruction_mapping = instruction_mapping.into_iter().collect();
-        validator.finish(body.original_position())?;
+        ops_reader.finish()?;
 
         debug_assert!(ctx.controls.is_empty());
 
@@ -1611,7 +1612,18 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         | Operator::ReturnCallRef { type_index: _ }
         | Operator::RefAsNonNull
         | Operator::BrOnNull { relative_depth: _ }
-        | Operator::BrOnNonNull { relative_depth: _ } => {
+        | Operator::BrOnNonNull { relative_depth: _ }
+        | Operator::ContNew { cont_type_index: _ }
+        | Operator::ContBind { argument_index: _, result_index: _ }
+        | Operator::Suspend { tag_index: _ }
+        | Operator::Resume { cont_type_index: _, resume_table: _ }
+        | Operator::ResumeThrow { cont_type_index: _, tag_index: _, resume_table: _ }
+        | Operator::Switch { cont_type_index: _, tag_index: _ }
+        | Operator::I64Add128
+        | Operator::I64Sub128
+        | Operator::I64MulWideS
+        | Operator::I64MulWideU
+        | _ => {
             unimplemented!("unsupported operator: {:?}", inst)
         }
     }

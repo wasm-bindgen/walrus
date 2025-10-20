@@ -54,7 +54,7 @@ impl ConstExpr {
             End => {}
             _ => bail!("invalid constant expression"),
         }
-        reader.ensure_end()?;
+        reader.finish()?;
         Ok(val)
     }
 

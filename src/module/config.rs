@@ -166,8 +166,9 @@ impl ModuleConfig {
     pub(crate) fn get_wasmparser_wasm_features(&self) -> WasmFeatures {
         // Start from empty so that we explicitly control what is enabled.
         let mut features = WasmFeatures::empty();
-        // This is not a proposal.
+        // These are not proposals.
         features.insert(WasmFeatures::FLOATS);
+        features.insert(WasmFeatures::GC_TYPES);
         // Always enable [finished proposals](https://github.com/WebAssembly/proposals/blob/main/finished-proposals.md).
         features.insert(WasmFeatures::MUTABLE_GLOBAL);
         features.insert(WasmFeatures::SATURATING_FLOAT_TO_INT);

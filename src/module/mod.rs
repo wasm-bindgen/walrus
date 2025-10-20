@@ -226,7 +226,7 @@ impl Module {
                     ret.reserve_data(count, &mut indices);
                 }
                 Payload::CodeSectionStart { count, range, .. } => {
-                    validator.code_section_start(count, &range)?;
+                    validator.code_section_start(&range)?;
                     ret.funcs.code_section_offset = range.start;
                 }
                 Payload::CodeSectionEntry(body) => {
@@ -239,13 +239,13 @@ impl Module {
                     let result =
                         match s.name() {
                             "producers" => wasmparser::ProducersSectionReader::new(
-                                BinaryReader::new(s.data(), s.data_offset(), wasm_features),
+                                BinaryReader::new_features(s.data(), s.data_offset(), wasm_features),
                             )
                             .map_err(anyhow::Error::from)
                             .and_then(|s| ret.parse_producers_section(s)),
                             "name" => {
                                 let name_section_reader = wasmparser::NameSectionReader::new(
-                                    BinaryReader::new(s.data(), s.data_offset(), wasm_features),
+                                    BinaryReader::new_features(s.data(), s.data_offset(), wasm_features),
                                 );
                                 ret.parse_name_section(name_section_reader, &indices)
                             }
@@ -279,26 +279,18 @@ impl Module {
                     continue;
                 }
 
-                // component module proposal is not implemented yet.
-                Payload::ModuleSection { .. }
-                | Payload::InstanceSection(..)
-                | Payload::CoreTypeSection(..)
-                | Payload::ComponentSection { .. }
-                | Payload::ComponentInstanceSection(..)
-                | Payload::ComponentAliasSection(..)
-                | Payload::ComponentTypeSection(..)
-                | Payload::ComponentCanonicalSection(..)
-                | Payload::ComponentStartSection { .. }
-                | Payload::ComponentImportSection(..)
-                | Payload::ComponentExportSection(..) => {
-                    bail!("not supported yet");
-                }
-
                 // exception handling is not implemented yet.
                 Payload::TagSection(s) => {
                     validator.tag_section(&s)?;
                     bail!("not supported yet");
                 }
+
+                // Among other things, the component module proposal is not
+                // implemented yet.
+                _ => {
+                    bail!("not supported yet");
+                }
+
             }
         }
 

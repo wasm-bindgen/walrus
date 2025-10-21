@@ -25,6 +25,8 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
     let extra_args: &[&str] = match proposal {
         None => &[],
         Some("annotations") => return Ok(()),
+        Some("custom-descriptors") => return Ok(()),
+        Some("custom-page-sizes") => return Ok(()),
         Some("exception-handling") => return Ok(()),
         Some("extended-const") => return Ok(()),
         Some("function-references") => return Ok(()),
@@ -32,6 +34,7 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
         Some("relaxed-simd") => return Ok(()),
         Some("tail-call") => return Ok(()),
         Some("threads") => return Ok(()),
+        Some("wide-arithmetic") => return Ok(()),
         Some(other) => bail!("unknown wasm proposal: {}", other),
     };
 

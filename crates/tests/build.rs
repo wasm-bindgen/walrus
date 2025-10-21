@@ -6,10 +6,58 @@ use walkdir::WalkDir;
 
 fn is_known_failing(name: &str) -> bool {
     match name {
-        // enabling multi-memory means that these tests fail, but the failure is
-        // benign.
-        "tests_spec_tests_proposals_bulk_memory_operations_binary_wast"
-        | "tests_spec_tests_proposals_reference_types_binary_wast" => true,
+        // Tests that require the "gc" feature.
+        "tests_spec_tests_array_fill_wast"
+        | "tests_spec_tests_br_on_cast_wast"
+        | "tests_spec_tests_br_on_cast_fail_wast"
+        | "tests_spec_tests_i31_wast"
+        | "tests_spec_tests_array_new_elem_wast"
+        | "tests_spec_tests_array_new_data_wast"
+        | "tests_spec_tests_array_init_elem_wast"
+        | "tests_spec_tests_array_fill_wast"
+        | "tests_spec_tests_array_copy_wast"
+        | "tests_spec_tests_array_wast"
+        | "tests_spec_tests_data_wast"
+        | "tests_spec_tests_extern_wast"
+        | "tests_spec_tests_array_init_data_wast"
+        | "tests_spec_tests_ref_cast_wast"
+        | "tests_spec_tests_ref_null_wast"
+        | "tests_spec_tests_ref_test_wast"
+        | "tests_spec_tests_ref_eq_wast"
+        | "tests_spec_tests_struct_wast"
+        | "tests_spec_tests_type_canon_wast"
+        | "tests_spec_tests_type_subtyping_wast"
+        // Tests that require the "function references" feature.
+        | "tests_spec_tests_br_on_null_wast"
+        | "tests_spec_tests_br_on_non_null_wast"
+        | "tests_spec_tests_instance_wast"
+        | "tests_spec_tests_br_table_wast"
+        | "tests_spec_tests_call_ref_wast"
+        | "tests_spec_tests_local_init_wast"
+        | "tests_spec_tests_linking_wast"
+        | "tests_spec_tests_ref_wast"
+        | "tests_spec_tests_ref_is_null_wast"
+        | "tests_spec_tests_ref_as_non_null_wast"
+        | "tests_spec_tests_return_call_ref_wast"
+        | "tests_spec_tests_elem_wast"
+        | "tests_spec_tests_table_sub_wast"
+        | "tests_spec_tests_type_rec_wast"
+        | "tests_spec_tests_unreached_valid_wast"
+        | "tests_spec_tests_table_wast"
+        | "tests_spec_tests_type_equivalence_wast"
+        // Tests that require the "exceptions" feature.
+        | "tests_spec_tests_imports_wast"
+        | "tests_spec_tests_tag_wast"
+        | "tests_spec_tests_throw_wast"
+        | "tests_spec_tests_throw_ref_wast"
+        | "tests_spec_tests_try_table_wast"
+        // Tests that use legacy syntax that is not supported by wasm-tools.
+        | "tests_spec_tests_legacy_rethrow_wast"
+        | "tests_spec_tests_legacy_throw_wast"
+        | "tests_spec_tests_legacy_try_catch_wast"
+        | "tests_spec_tests_legacy_try_delegate_wast"
+        // Tests that required the "extended constants" feature.
+        | "tests_spec_tests_global_wast" => true,
 
         _ => false,
     }

@@ -29,8 +29,6 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
         Some("extended-const") => return Ok(()),
         Some("function-references") => return Ok(()),
         Some("gc") => return Ok(()),
-        Some("memory64") => &["--enable-memory64"],
-        Some("multi-memory") => &["--enable-multi-memory"],
         Some("relaxed-simd") => return Ok(()),
         Some("tail-call") => return Ok(()),
         Some("threads") => return Ok(()),

@@ -179,11 +179,12 @@ impl ModuleConfig {
         features.insert(WasmFeatures::SIMD);
         features.insert(WasmFeatures::RELAXED_SIMD);
         features.insert(WasmFeatures::TAIL_CALL);
+        features.insert(WasmFeatures::MULTI_MEMORY);
+        features.insert(WasmFeatures::MEMORY64);
         // Enable supported active proposals.
         if !self.only_stable_features {
             // # Fully supported proposals.
-            features.insert(WasmFeatures::MULTI_MEMORY);
-            features.insert(WasmFeatures::MEMORY64);
+            // (Currently nothing in this section)
             // # Partially supported proposals.
             // ## threads
             // spec-tests/proposals/threads still fail

@@ -494,6 +494,15 @@ impl Module {
                         }
                     }
                 }
+                wasmparser::Name::Tag(names) => {
+                    for name in names {
+                        let naming = name?;
+                        match indices.get_tag(naming.index) {
+                            Ok(id) => self.tags.get_mut(id).name = Some(naming.name.to_string()),
+                            Err(e) => warn!("in name section: {}", e),
+                        }
+                    }
+                }
                 wasmparser::Name::Local(l) => {
                     for f in l {
                         let f = f?;
@@ -524,7 +533,6 @@ impl Module {
                 wasmparser::Name::Unknown { ty, .. } => warn!("unknown name subsection {}", ty),
                 wasmparser::Name::Label(_) => warn!("labels name subsection ignored"),
                 wasmparser::Name::Field(_) => warn!("fields name subsection ignored"),
-                wasmparser::Name::Tag(_) => warn!("tags name subsection ignored"),
             }
         }
         Ok(())
@@ -622,6 +630,15 @@ fn emit_name_section(cx: &mut EmitContext) {
         .collect::<Vec<_>>();
     data.sort_by_key(|p| p.0); // sort by index
 
+    let mut tags = cx
+        .module
+        .tags
+        .iter()
+        .filter_map(|tag| tag.name.as_ref().map(|name| (tag, name)))
+        .map(|(tag, name)| (cx.indices.get_tag_index(tag.id()), name))
+        .collect::<Vec<_>>();
+    tags.sort_by_key(|p| p.0); // sort by index
+
     if cx.module.name.is_none()
         && funcs.is_empty()
         && locals.is_empty()
@@ -631,6 +648,7 @@ fn emit_name_section(cx: &mut EmitContext) {
         && globals.is_empty()
         && elements.is_empty()
         && data.is_empty()
+        && tags.is_empty()
     {
         return;
     }
@@ -693,6 +711,14 @@ fn emit_name_section(cx: &mut EmitContext) {
             name_map.append(index, name);
         }
         wasm_name_section.globals(&name_map);
+    }
+
+    if !tags.is_empty() {
+        let mut name_map = wasm_encoder::NameMap::new();
+        for (index, name) in tags {
+            name_map.append(index, name);
+        }
+        wasm_name_section.tags(&name_map);
     }
 
     if !elements.is_empty() {

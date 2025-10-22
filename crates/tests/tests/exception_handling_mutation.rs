@@ -324,3 +324,95 @@ fn imported_tag() {
 
     assert_eq!(wasm2, wasm3);
 }
+
+#[test]
+fn tag_names_round_trip() {
+    let wat = r#"
+        (module
+          (tag $my_error (param i32))
+          (tag $other_error (param i64 i32))
+          (func (export "throw1")
+            i32.const 42
+            throw $my_error
+          )
+        )
+    "#;
+
+    let wasm = wat::parse_str(wat).unwrap();
+    let mut config = ModuleConfig::new();
+    config.generate_producers_section(false);
+    let mut module = config.parse(&wasm).unwrap();
+
+    let tags: Vec<_> = module.tags.iter().collect();
+    assert_eq!(tags.len(), 2);
+
+    let tag_names: Vec<_> = tags.iter().filter_map(|t| t.name.as_ref()).collect();
+    assert_eq!(tag_names.len(), 2);
+    assert!(tag_names.contains(&&"my_error".to_string()));
+    assert!(tag_names.contains(&&"other_error".to_string()));
+
+    let wasm2 = module.emit_wasm();
+    let mut module2 = config.parse(&wasm2).unwrap();
+
+    let tags2: Vec<_> = module2.tags.iter().collect();
+    let tag_names2: Vec<_> = tags2.iter().filter_map(|t| t.name.as_ref()).collect();
+    assert_eq!(tag_names2.len(), 2);
+    assert!(tag_names2.contains(&&"my_error".to_string()));
+    assert!(tag_names2.contains(&&"other_error".to_string()));
+
+    let wasm3 = module2.emit_wasm();
+    assert_eq!(wasm2, wasm3);
+}
+
+#[test]
+fn tag_names_mutation() {
+    let mut config = ModuleConfig::new();
+    config.generate_producers_section(false);
+    let mut module = Module::with_config(config.clone());
+
+    let tag_type = module.types.add(&[ValType::I32], &[]);
+    let tag_id = module.tags.add(tag_type);
+
+    assert!(module.tags.get(tag_id).name.is_none());
+
+    module.tags.get_mut(tag_id).name = Some("custom_error".to_string());
+    assert_eq!(
+        module.tags.get(tag_id).name.as_deref(),
+        Some("custom_error")
+    );
+
+    module.exports.add("my_tag", tag_id);
+
+    let wasm = module.emit_wasm();
+    let module2 = config.parse(&wasm).unwrap();
+
+    let parsed_tag = module2.tags.iter().next().unwrap();
+    assert_eq!(parsed_tag.name.as_deref(), Some("custom_error"));
+}
+
+#[test]
+fn imported_tag_with_name() {
+    let wat = r#"
+        (module
+          (import "env" "exception" (tag $imported_error (param i32)))
+        )
+    "#;
+
+    let wasm = wat::parse_str(wat).unwrap();
+    let mut config = ModuleConfig::new();
+    config.generate_producers_section(false);
+    let mut module = config.parse(&wasm).unwrap();
+
+    let tag = module.tags.iter().next().unwrap();
+    assert_eq!(tag.name.as_deref(), Some("imported_error"));
+    assert!(matches!(tag.kind, walrus::TagKind::Import(_)));
+
+    let wasm2 = module.emit_wasm();
+    let mut module2 = config.parse(&wasm2).unwrap();
+    let wasm3 = module2.emit_wasm();
+
+    let tag2 = module2.tags.iter().next().unwrap();
+    assert_eq!(tag2.name.as_deref(), Some("imported_error"));
+
+    assert_eq!(wasm2, wasm3);
+}

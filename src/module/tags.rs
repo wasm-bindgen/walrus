@@ -19,6 +19,9 @@ pub struct Tag {
     pub ty: TypeId,
     /// The kind of tag (imported or local).
     pub kind: TagKind,
+    /// The name of this tag, used for debugging purposes in the `name`
+    /// custom section.
+    pub name: Option<String>,
 }
 
 /// The kind of tag.
@@ -37,6 +40,7 @@ impl Tag {
             id,
             ty,
             kind: TagKind::Local,
+            name: None,
         }
     }
 
@@ -112,6 +116,7 @@ impl ModuleTags {
             id,
             ty,
             kind: TagKind::Import(import),
+            name: None,
         };
         self.arena.alloc(tag)
     }

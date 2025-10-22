@@ -59,7 +59,7 @@ impl FunctionBuilder {
     }
 
     /// Get a `InstrSeqBuilder` for building and mutating this function's body.
-    pub fn func_body(&mut self) -> InstrSeqBuilder {
+    pub fn func_body(&mut self) -> InstrSeqBuilder<'_> {
         let entry = self.entry.unwrap();
         self.instr_seq(entry)
     }
@@ -89,7 +89,7 @@ impl FunctionBuilder {
     ///     .i32_const(42)
     ///     .drop();
     /// ```
-    pub fn instr_seq(&mut self, id: InstrSeqId) -> InstrSeqBuilder {
+    pub fn instr_seq(&mut self, id: InstrSeqId) -> InstrSeqBuilder<'_> {
         InstrSeqBuilder { id, builder: self }
     }
 
@@ -127,7 +127,7 @@ impl FunctionBuilder {
     ///     .func_body()
     ///     .instr(Block { seq: seq_id });
     /// ```
-    pub fn dangling_instr_seq(&mut self, ty: impl Into<InstrSeqType>) -> InstrSeqBuilder {
+    pub fn dangling_instr_seq(&mut self, ty: impl Into<InstrSeqType>) -> InstrSeqBuilder<'_> {
         let ty = ty.into();
         let id = self.arena.alloc_with_id(|id| InstrSeq::new(id, ty));
         InstrSeqBuilder { id, builder: self }

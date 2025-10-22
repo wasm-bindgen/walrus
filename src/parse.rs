@@ -1,6 +1,6 @@
 use crate::map::IdHashMap;
 use crate::{DataId, ElementId, Function, FunctionId, GlobalId, Result};
-use crate::{LocalId, MemoryId, TableId, TypeId};
+use crate::{LocalId, MemoryId, TableId, TagId, TypeId};
 use anyhow::bail;
 
 /// Maps from old indices in the original Wasm binary to `walrus` IDs.
@@ -25,6 +25,7 @@ pub struct IndicesToIds {
     memories: Vec<MemoryId>,
     elements: Vec<ElementId>,
     data: Vec<DataId>,
+    tags: Vec<TagId>,
     locals: IdHashMap<Function, Vec<LocalId>>,
 }
 
@@ -62,6 +63,7 @@ define_push_get!(push_global, get_global, GlobalId, globals);
 define_push_get!(push_memory, get_memory, MemoryId, memories);
 define_push_get!(push_element, get_element, ElementId, elements);
 define_push_get!(push_data, get_data, DataId, data);
+define_push_get!(push_tag, get_tag, TagId, tags);
 
 impl IndicesToIds {
     /// Pushes a new local ID to map it to the next index internally

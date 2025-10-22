@@ -208,6 +208,7 @@ impl_dot_name_for_id! {
     MemoryId;
     DataId;
     ElementId;
+    TagId;
     InstrSeqId;
 }
 
@@ -263,6 +264,7 @@ impl_dot_name_via_id! {
     Memory;
     Data;
     Element;
+    Tag;
     InstrSeq;
 }
 
@@ -444,7 +446,7 @@ impl DotNode for Global {
         fields.add_field(&[&format!("<b>Global {:?}</b>", self.id())]);
         fields.add_field_with_port("type", "type");
         fields.add_field(&["mutable", if self.mutable { "true" } else { "false" }]);
-        match self.kind {
+        match &self.kind {
             GlobalKind::Import(_imp) => {
                 fields.add_field_with_port("import", "import");
             }
@@ -483,6 +485,7 @@ impl DotNode for Export {
             ExportItem::Table(t) => edges.add_edge_from_port("item", &t),
             ExportItem::Memory(m) => edges.add_edge_from_port("item", &m),
             ExportItem::Global(g) => edges.add_edge_from_port("item", &g),
+            ExportItem::Tag(t) => edges.add_edge_from_port("item", &t),
         }
     }
 }

@@ -14,7 +14,6 @@ fn is_known_failing(name: &str) -> bool {
         | "tests_spec_tests_array_new_elem_wast"
         | "tests_spec_tests_array_new_data_wast"
         | "tests_spec_tests_array_init_elem_wast"
-        | "tests_spec_tests_array_fill_wast"
         | "tests_spec_tests_array_copy_wast"
         | "tests_spec_tests_array_wast"
         | "tests_spec_tests_data_wast"
@@ -27,37 +26,33 @@ fn is_known_failing(name: &str) -> bool {
         | "tests_spec_tests_struct_wast"
         | "tests_spec_tests_type_canon_wast"
         | "tests_spec_tests_type_subtyping_wast"
-        // Tests that require the "function references" feature.
-        | "tests_spec_tests_br_on_null_wast"
+        // Tests that require typed references (ref $typeidx) from function-references proposal
         | "tests_spec_tests_br_on_non_null_wast"
-        | "tests_spec_tests_instance_wast"
+        | "tests_spec_tests_br_on_null_wast"
         | "tests_spec_tests_br_table_wast"
         | "tests_spec_tests_call_ref_wast"
-        | "tests_spec_tests_local_init_wast"
-        | "tests_spec_tests_linking_wast"
-        | "tests_spec_tests_ref_wast"
-        | "tests_spec_tests_ref_is_null_wast"
-        | "tests_spec_tests_ref_as_non_null_wast"
-        | "tests_spec_tests_return_call_ref_wast"
         | "tests_spec_tests_elem_wast"
+        | "tests_spec_tests_instance_wast"
+        | "tests_spec_tests_linking_wast"
+        | "tests_spec_tests_local_init_wast"
+        | "tests_spec_tests_ref_as_non_null_wast"
+        | "tests_spec_tests_ref_is_null_wast"
+        | "tests_spec_tests_ref_wast"
+        | "tests_spec_tests_return_call_ref_wast"
         | "tests_spec_tests_table_sub_wast"
-        | "tests_spec_tests_type_rec_wast"
-        | "tests_spec_tests_unreached_valid_wast"
         | "tests_spec_tests_table_wast"
         | "tests_spec_tests_type_equivalence_wast"
-        // Tests that require the "exceptions" feature.
-        | "tests_spec_tests_imports_wast"
-        | "tests_spec_tests_tag_wast"
-        | "tests_spec_tests_throw_wast"
-        | "tests_spec_tests_throw_ref_wast"
-        | "tests_spec_tests_try_table_wast"
+        | "tests_spec_tests_type_rec_wast"
+        | "tests_spec_tests_unreached_valid_wast"
         // Tests that use legacy syntax that is not supported by wasm-tools.
         | "tests_spec_tests_legacy_rethrow_wast"
         | "tests_spec_tests_legacy_throw_wast"
         | "tests_spec_tests_legacy_try_catch_wast"
         | "tests_spec_tests_legacy_try_delegate_wast"
-        // Tests that required the "extended constants" feature.
-        | "tests_spec_tests_global_wast" => true,
+        // Tests that require GC proposal features not yet supported.
+        | "tests_spec_tests_tag_wast"  // Uses recursive types (rec)
+        | "tests_spec_tests_try_table_wast"  // Uses typed refs like (ref (module 0))
+        => true,
 
         _ => false,
     }

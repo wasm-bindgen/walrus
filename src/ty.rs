@@ -150,6 +150,8 @@ pub enum RefType {
     Funcref,
     /// A nullable reference to an extern object
     Externref,
+    /// A nullable reference to an exception (exnref from exception handling proposal)
+    Exnref,
 }
 
 impl TryFrom<wasmparser::RefType> for RefType {
@@ -159,6 +161,7 @@ impl TryFrom<wasmparser::RefType> for RefType {
         match ref_type {
             wasmparser::RefType::FUNCREF => Ok(RefType::Funcref),
             wasmparser::RefType::EXTERNREF => Ok(RefType::Externref),
+            wasmparser::RefType::EXNREF => Ok(RefType::Exnref),
             _ => bail!("unsupported ref type {:?}", ref_type),
         }
     }
@@ -170,6 +173,7 @@ impl ValType {
         Ok(v.into_boxed_slice())
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn to_wasmencoder_type(&self) -> wasm_encoder::ValType {
         match self {
             ValType::I32 => wasm_encoder::ValType::I32,
@@ -180,6 +184,7 @@ impl ValType {
             ValType::Ref(ref_type) => match ref_type {
                 RefType::Externref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::EXTERNREF),
                 RefType::Funcref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::FUNCREF),
+                RefType::Exnref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::EXNREF),
             },
         }
     }
@@ -194,6 +199,7 @@ impl ValType {
             wasmparser::ValType::Ref(ref_type) => match *ref_type {
                 wasmparser::RefType::EXTERNREF => Ok(ValType::Ref(RefType::Externref)),
                 wasmparser::RefType::FUNCREF => Ok(ValType::Ref(RefType::Funcref)),
+                wasmparser::RefType::EXNREF => Ok(ValType::Ref(RefType::Exnref)),
                 _ => bail!("unsupported ref type {:?}", ref_type),
             },
         }
@@ -213,6 +219,7 @@ impl fmt::Display for ValType {
                 ValType::V128 => "v128",
                 ValType::Ref(RefType::Externref) => "externref",
                 ValType::Ref(RefType::Funcref) => "funcref",
+                ValType::Ref(RefType::Exnref) => "exnref",
             }
         )
     }

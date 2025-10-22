@@ -9,7 +9,7 @@ pub use self::traversals::*;
 
 use crate::{
     DataId, ElementId, FunctionId, GlobalId, LocalFunction, MemoryId, ModuleTypes, RefType,
-    TableId, TypeId, ValType,
+    TableId, TagId, TypeId, ValType,
 };
 use id_arena::Id;
 use std::fmt;
@@ -218,6 +218,9 @@ pub(crate) enum BlockKind {
 
     /// An `Else` block
     Else,
+
+    /// A `try_table` block
+    TryTable,
 
     /// The entry to a function.
     FunctionEntry,
@@ -551,6 +554,33 @@ pub enum Instr {
         func: FunctionId,
     },
 
+    /// `ref.as_non_null` - assert reference is non-null or trap
+    RefAsNonNull {},
+
+    /// `br_on_null` - branch if reference is null
+    BrOnNull {
+        /// The block to branch to if the reference is null
+        block: InstrSeqId,
+    },
+
+    /// `br_on_non_null` - branch if reference is non-null
+    BrOnNonNull {
+        /// The block to branch to if the reference is non-null
+        block: InstrSeqId,
+    },
+
+    /// `call_ref` - call through a typed function reference
+    CallRef {
+        /// The type index of the function being called
+        ty: TypeId,
+    },
+
+    /// `return_call_ref` - tail call through a typed function reference
+    ReturnCallRef {
+        /// The type index of the function being called
+        ty: TypeId,
+    },
+
     /// `v128.bitselect`
     V128Bitselect {},
 
@@ -612,10 +642,58 @@ pub enum Instr {
         /// The table which `func` below is indexing into
         table: TableId,
     },
+
+    /// `try_table ... end` - exception handling with catch table
+    #[walrus(skip_builder)]
+    TryTable {
+        /// The id of this `try_table` instruction's inner `InstrSeq`.
+        seq: InstrSeqId,
+        /// The catch clauses for this try block.
+        #[walrus(skip_visit)]
+        catches: Vec<TryTableCatch>,
+    },
+
+    /// `throw` - throw an exception
+    Throw {
+        /// The tag of the exception being thrown.
+        tag: TagId,
+    },
+
+    /// `throw_ref` - rethrow a caught exception reference
+    ThrowRef {},
 }
 
 /// Argument in `V128Shuffle` of lane indices to select
 pub type ShuffleIndices = [u8; 16];
+
+/// A catch clause in a `TryTable` instruction
+#[derive(Clone, Debug)]
+pub enum TryTableCatch {
+    /// `catch tag label` - catches exception with specific tag, binds payload values
+    Catch {
+        /// The tag to match
+        tag: TagId,
+        /// The block to branch to
+        label: InstrSeqId,
+    },
+    /// `catch_ref tag label` - catches exception with specific tag, binds payload and exnref
+    CatchRef {
+        /// The tag to match
+        tag: TagId,
+        /// The block to branch to
+        label: InstrSeqId,
+    },
+    /// `catch_all label` - catches any exception
+    CatchAll {
+        /// The block to branch to
+        label: InstrSeqId,
+    },
+    /// `catch_all_ref label` - catches any exception, binds exnref
+    CatchAllRef {
+        /// The block to branch to
+        label: InstrSeqId,
+    },
+}
 
 /// Constant values that can show up in WebAssembly
 #[derive(Debug, Clone, Copy)]
@@ -1269,7 +1347,10 @@ impl Instr {
             | Instr::BrTable(..)
             | Instr::Return(..)
             | Instr::ReturnCall(..)
-            | Instr::ReturnCallIndirect(..) => true,
+            | Instr::ReturnCallIndirect(..)
+            | Instr::ReturnCallRef(..)
+            | Instr::Throw(..)
+            | Instr::ThrowRef(..) => true,
 
             // No `_` arm to make sure that we properly update this function as
             // we add support for new instructions.
@@ -1309,6 +1390,10 @@ impl Instr {
             | Instr::RefNull(..)
             | Instr::RefIsNull(..)
             | Instr::RefFunc(..)
+            | Instr::RefAsNonNull(..)
+            | Instr::BrOnNull(..)
+            | Instr::BrOnNonNull(..)
+            | Instr::CallRef(..)
             | Instr::V128Bitselect(..)
             | Instr::I8x16Swizzle(..)
             | Instr::I8x16Shuffle(..)
@@ -1317,7 +1402,8 @@ impl Instr {
             | Instr::TableInit(..)
             | Instr::TableCopy(..)
             | Instr::ElemDrop(..)
-            | Instr::Drop(..) => false,
+            | Instr::Drop(..)
+            | Instr::TryTable(..) => false,
         }
     }
 }
@@ -1356,6 +1442,34 @@ impl VisitMut for InstrSeq {
     {
         if let InstrSeqType::MultiValue(ref mut ty) = self.ty {
             visitor.visit_type_id_mut(ty);
+        }
+    }
+}
+
+impl<'instr> Visit<'instr> for TryTableCatch {
+    fn visit<V>(&self, visitor: &mut V)
+    where
+        V: Visitor<'instr>,
+    {
+        match self {
+            TryTableCatch::Catch { tag, .. } | TryTableCatch::CatchRef { tag, .. } => {
+                visitor.visit_tag_id(tag);
+            }
+            TryTableCatch::CatchAll { .. } | TryTableCatch::CatchAllRef { .. } => {}
+        }
+    }
+}
+
+impl VisitMut for TryTableCatch {
+    fn visit_mut<V>(&mut self, visitor: &mut V)
+    where
+        V: VisitorMut,
+    {
+        match self {
+            TryTableCatch::Catch { tag, .. } | TryTableCatch::CatchRef { tag, .. } => {
+                visitor.visit_tag_id_mut(tag);
+            }
+            TryTableCatch::CatchAll { .. } | TryTableCatch::CatchAllRef { .. } => {}
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::ir::*;
 use crate::map::IdHashSet;
 use crate::{ConstExpr, Data, DataId, DataKind, Element, ExportItem, Function};
-use crate::{ElementId, ElementItems, ElementKind, Module, RefType, Type, TypeId};
+use crate::{ElementId, ElementItems, ElementKind, Module, RefType, Tag, TagId, Type, TypeId};
 use crate::{FunctionId, FunctionKind, Global, GlobalId};
 use crate::{GlobalKind, Memory, MemoryId, Table, TableId};
 
@@ -12,6 +12,7 @@ pub struct Roots {
     funcs: Vec<FunctionId>,
     globals: Vec<GlobalId>,
     memories: Vec<MemoryId>,
+    tags: Vec<TagId>,
     datas: Vec<DataId>,
     elements: Vec<ElementId>,
     used: Used,
@@ -59,6 +60,15 @@ impl Roots {
         self
     }
 
+    /// Adds a new tag to the set of roots
+    pub fn push_tag(&mut self, tag: TagId) -> &mut Roots {
+        if self.used.tags.insert(tag) {
+            log::trace!("tag is used: {:?}", tag);
+            self.tags.push(tag);
+        }
+        self
+    }
+
     fn push_data(&mut self, data: DataId) -> &mut Roots {
         if self.used.data.insert(data) {
             log::trace!("data is used: {:?}", data);
@@ -93,6 +103,8 @@ pub struct Used {
     pub globals: IdHashSet<Global>,
     /// The module's used memories.
     pub memories: IdHashSet<Memory>,
+    /// The module's used tags.
+    pub tags: IdHashSet<Tag>,
     /// The module's used passive element segments.
     pub elements: IdHashSet<Element>,
     /// The module's used passive data segments.
@@ -112,6 +124,7 @@ impl Used {
                 ExportItem::Table(t) => stack.push_table(t),
                 ExportItem::Memory(m) => stack.push_memory(m),
                 ExportItem::Global(g) => stack.push_global(g),
+                ExportItem::Tag(t) => stack.push_tag(t),
             };
         }
 
@@ -155,6 +168,7 @@ impl Used {
             || !stack.tables.is_empty()
             || !stack.memories.is_empty()
             || !stack.globals.is_empty()
+            || !stack.tags.is_empty()
             || !stack.datas.is_empty()
             || !stack.elements.is_empty()
         {
@@ -189,7 +203,26 @@ impl Used {
                     }
                     GlobalKind::Local(ConstExpr::Value(_))
                     | GlobalKind::Local(ConstExpr::RefNull(_)) => {}
+                    GlobalKind::Local(ConstExpr::Extended(ops)) => {
+                        // Mark globals and functions referenced in extended const expressions
+                        for op in ops {
+                            match op {
+                                crate::const_expr::ConstOp::GlobalGet(g) => {
+                                    stack.push_global(*g);
+                                }
+                                crate::const_expr::ConstOp::RefFunc(f) => {
+                                    stack.push_func(*f);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
+            }
+
+            while let Some(t) = stack.tags.pop() {
+                let tag = module.tags.get(t);
+                stack.used.types.insert(tag.ty);
             }
 
             while let Some(t) = stack.memories.pop() {
@@ -285,5 +318,16 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
 
     fn visit_element_id(&mut self, &e: &ElementId) {
         self.stack.push_element(e);
+    }
+
+    fn visit_tag_id(&mut self, &tag: &TagId) {
+        self.stack.push_tag(tag);
+    }
+
+    fn visit_try_table(&mut self, instr: &TryTable) {
+        // Visit the catches to mark tags as used
+        for catch in &instr.catches {
+            catch.visit(self);
+        }
     }
 }

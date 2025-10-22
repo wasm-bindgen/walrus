@@ -23,7 +23,7 @@ pub struct Element {
 }
 
 /// The kind of element segment.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub enum ElementKind {
     /// The element segment is passive.
     Passive,
@@ -136,6 +136,7 @@ impl Module {
                     let ty = match ref_type {
                         wasmparser::RefType::FUNCREF => RefType::Funcref,
                         wasmparser::RefType::EXTERNREF => RefType::Externref,
+                        wasmparser::RefType::EXNREF => RefType::Exnref,
                         _ => bail!("unsupported ref type in element segment {}", i),
                     };
                     let mut const_exprs = Vec::with_capacity(items.count() as usize);
@@ -234,6 +235,7 @@ impl Emit for ModuleElements {
                     let ref_type = match ty {
                         RefType::Funcref => wasm_encoder::RefType::FUNCREF,
                         RefType::Externref => wasm_encoder::RefType::EXTERNREF,
+                        RefType::Exnref => wasm_encoder::RefType::EXNREF,
                     };
                     let const_exprs = const_exprs
                         .iter()

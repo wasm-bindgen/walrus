@@ -123,11 +123,12 @@ impl Module {
         log::debug!("parse global section");
         for g in section {
             let g = g?;
+            let init_expr = ConstExpr::eval(&g.init_expr, ids)?;
             let id = self.globals.add_local(
                 ValType::parse(&g.ty.content_type)?,
                 g.ty.mutable,
                 g.ty.shared,
-                ConstExpr::eval(&g.init_expr, ids)?,
+                init_expr,
             );
             ids.push_global(id);
         }

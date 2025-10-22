@@ -101,7 +101,7 @@ impl<T> TombstoneArena<T> {
             .filter(move |&(id, _)| !self.dead.contains(&id))
     }
 
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             dead: &self.dead,
             inner: self.inner.iter_mut(),
@@ -119,7 +119,7 @@ impl<T> TombstoneArena<T> {
     }
 
     #[cfg(feature = "parallel")]
-    pub fn par_iter_mut(&mut self) -> ParIterMut<T>
+    pub fn par_iter_mut(&mut self) -> ParIterMut<'_, T>
     where
         T: Send + Sync,
     {

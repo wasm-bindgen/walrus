@@ -19,6 +19,7 @@ pub fn run(m: &mut Module) {
             ImportKind::Table(t) => used.tables.contains(t),
             ImportKind::Global(g) => used.globals.contains(g),
             ImportKind::Memory(m) => used.memories.contains(m),
+            ImportKind::Tag(t) => used.tags.contains(t),
         };
         if !used {
             unused_imports.push(import.id());
@@ -36,6 +37,9 @@ pub fn run(m: &mut Module) {
     }
     for id in unused(&used.memories, m.memories.iter().map(|t| t.id())) {
         m.memories.delete(id);
+    }
+    for id in unused(&used.tags, m.tags.iter().map(|t| t.id())) {
+        m.tags.delete(id);
     }
     for id in unused(&used.data, m.data.iter().map(|t| t.id())) {
         m.data.delete(id);

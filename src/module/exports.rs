@@ -5,7 +5,7 @@ use anyhow::Context;
 use crate::emit::{Emit, EmitContext};
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{FunctionId, GlobalId, MemoryId, Module, Result, TableId};
+use crate::{FunctionId, GlobalId, MemoryId, Module, Result, TableId, TagId};
 
 /// The id of an export.
 pub type ExportId = Id<Export>;
@@ -44,6 +44,8 @@ pub enum ExportItem {
     Memory(MemoryId),
     /// An exported global.
     Global(GlobalId),
+    /// An exported tag for exception handling.
+    Tag(TagId),
 }
 
 /// The set of exports in a module.
@@ -168,9 +170,7 @@ impl Module {
                 Table => ExportItem::Table(ids.get_table(entry.index)?),
                 Memory => ExportItem::Memory(ids.get_memory(entry.index)?),
                 Global => ExportItem::Global(ids.get_global(entry.index)?),
-                Tag => {
-                    unimplemented!("exception handling not supported");
-                }
+                Tag => ExportItem::Tag(ids.get_tag(entry.index)?),
             };
             self.exports.arena.alloc_with_id(|id| Export {
                 id,
@@ -225,6 +225,10 @@ impl Emit for ModuleExports {
                         index,
                     );
                 }
+                ExportItem::Tag(id) => {
+                    let index = cx.indices.get_tag_index(id);
+                    wasm_export_section.export(&export.name, wasm_encoder::ExportKind::Tag, index);
+                }
             }
         }
 
@@ -253,6 +257,12 @@ impl From<GlobalId> for ExportItem {
 impl From<TableId> for ExportItem {
     fn from(id: TableId) -> ExportItem {
         ExportItem::Table(id)
+    }
+}
+
+impl From<TagId> for ExportItem {
+    fn from(id: TagId) -> ExportItem {
+        ExportItem::Tag(id)
     }
 }
 

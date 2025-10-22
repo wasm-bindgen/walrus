@@ -28,7 +28,7 @@ pub trait CustomSection: WalrusAny + Debug + Send + Sync {
     /// This should *not* include the section header with id=0, the custom
     /// section's name, or the count of how many bytes are in the
     /// payload. `walrus` will handle these for you.
-    fn data(&self, ids_to_indices: &IdsToIndices) -> Cow<[u8]>;
+    fn data(&self, ids_to_indices: &IdsToIndices) -> Cow<'_, [u8]>;
 
     /// Add any core wasm roots to the provided `roots` argument.
     ///
@@ -115,7 +115,7 @@ impl CustomSection for RawCustomSection {
         &self.name
     }
 
-    fn data(&self, _: &IdsToIndices) -> Cow<[u8]> {
+    fn data(&self, _: &IdsToIndices) -> Cow<'_, [u8]> {
         self.data.as_slice().into()
     }
 }

@@ -265,13 +265,13 @@ impl Emit for ModuleData {
         // so long as the only memory 0 is used.
         let mut wasm_data_section = wasm_encoder::DataSection::new();
         for data in self.iter() {
-            match data.kind {
+            match &data.kind {
                 DataKind::Passive => {
                     wasm_data_section.passive(data.value.clone());
                 }
                 DataKind::Active { memory, offset } => {
                     wasm_data_section.active(
-                        cx.indices.get_memory_index(memory),
+                        cx.indices.get_memory_index(*memory),
                         &offset.to_wasmencoder_type(cx),
                         data.value.clone(),
                     );

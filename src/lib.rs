@@ -31,7 +31,7 @@ pub mod passes;
 mod tombstone_arena;
 mod ty;
 
-pub use crate::const_expr::ConstExpr;
+pub use crate::const_expr::{ConstExpr, ConstOp};
 pub use crate::emit::IdsToIndices;
 pub use crate::error::{ErrorKind, Result};
 pub use crate::function_builder::{FunctionBuilder, InstrSeqBuilder};

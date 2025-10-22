@@ -162,7 +162,7 @@ impl Emit for ModuleTypes {
 
         for (id, ty) in tys {
             cx.indices.push_type(id);
-            wasm_type_section.function(
+            wasm_type_section.ty().function(
                 ty.params().iter().map(ValType::to_wasmencoder_type),
                 ty.results().iter().map(ValType::to_wasmencoder_type),
             );

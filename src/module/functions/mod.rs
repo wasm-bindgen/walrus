@@ -380,11 +380,10 @@ impl Module {
             self.types.add_entry_ty(&results);
 
             // Next up comes all the locals of the function.
-            let mut reader = body.get_binary_reader();
-            for _ in 0..reader.read_var_u32()? {
-                let pos = reader.original_position();
-                let count = reader.read_var_u32()?;
-                let ty = reader.read()?;
+            let mut locals_reader = body.get_locals_reader()?;
+            for _ in 0..locals_reader.get_count() {
+                let pos = locals_reader.original_position();
+                let (count, ty) = locals_reader.read()?;
                 validator.define_locals(pos, count, ty)?;
                 let ty = ValType::parse(&ty)?;
                 for _ in 0..count {
@@ -397,7 +396,7 @@ impl Module {
                 }
             }
 
-            bodies.push((id, reader, args, ty, validator));
+            bodies.push((id, body, args, ty, validator));
         }
 
         // Wasm modules can often have a lot of functions and this operation can

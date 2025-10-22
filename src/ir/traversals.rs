@@ -110,6 +110,14 @@ pub fn dfs_in_order<'instr>(
                     continue 'traversing_blocks;
                 }
 
+                // Pause iteration through this sequence's instructions.
+                // Traverse the try_table body.
+                Instr::TryTable(TryTable { seq, .. }) => {
+                    stack.push((seq_id, index + 1));
+                    stack.push((*seq, 0));
+                    continue 'traversing_blocks;
+                }
+
                 // No other instructions define new instruction sequences, so
                 // continue to the next instruction.
                 _ => continue 'traversing_instrs,
@@ -207,6 +215,10 @@ pub fn dfs_pre_order_mut(
                 }) => {
                     stack.push(*alternative);
                     stack.push(*consequent);
+                }
+
+                Instr::TryTable(TryTable { seq, .. }) => {
+                    stack.push(*seq);
                 }
 
                 _ => {}

@@ -13,6 +13,7 @@ mod locals;
 mod memories;
 mod producers;
 mod tables;
+mod tags;
 mod types;
 
 use crate::emit::{Emit, EmitContext, IdsToIndices};
@@ -36,6 +37,7 @@ pub use crate::module::locals::ModuleLocals;
 pub use crate::module::memories::{Memory, MemoryId, ModuleMemories};
 pub use crate::module::producers::ModuleProducers;
 pub use crate::module::tables::{ModuleTables, Table, TableId};
+pub use crate::module::tags::{ModuleTags, Tag, TagId, TagKind};
 pub use crate::module::types::ModuleTypes;
 use crate::parse::IndicesToIds;
 use anyhow::{bail, Context};
@@ -61,6 +63,8 @@ pub struct Module {
     pub locals: ModuleLocals,
     pub exports: ModuleExports,
     pub memories: ModuleMemories,
+    /// Tags for exception handling
+    pub tags: ModuleTags,
     /// Registration of passive data segments, if any
     pub data: ModuleData,
     /// Registration of passive element segments, if any
@@ -225,7 +229,7 @@ impl Module {
                     validator.data_count_section(count, &range)?;
                     ret.reserve_data(count, &mut indices);
                 }
-                Payload::CodeSectionStart { count, range, .. } => {
+                Payload::CodeSectionStart { range, .. } => {
                     validator.code_section_start(&range)?;
                     ret.funcs.code_section_offset = range.start;
                 }
@@ -281,10 +285,10 @@ impl Module {
                     continue;
                 }
 
-                // exception handling is not implemented yet.
+                // Parse exception handling tags
                 Payload::TagSection(s) => {
                     validator.tag_section(&s)?;
-                    bail!("not supported yet");
+                    ret.parse_tags(s, &mut indices)?;
                 }
 
                 // Among other things, the component module proposal is not
@@ -346,7 +350,7 @@ impl Module {
         self.funcs.emit_func_section(&mut cx);
         self.tables.emit(&mut cx);
         self.memories.emit(&mut cx);
-        // TODO: tag section
+        self.tags.emit(&mut cx);
         self.globals.emit(&mut cx);
         self.exports.emit(&mut cx);
         if let Some(start) = self.start {

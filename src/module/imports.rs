@@ -7,7 +7,7 @@ use anyhow::Context;
 use crate::emit::{Emit, EmitContext};
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{FunctionId, GlobalId, MemoryId, Result, TableId};
+use crate::{FunctionId, GlobalId, MemoryId, Result, TableId, TagId};
 use crate::{Module, RefType, TypeId, ValType};
 
 /// The id of an import.
@@ -50,6 +50,8 @@ pub enum ImportKind {
     Memory(MemoryId),
     /// An imported global.
     Global(GlobalId),
+    /// An imported tag for exception handling.
+    Tag(TagId),
 }
 
 /// The set of imports in a module.
@@ -193,8 +195,10 @@ impl Module {
                     );
                     ids.push_global(id.0);
                 }
-                wasmparser::TypeRef::Tag(_) => {
-                    unimplemented!("exception handling not implemented");
+                wasmparser::TypeRef::Tag(tag_type) => {
+                    let ty = ids.get_type(tag_type.func_type_idx)?;
+                    let id = self.add_import_tag(entry.module, entry.name, ty);
+                    ids.push_tag(id.0);
                 }
             }
         }
@@ -216,6 +220,7 @@ impl Module {
     }
 
     /// Add an imported memory to this module
+    #[allow(clippy::too_many_arguments)]
     pub fn add_import_memory(
         &mut self,
         module: &str,
@@ -266,6 +271,14 @@ impl Module {
         self.imports.add(module, name, global);
         (global, import)
     }
+
+    /// Add an imported tag to this module
+    pub fn add_import_tag(&mut self, module: &str, name: &str, ty: TypeId) -> (TagId, ImportId) {
+        let import = self.imports.arena.next_id();
+        let tag = self.tags.add_import(ty, import);
+        self.imports.add(module, name, tag);
+        (tag, import)
+    }
 }
 
 impl Emit for ModuleImports {
@@ -297,6 +310,7 @@ impl Emit for ModuleImports {
                             element_type: match table.element_ty {
                                 RefType::Externref => wasm_encoder::RefType::EXTERNREF,
                                 RefType::Funcref => wasm_encoder::RefType::FUNCREF,
+                                RefType::Exnref => wasm_encoder::RefType::EXNREF,
                             },
                             table64: table.table64,
                             minimum: table.initial,
@@ -322,6 +336,15 @@ impl Emit for ModuleImports {
                             val_type: g.ty.to_wasmencoder_type(),
                             mutable: g.mutable,
                             shared: g.shared,
+                        })
+                    }
+                    ImportKind::Tag(id) => {
+                        cx.indices.push_tag(id);
+                        let tag = cx.module.tags.get(id);
+                        let ty_idx = cx.indices.get_type_index(tag.ty);
+                        wasm_encoder::EntityType::Tag(wasm_encoder::TagType {
+                            kind: wasm_encoder::TagKind::Exception,
+                            func_type_idx: ty_idx,
                         })
                     }
                 },
@@ -353,6 +376,12 @@ impl From<GlobalId> for ImportKind {
 impl From<TableId> for ImportKind {
     fn from(id: TableId) -> ImportKind {
         ImportKind::Table(id)
+    }
+}
+
+impl From<TagId> for ImportKind {
+    fn from(id: TagId) -> ImportKind {
+        ImportKind::Tag(id)
     }
 }
 

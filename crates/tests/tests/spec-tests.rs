@@ -27,12 +27,12 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
         Some("annotations") => return Ok(()),
         Some("custom-descriptors") => return Ok(()),
         Some("custom-page-sizes") => return Ok(()),
-        Some("exception-handling") => return Ok(()),
-        Some("extended-const") => return Ok(()),
-        Some("function-references") => return Ok(()),
+        Some("exception-handling") => &[],
+        Some("extended-const") => &[],
+        Some("function-references") => &[],
         Some("gc") => return Ok(()),
-        Some("relaxed-simd") => return Ok(()),
-        Some("tail-call") => return Ok(()),
+        Some("relaxed-simd") => &[],
+        Some("tail-call") => &[],
         Some("threads") => return Ok(()),
         Some("wide-arithmetic") => return Ok(()),
         Some(other) => bail!("unknown wasm proposal: {}", other),
@@ -102,16 +102,24 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
                 // The bytes read from the original spec test case
                 let bytes0 = fs::read(&path)?;
                 // The module parsed from bytes0
-                let mut wasm1 = config
-                    .parse(&bytes0)
-                    .with_context(|| format!("error parsing wasm (line {})", line))?;
+                let mut wasm1 = config.parse(&bytes0).with_context(|| {
+                    format!(
+                        "error parsing wasm ({}, line {})",
+                        path.to_string_lossy(),
+                        line
+                    )
+                })?;
                 // The bytes emitted from wasm1
                 let bytes1 = wasm1.emit_wasm();
                 fs::write(&path, &bytes1)?;
                 // The module parsed from bytes1
-                let mut wasm2 = config
-                    .parse(&bytes1)
-                    .with_context(|| format!("error re-parsing wasm (line {})", line))?;
+                let mut wasm2 = config.parse(&bytes1).with_context(|| {
+                    format!(
+                        "error re-parsing wasm ({}, line {})",
+                        path.to_string_lossy(),
+                        line
+                    )
+                })?;
                 // The bytes emitted from wasm2
                 let bytes2 = wasm2.emit_wasm();
 

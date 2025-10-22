@@ -6,6 +6,12 @@ use std::fmt;
 use std::path::Path;
 use wasmparser::WasmFeatures;
 
+/// Type alias for the on_parse callback function.
+type OnParseFn = Box<dyn Fn(&mut Module, &IndicesToIds) -> Result<()> + Sync + Send + 'static>;
+
+/// Type alias for the on_instr_loc callback function.
+type OnInstrLocFn = Box<dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static>;
+
 /// Configuration for a `Module` which currently affects parsing.
 #[derive(Default)]
 pub struct ModuleConfig {
@@ -16,9 +22,8 @@ pub struct ModuleConfig {
     pub(crate) skip_producers_section: bool,
     pub(crate) skip_name_section: bool,
     pub(crate) preserve_code_transform: bool,
-    pub(crate) on_parse:
-        Option<Box<dyn Fn(&mut Module, &IndicesToIds) -> Result<()> + Sync + Send + 'static>>,
-    pub(crate) on_instr_loc: Option<Box<dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static>>,
+    pub(crate) on_parse: Option<OnParseFn>,
+    pub(crate) on_instr_loc: Option<OnInstrLocFn>,
 }
 
 impl Clone for ModuleConfig {
@@ -164,34 +169,9 @@ impl ModuleConfig {
     /// Returns a `wasmparser::WasmFeatures` based on the enabled proposals
     /// which should be used for `wasmparser::Parser`` and `wasmparser::Validator`.
     pub(crate) fn get_wasmparser_wasm_features(&self) -> WasmFeatures {
-        // Start from empty so that we explicitly control what is enabled.
-        let mut features = WasmFeatures::empty();
-        // These are not proposals.
-        features.insert(WasmFeatures::FLOATS);
-        features.insert(WasmFeatures::GC_TYPES);
-        // Always enable [finished proposals](https://github.com/WebAssembly/proposals/blob/main/finished-proposals.md).
-        features.insert(WasmFeatures::MUTABLE_GLOBAL);
-        features.insert(WasmFeatures::SATURATING_FLOAT_TO_INT);
-        features.insert(WasmFeatures::SIGN_EXTENSION);
-        features.insert(WasmFeatures::MULTI_VALUE);
-        features.insert(WasmFeatures::REFERENCE_TYPES);
-        features.insert(WasmFeatures::BULK_MEMORY);
-        features.insert(WasmFeatures::SIMD);
-        features.insert(WasmFeatures::RELAXED_SIMD);
-        features.insert(WasmFeatures::TAIL_CALL);
-        features.insert(WasmFeatures::MULTI_MEMORY);
-        features.insert(WasmFeatures::MEMORY64);
-        // Enable supported active proposals.
-        if !self.only_stable_features {
-            // # Fully supported proposals.
-            // (Currently nothing in this section)
-            // # Partially supported proposals.
-            // ## threads
-            // spec-tests/proposals/threads still fail
-            // round_trip tests already require this feature, so we can't disable it by default.
-            features.insert(WasmFeatures::THREADS);
-        }
-        features
+        // Use wasmparser's default feature set (all phase 4+ proposals)
+        // This matches what wasm-tools uses and avoids validation bugs
+        WasmFeatures::default()
     }
 
     /// Provide a function that is invoked after successfully parsing a module,

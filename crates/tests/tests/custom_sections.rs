@@ -22,7 +22,7 @@ impl CustomSection for HelloCustomSection {
         "hello"
     }
 
-    fn data(&self, _: &IdsToIndices) -> Cow<[u8]> {
+    fn data(&self, _: &IdsToIndices) -> Cow<'_, [u8]> {
         let data = format!("Hello, {}!", self.0);
         data.into_bytes().into()
     }
@@ -80,7 +80,7 @@ fn smoke_test_code_transform() {
             "check-code-transform"
         }
 
-        fn data(&self, _: &IdsToIndices) -> Cow<[u8]> {
+        fn data(&self, _: &IdsToIndices) -> Cow<'_, [u8]> {
             vec![].into()
         }
 

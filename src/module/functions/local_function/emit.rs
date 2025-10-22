@@ -19,6 +19,7 @@ pub(crate) fn run(
         encoder,
         local_indices,
         map,
+        try_table_catches: IdHashMap::default(),
     };
     dfs_in_order(v, func, func.entry_block());
 
@@ -47,10 +48,69 @@ struct Emit<'a> {
 
     // Encoded ExprId -> offset map.
     map: Option<&'a mut Vec<(InstrLocId, usize)>>,
+
+    // Store TryTable catches for emission
+    try_table_catches: IdHashMap<InstrSeq, Vec<TryTableCatch>>,
 }
 
 impl<'instr> Visitor<'instr> for Emit<'_> {
     fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
+        // Special handling for TryTable: must calculate catch labels BEFORE pushing block
+        if matches!(self.block_kinds.last(), Some(BlockKind::TryTable)) {
+            // Get the catches from the TryTable instruction
+            let catches = self
+                .try_table_catches
+                .get(&seq.id())
+                .cloned()
+                .unwrap_or_default();
+
+            // Convert TryTableCatch to wasm_encoder::Catch
+            // IMPORTANT: Calculate branch targets BEFORE pushing the try_table block
+            let wasm_catches: Vec<wasm_encoder::Catch> = catches
+                .iter()
+                .map(|c| match c {
+                    TryTableCatch::Catch { tag, label } => {
+                        let tag_index = self.indices.get_tag_index(*tag);
+                        let label_target = self.branch_target(*label);
+                        wasm_encoder::Catch::One {
+                            tag: tag_index,
+                            label: label_target,
+                        }
+                    }
+                    TryTableCatch::CatchRef { tag, label } => {
+                        let tag_index = self.indices.get_tag_index(*tag);
+                        let label_target = self.branch_target(*label);
+                        wasm_encoder::Catch::OneRef {
+                            tag: tag_index,
+                            label: label_target,
+                        }
+                    }
+                    TryTableCatch::CatchAll { label } => {
+                        let label_target = self.branch_target(*label);
+                        wasm_encoder::Catch::All {
+                            label: label_target,
+                        }
+                    }
+                    TryTableCatch::CatchAllRef { label } => {
+                        let label_target = self.branch_target(*label);
+                        wasm_encoder::Catch::AllRef {
+                            label: label_target,
+                        }
+                    }
+                })
+                .collect();
+
+            // Now push the block and emit the instruction
+            self.blocks.push(seq.id());
+            debug_assert_eq!(self.blocks.len(), self.block_kinds.len());
+
+            self.encoder.instruction(&Instruction::TryTable(
+                self.block_type(seq.ty),
+                std::borrow::Cow::Owned(wasm_catches),
+            ));
+            return;
+        }
+
         self.blocks.push(seq.id());
         debug_assert_eq!(self.blocks.len(), self.block_kinds.len());
 
@@ -71,7 +131,7 @@ impl<'instr> Visitor<'instr> for Emit<'_> {
             // opcode to start them. `Else` blocks are started when `If` blocks
             // end in an `else` opcode, which we handle in `end_instr_seq`
             // below.
-            BlockKind::FunctionEntry | BlockKind::Else => {}
+            BlockKind::FunctionEntry | BlockKind::Else | BlockKind::TryTable => {}
         }
     }
 
@@ -128,6 +188,11 @@ impl<'instr> Visitor<'instr> for Emit<'_> {
                 self.block_kinds.push(BlockKind::If);
                 true
             }
+            TryTable(t) => {
+                self.block_kinds.push(BlockKind::TryTable);
+                self.try_table_catches.insert(t.seq, t.catches.clone());
+                true
+            }
             _ => false,
         };
 
@@ -136,7 +201,7 @@ impl<'instr> Visitor<'instr> for Emit<'_> {
         }
 
         self.encoder.instruction(&match instr {
-            Block(_) | Loop(_) | IfElse(_) => unreachable!(),
+            Block(_) | Loop(_) | IfElse(_) | TryTable(_) => unreachable!(),
 
             BrTable(e) => {
                 let default = self.branch_target(e.default);
@@ -147,8 +212,8 @@ impl<'instr> Visitor<'instr> for Emit<'_> {
             Const(c) => match &c.value {
                 Value::I32(v) => Instruction::I32Const(*v),
                 Value::I64(v) => Instruction::I64Const(*v),
-                Value::F32(v) => Instruction::F32Const(*v),
-                Value::F64(v) => Instruction::F64Const(*v),
+                Value::F32(v) => Instruction::F32Const((*v).into()),
+                Value::F64(v) => Instruction::F64Const((*v).into()),
                 Value::V128(v) => Instruction::V128Const(*v as i128),
             },
 
@@ -812,9 +877,18 @@ impl<'instr> Visitor<'instr> for Emit<'_> {
                     shared: false,
                     ty: wasm_encoder::AbstractHeapType::Func,
                 },
+                RefType::Exnref => wasm_encoder::HeapType::Abstract {
+                    shared: false,
+                    ty: wasm_encoder::AbstractHeapType::Exn,
+                },
             }),
             RefIsNull(_) => Instruction::RefIsNull,
             RefFunc(e) => Instruction::RefFunc(self.indices.get_func_index(e.func)),
+            RefAsNonNull(_) => Instruction::RefAsNonNull,
+            BrOnNull(e) => Instruction::BrOnNull(self.branch_target(e.block)),
+            BrOnNonNull(e) => Instruction::BrOnNonNull(self.branch_target(e.block)),
+            CallRef(e) => Instruction::CallRef(self.indices.get_type_index(e.ty)),
+            ReturnCallRef(e) => Instruction::ReturnCallRef(self.indices.get_type_index(e.ty)),
 
             V128Bitselect(_) => Instruction::V128Bitselect,
             I8x16Shuffle(e) => Instruction::I8x16Shuffle(e.indices),
@@ -883,6 +957,13 @@ impl<'instr> Visitor<'instr> for Emit<'_> {
                     table_index,
                 }
             }
+
+            Throw(e) => {
+                let tag_index = self.indices.get_tag_index(e.tag);
+                Instruction::Throw(tag_index)
+            }
+
+            ThrowRef(_) => Instruction::ThrowRef,
         });
     }
 }

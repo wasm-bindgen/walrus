@@ -6,7 +6,7 @@ use crate::ir::Local;
 use crate::map::{IdHashMap, IdHashSet};
 use crate::{CodeTransform, Global, GlobalId, Memory, MemoryId, Module, Table, TableId};
 use crate::{Data, DataId, Element, ElementId, Function, FunctionId};
-use crate::{Type, TypeId};
+use crate::{Tag, TagId, Type, TypeId};
 
 pub struct EmitContext<'a> {
     pub module: &'a Module,
@@ -22,7 +22,7 @@ pub trait Emit {
     fn emit(&self, cx: &mut EmitContext);
 }
 
-impl<'a, T: ?Sized + Emit> Emit for &'a T {
+impl<T: ?Sized + Emit> Emit for &T {
     fn emit(&self, cx: &mut EmitContext) {
         T::emit(self, cx)
     }
@@ -44,6 +44,7 @@ pub struct IdsToIndices {
     memories: IdHashMap<Memory, u32>,
     elements: IdHashMap<Element, u32>,
     data: IdHashMap<Data, u32>,
+    tags: IdHashMap<Tag, u32>,
     pub(crate) locals: IdHashMap<Function, IdHashMap<Local, u32>>,
 }
 
@@ -97,6 +98,7 @@ define_get_push_index! {
     get_global_index, push_global, GlobalId, globals;
     get_memory_index, push_memory, MemoryId, memories;
     get_element_index, push_element, ElementId, elements;
+    get_tag_index, push_tag, TagId, tags;
 }
 define_get_index! {
     get_data_index, DataId, data;

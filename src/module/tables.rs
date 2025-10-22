@@ -191,6 +191,7 @@ impl Emit for ModuleTables {
                 element_type: match table.element_ty {
                     RefType::Externref => wasm_encoder::RefType::EXTERNREF,
                     RefType::Funcref => wasm_encoder::RefType::FUNCREF,
+                    RefType::Exnref => wasm_encoder::RefType::EXNREF,
                 },
                 shared: false,
             });

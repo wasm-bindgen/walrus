@@ -1,7 +1,7 @@
 //! Handling of the wasm `producers` section
 //!
 //! Specified upstream at
-//! https://github.com/WebAssembly/tool-conventions/blob/master/ProducersSection.md
+//! <https://github.com/WebAssembly/tool-conventions/blob/master/ProducersSection.md>
 
 use crate::emit::{Emit, EmitContext};
 use crate::error::Result;

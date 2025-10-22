@@ -13,6 +13,13 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use wasmparser::{FuncValidator, Operator, ValidatorResources};
 
+/// Return type for emit_locals: (encoded locals, used locals set, local index map)
+type EmitLocalsResult = (
+    Vec<(u32, wasm_encoder::ValType)>,
+    IdHashSet<Local>,
+    IdHashMap<Local, u32>,
+);
+
 /// A function defined locally within the wasm module.
 #[derive(Debug)]
 pub struct LocalFunction {
@@ -44,6 +51,7 @@ impl LocalFunction {
     ///
     /// Validates the given function body and constructs the `Instr` IR at the
     /// same time.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(
         module: &Module,
         indices: &IndicesToIds,
@@ -207,14 +215,7 @@ impl LocalFunction {
     }
 
     /// Emit this function's compact locals declarations.
-    pub(crate) fn emit_locals(
-        &self,
-        module: &Module,
-    ) -> (
-        Vec<(u32, wasm_encoder::ValType)>,
-        IdHashSet<Local>,
-        IdHashMap<Local, u32>,
-    ) {
+    pub(crate) fn emit_locals(&self, module: &Module) -> EmitLocalsResult {
         let used_set = self.used_locals();
         let mut used_locals = used_set.iter().cloned().collect::<Vec<_>>();
         // Sort to ensure we assign local indexes deterministically, and
@@ -280,7 +281,7 @@ impl LocalFunction {
 
 fn block_result_tys(ctx: &ValidationContext, ty: wasmparser::BlockType) -> Result<Box<[ValType]>> {
     match ty {
-        wasmparser::BlockType::Type(ty) => ValType::from_wasmparser_type(ty).map(Into::into),
+        wasmparser::BlockType::Type(ty) => ValType::from_wasmparser_type(ty),
         wasmparser::BlockType::FuncType(idx) => {
             let ty = ctx.indices.get_type(idx)?;
             Ok(ctx.module.types.results(ty).into())
@@ -1017,6 +1018,27 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             let func = ctx.indices.get_func(function_index).unwrap();
             ctx.alloc_instr(RefFunc { func }, loc);
         }
+        Operator::RefAsNonNull => {
+            ctx.alloc_instr(RefAsNonNull {}, loc);
+        }
+        Operator::BrOnNull { relative_depth } => {
+            let n = relative_depth as usize;
+            let block = ctx.control(n).unwrap().block;
+            ctx.alloc_instr(BrOnNull { block }, loc);
+        }
+        Operator::BrOnNonNull { relative_depth } => {
+            let n = relative_depth as usize;
+            let block = ctx.control(n).unwrap().block;
+            ctx.alloc_instr(BrOnNonNull { block }, loc);
+        }
+        Operator::CallRef { type_index } => {
+            let ty = ctx.indices.get_type(type_index).unwrap();
+            ctx.alloc_instr(CallRef { ty }, loc);
+        }
+        Operator::ReturnCallRef { type_index } => {
+            let ty = ctx.indices.get_type(type_index).unwrap();
+            ctx.alloc_instr(ReturnCallRef { ty }, loc);
+        }
 
         Operator::I8x16Swizzle => {
             ctx.alloc_instr(I8x16Swizzle {}, loc);
@@ -1357,12 +1379,62 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ternop(ctx, TernaryOp::I32x4RelaxedDotI8x16I7x16AddS)
         }
 
+        // Exception handling instructions
+        Operator::Throw { tag_index } => {
+            let tag = ctx.indices.get_tag(tag_index).unwrap();
+            ctx.alloc_instr(Throw { tag }, loc);
+            ctx.unreachable();
+        }
+        Operator::ThrowRef => {
+            ctx.alloc_instr(ThrowRef {}, loc);
+            ctx.unreachable();
+        }
+        Operator::TryTable { try_table } => {
+            let param_tys = block_param_tys(ctx, try_table.ty).unwrap();
+            let result_tys = block_result_tys(ctx, try_table.ty).unwrap();
+
+            // Parse the catch clauses
+            let mut catches = Vec::new();
+            for catch in try_table.catches.iter() {
+                let catch_clause = match catch {
+                    wasmparser::Catch::One { tag, label } => {
+                        let tag_id = ctx.indices.get_tag(*tag).unwrap();
+                        let label_seq = ctx.control(*label as usize).unwrap().block;
+                        TryTableCatch::Catch {
+                            tag: tag_id,
+                            label: label_seq,
+                        }
+                    }
+                    wasmparser::Catch::OneRef { tag, label } => {
+                        let tag_id = ctx.indices.get_tag(*tag).unwrap();
+                        let label_seq = ctx.control(*label as usize).unwrap().block;
+                        TryTableCatch::CatchRef {
+                            tag: tag_id,
+                            label: label_seq,
+                        }
+                    }
+                    wasmparser::Catch::All { label } => {
+                        let label_seq = ctx.control(*label as usize).unwrap().block;
+                        TryTableCatch::CatchAll { label: label_seq }
+                    }
+                    wasmparser::Catch::AllRef { label } => {
+                        let label_seq = ctx.control(*label as usize).unwrap().block;
+                        TryTableCatch::CatchAllRef { label: label_seq }
+                    }
+                };
+                catches.push(catch_clause);
+            }
+
+            let seq = ctx
+                .push_control(BlockKind::TryTable, param_tys, result_tys)
+                .unwrap();
+            ctx.alloc_instr_in_control(1, TryTable { seq, catches }, loc)
+                .unwrap();
+        }
+
         // List all unimplmented operators instead of have a catch-all arm.
         // So that future upgrades won't miss additions to this list that may be important to know.
-        Operator::TryTable { try_table: _ }
-        | Operator::Throw { tag_index: _ }
-        | Operator::ThrowRef
-        | Operator::Try { blockty: _ }
+        Operator::Try { blockty: _ }
         | Operator::Catch { tag_index: _ }
         | Operator::Rethrow { relative_depth: _ }
         | Operator::Delegate { relative_depth: _ }
@@ -1608,11 +1680,6 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             array_type_index: _,
         }
         | Operator::RefI31Shared
-        | Operator::CallRef { type_index: _ }
-        | Operator::ReturnCallRef { type_index: _ }
-        | Operator::RefAsNonNull
-        | Operator::BrOnNull { relative_depth: _ }
-        | Operator::BrOnNonNull { relative_depth: _ }
         | Operator::ContNew { cont_type_index: _ }
         | Operator::ContBind {
             argument_index: _,

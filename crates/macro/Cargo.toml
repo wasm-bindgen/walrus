@@ -1,6 +1,6 @@
 [package]
 authors = ["Nick Fitzgerald <fitzgen@gmail.com>"]
-edition = "2018"
+edition = "2021"
 name = "walrus-macro"
 version = "0.22.0"
 license = "MIT/Apache-2.0"

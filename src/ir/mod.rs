@@ -222,6 +222,15 @@ pub(crate) enum BlockKind {
     /// A `try_table` block
     TryTable,
 
+    /// A `try` block (legacy exception handling)
+    Try,
+
+    /// A `catch` handler block (legacy exception handling)
+    Catch,
+
+    /// A `catch_all` handler block (legacy exception handling)
+    CatchAll,
+
     /// The entry to a function.
     FunctionEntry,
 }
@@ -643,7 +652,7 @@ pub enum Instr {
         table: TableId,
     },
 
-    /// `try_table ... end` - exception handling with catch table
+    /// `try_table ... end` - exception handling with catch table (modern proposal)
     #[walrus(skip_builder)]
     TryTable {
         /// The id of this `try_table` instruction's inner `InstrSeq`.
@@ -661,10 +670,51 @@ pub enum Instr {
 
     /// `throw_ref` - rethrow a caught exception reference
     ThrowRef {},
+
+    // Legacy exception handling instructions (phase 1 proposal)
+    // Support these as long as browsers also support them
+    /// `try blocktype ... end` - try block with catch handlers (legacy)
+    #[walrus(skip_builder)]
+    Try {
+        /// The id of this `try` block's inner `InstrSeq` (the try body).
+        seq: InstrSeqId,
+        /// The catch handlers for this try block
+        #[walrus(skip_visit)]
+        catches: Vec<LegacyCatch>,
+    },
+
+    /// `rethrow relative_depth` - rethrow a caught exception (legacy)
+    Rethrow {
+        /// The relative depth of the catch block
+        #[walrus(skip_visit)]
+        relative_depth: u32,
+    },
 }
 
 /// Argument in `V128Shuffle` of lane indices to select
 pub type ShuffleIndices = [u8; 16];
+
+/// A catch clause in a legacy `Try` instruction
+#[derive(Clone, Debug)]
+pub enum LegacyCatch {
+    /// `catch tag` - catches exception with specific tag
+    Catch {
+        /// The tag to match
+        tag: TagId,
+        /// The catch handler block
+        handler: InstrSeqId,
+    },
+    /// `catch_all` - catches any exception
+    CatchAll {
+        /// The catch-all handler block
+        handler: InstrSeqId,
+    },
+    /// `delegate relative_depth` - delegates to outer block instead of catching
+    Delegate {
+        /// The relative depth to delegate to
+        relative_depth: u32,
+    },
+}
 
 /// A catch clause in a `TryTable` instruction
 #[derive(Clone, Debug)]
@@ -1350,7 +1400,8 @@ impl Instr {
             | Instr::ReturnCallIndirect(..)
             | Instr::ReturnCallRef(..)
             | Instr::Throw(..)
-            | Instr::ThrowRef(..) => true,
+            | Instr::ThrowRef(..)
+            | Instr::Rethrow(..) => true,
 
             // No `_` arm to make sure that we properly update this function as
             // we add support for new instructions.
@@ -1403,7 +1454,8 @@ impl Instr {
             | Instr::TableCopy(..)
             | Instr::ElemDrop(..)
             | Instr::Drop(..)
-            | Instr::TryTable(..) => false,
+            | Instr::TryTable(..)
+            | Instr::Try(..) => false,
         }
     }
 }

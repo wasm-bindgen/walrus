@@ -1432,14 +1432,77 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
                 .unwrap();
         }
 
+        // Legacy exception handling (phase 1 proposal)
+        Operator::Try { blockty } => {
+            let param_tys = block_param_tys(ctx, blockty).unwrap();
+            let result_tys = block_result_tys(ctx, blockty).unwrap();
+            let seq = ctx
+                .push_control(BlockKind::Try, param_tys, result_tys)
+                .unwrap();
+            ctx.alloc_instr_in_control(
+                1,
+                Try {
+                    seq,
+                    catches: Vec::new(),
+                },
+                loc,
+            )
+            .unwrap();
+        }
+        Operator::Catch { tag_index } => {
+            // Pop the current try/catch control frame
+            let (frame, prev_block) = ctx.pop_control().unwrap();
+
+            // Get the tag and its parameters
+            let tag = ctx.indices.get_tag(tag_index).unwrap();
+            let tag_ty = ctx.module.tags.get(tag).ty();
+            let (handler_params, _) = ctx.module.types.params_results(tag_ty);
+            let handler_params: Box<[_]> = handler_params.into();
+
+            // End the previous block (try or previous catch)
+            ctx.func.block_mut(prev_block).end = loc;
+
+            // Push a new control frame for this catch handler
+            let handler = ctx
+                .push_control(BlockKind::Catch, handler_params, frame.end_types.clone())
+                .unwrap();
+
+            // Add the catch to the parent Try instruction
+            ctx.add_legacy_catch(LegacyCatch::Catch { tag, handler })
+                .unwrap();
+        }
+        Operator::CatchAll => {
+            // Pop the current try/catch control frame
+            let (frame, prev_block) = ctx.pop_control().unwrap();
+
+            // End the previous block (try or previous catch)
+            ctx.func.block_mut(prev_block).end = loc;
+
+            // Push a new control frame for this catch-all handler (no parameters)
+            let empty_params: Box<[ValType]> = Box::new([]);
+            let handler = ctx
+                .push_control(BlockKind::CatchAll, empty_params, frame.end_types.clone())
+                .unwrap();
+
+            // Add the catch-all to the parent Try instruction
+            ctx.add_legacy_catch(LegacyCatch::CatchAll { handler })
+                .unwrap();
+        }
+        Operator::Delegate { relative_depth } => {
+            // Delegate to an outer block - ends the try block early
+            ctx.add_legacy_catch(LegacyCatch::Delegate { relative_depth })
+                .unwrap();
+            ctx.pop_control().unwrap();
+        }
+        Operator::Rethrow { relative_depth } => {
+            // Rethrow a caught exception
+            ctx.alloc_instr(Rethrow { relative_depth }, loc);
+            ctx.unreachable();
+        }
+
         // List all unimplmented operators instead of have a catch-all arm.
         // So that future upgrades won't miss additions to this list that may be important to know.
-        Operator::Try { blockty: _ }
-        | Operator::Catch { tag_index: _ }
-        | Operator::Rethrow { relative_depth: _ }
-        | Operator::Delegate { relative_depth: _ }
-        | Operator::CatchAll
-        | Operator::RefEq
+        Operator::RefEq
         | Operator::StructNew {
             struct_type_index: _,
         }

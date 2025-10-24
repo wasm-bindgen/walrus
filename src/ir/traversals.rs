@@ -118,6 +118,26 @@ pub fn dfs_in_order<'instr>(
                     continue 'traversing_blocks;
                 }
 
+                // Pause iteration and traverse the try body and all catch handlers.
+                Instr::Try(Try { seq, catches }) => {
+                    stack.push((seq_id, index + 1));
+                    // Push catch handlers in reverse order so they are visited in order
+                    for catch in catches.iter().rev() {
+                        match catch {
+                            LegacyCatch::Catch { handler, .. }
+                            | LegacyCatch::CatchAll { handler } => {
+                                stack.push((*handler, 0));
+                            }
+                            LegacyCatch::Delegate { .. } => {
+                                // Delegate doesn't have a handler block
+                            }
+                        }
+                    }
+                    // Push the try body last so it's visited first
+                    stack.push((*seq, 0));
+                    continue 'traversing_blocks;
+                }
+
                 // No other instructions define new instruction sequences, so
                 // continue to the next instruction.
                 _ => continue 'traversing_instrs,

@@ -155,6 +155,21 @@ impl<'a> ValidationContext<'a> {
     pub fn alloc_instr(&mut self, instr: impl Into<Instr>, loc: InstrLocId) {
         self.alloc_instr_in_control(0, instr, loc).unwrap();
     }
+
+    pub fn add_legacy_catch(&mut self, catch: crate::ir::LegacyCatch) -> Result<()> {
+        // Find the most recent Try instruction in the parent control block
+        let frame = self.control(1)?; // Parent block, not the try block itself
+        let block = frame.block;
+        let seq = self.func.block_mut(block);
+
+        // The Try instruction should be the last instruction in the parent block
+        if let Some((Instr::Try(ref mut try_instr), _)) = seq.instrs.last_mut() {
+            try_instr.catches.push(catch);
+            return Ok(());
+        }
+
+        anyhow::bail!("No Try instruction found to add catch clause to");
+    }
 }
 
 fn impl_push_control(

@@ -171,7 +171,14 @@ impl ModuleConfig {
     pub(crate) fn get_wasmparser_wasm_features(&self) -> WasmFeatures {
         // Use wasmparser's default feature set (all phase 4+ proposals)
         // This matches what wasm-tools uses and avoids validation bugs
-        WasmFeatures::default()
+        let mut features = WasmFeatures::default();
+
+        // Enable legacy exception handling to support older wasm modules
+        // This is the phase 1 exception handling proposal that uses try/catch/delegate
+        // Support this as long as browsers also support it
+        features.insert(WasmFeatures::LEGACY_EXCEPTIONS);
+
+        features
     }
 
     /// Provide a function that is invoked after successfully parsing a module,

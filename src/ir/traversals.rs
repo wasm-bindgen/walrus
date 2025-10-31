@@ -121,6 +121,11 @@ pub fn dfs_in_order<'instr>(
                 // Pause iteration and traverse the try body and all catch handlers.
                 Instr::Try(Try { seq, catches }) => {
                     stack.push((seq_id, index + 1));
+                    // Visit catch instructions in order.
+                    for catch in catches.iter() {
+                        log::trace!("dfs_in_order: ({:?}).visit(..)", catch);
+                        catch.visit(visitor);
+                    }
                     // Push catch handlers in reverse order so they are visited in order
                     for catch in catches.iter().rev() {
                         match catch {

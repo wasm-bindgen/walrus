@@ -4,7 +4,7 @@
 //! Each test corresponds directly to a function or assertion in the original spec test.
 
 use walrus::ir::{BinaryOp, Instr, LegacyCatch, Throw, Try, UnaryOp};
-use walrus::{FunctionBuilder, Module, ModuleConfig, ValType};
+use walrus::{FunctionBuilder, Module, ModuleConfig, RefType, ValType};
 
 /// Module setup matching try_catch.wast lines 10-178
 /// Creates all tags and functions exactly as in the spec
@@ -41,6 +41,9 @@ fn test_try_catch_module_valid() {
     // Line 19: (tag $e-f64 (param f64))
     let e_f64_ty = module.types.add(&[ValType::F64], &[]);
     let e_f64 = module.tags.add(e_f64_ty);
+
+    let e_xref_ty = module.types.add(&[ValType::Ref(RefType::Externref)], &[]);
+    let e_xref = module.tags.add(e_xref_ty);
 
     // Lines 21-25: func $throw-if (param i32) (result i32)
     //   (local.get 0)
@@ -718,6 +721,38 @@ fn test_try_catch_module_valid() {
         module.exports.add("break-try-catch_all", func);
     }
 
+    // Test that a tag that is only ever used in a Catch but never in a Throw
+    // isn't gc'd.
+    {
+        let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+
+        let try_body_id = {
+            let try_body = builder.dangling_instr_seq(None);
+            // Just complete normally instead of br
+            try_body.id()
+        };
+
+        let catch_handler_id = {
+            let mut catch_handler = builder.dangling_instr_seq(None);
+            catch_handler.drop();
+            catch_handler.id()
+        };
+
+        let try_instr = Try {
+            seq: try_body_id,
+            catches: vec![LegacyCatch::Catch {
+                tag: e_xref,
+                handler: catch_handler_id,
+            }],
+        };
+
+        builder.func_body().instr(Instr::Try(try_instr));
+        let func = builder.finish(vec![], &mut module.funcs);
+        module.exports.add("break-try-catch-xref", func);
+    }
+
+    // Make sure everything still works after a gc.
+    walrus::passes::gc::run(&mut module);
     // Round-trip: emit and parse back
     let wasm = module.emit_wasm();
     let mut config2 = ModuleConfig::new();

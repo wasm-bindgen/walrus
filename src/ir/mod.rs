@@ -1525,3 +1525,31 @@ impl VisitMut for TryTableCatch {
         }
     }
 }
+
+impl<'instr> Visit<'instr> for LegacyCatch {
+    fn visit<V>(&self, visitor: &mut V)
+    where
+        V: Visitor<'instr>,
+    {
+        match self {
+            LegacyCatch::Catch { tag, .. } => {
+                visitor.visit_tag_id(tag);
+            }
+            LegacyCatch::CatchAll { .. } | LegacyCatch::Delegate { .. } => {}
+        }
+    }
+}
+
+impl VisitMut for LegacyCatch {
+    fn visit_mut<V>(&mut self, visitor: &mut V)
+    where
+        V: VisitorMut,
+    {
+        match self {
+            LegacyCatch::Catch { tag, .. } => {
+                visitor.visit_tag_id_mut(tag);
+            }
+            LegacyCatch::CatchAll { .. } | LegacyCatch::Delegate { .. } => {}
+        }
+    }
+}

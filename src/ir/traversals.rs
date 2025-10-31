@@ -112,8 +112,16 @@ pub fn dfs_in_order<'instr>(
 
                 // Pause iteration through this sequence's instructions.
                 // Traverse the try_table body.
-                Instr::TryTable(TryTable { seq, .. }) => {
+                Instr::TryTable(TryTable { seq, catches }) => {
                     stack.push((seq_id, index + 1));
+                    // Visit catch clauses to mark tags as used.
+                    // Note: The labels in TryTable catches are branch targets, not handler
+                    // blocks. They reference blocks already in the control flow and will be
+                    // visited naturally during traversal.
+                    for catch in catches.iter() {
+                        log::trace!("dfs_in_order: ({:?}).visit(..)", catch);
+                        catch.visit(visitor);
+                    }
                     stack.push((*seq, 0));
                     continue 'traversing_blocks;
                 }
@@ -242,7 +250,14 @@ pub fn dfs_pre_order_mut(
                     stack.push(*consequent);
                 }
 
-                Instr::TryTable(TryTable { seq, .. }) => {
+                Instr::TryTable(TryTable { seq, catches }) => {
+                    // Visit catch clauses to mark tags as used.
+                    // Note: The labels in TryTable catches are branch targets, not handler
+                    // blocks. They reference blocks already in the control flow and will be
+                    // visited naturally during traversal.
+                    for catch in catches.iter_mut() {
+                        catch.visit_mut(visitor);
+                    }
                     stack.push(*seq);
                 }
 
@@ -296,6 +311,14 @@ mod tests {
         fn visit_if_else(&mut self, _: &IfElse) {
             self.push("if-else");
         }
+
+        fn visit_try_table(&mut self, _: &TryTable) {
+            self.push("try-table");
+        }
+
+        fn visit_tag_id(&mut self, _: &crate::TagId) {
+            self.push("tag");
+        }
     }
 
     impl VisitorMut for TestVisitor {
@@ -327,6 +350,14 @@ mod tests {
 
         fn visit_if_else_mut(&mut self, _: &mut IfElse) {
             self.push("if-else");
+        }
+
+        fn visit_try_table_mut(&mut self, _: &mut TryTable) {
+            self.push("try-table");
+        }
+
+        fn visit_tag_id_mut(&mut self, _: &mut crate::TagId) {
+            self.push("tag");
         }
     }
 
@@ -412,6 +443,80 @@ mod tests {
         let expected = [
             "start", "2", "drop", "block", "start", "3", "drop", "if-else", "start", "4", "drop",
             "end", "start", "5", "drop", "end", "6", "drop", "end", "7", "drop", "end",
+        ];
+
+        assert_eq!(
+            visitor.visits,
+            expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dfs_in_order_try_table() {
+        let mut module = crate::Module::default();
+
+        let tag_type = module.types.add(&[crate::ValType::I32], &[]);
+        let tag_id = module.tags.add(tag_type);
+
+        let block_ty = module.types.add(&[], &[]);
+        let mut builder = crate::FunctionBuilder::new(&mut module.types, &[], &[]);
+
+        let mut func_body = builder.func_body();
+
+        // Build the try body
+        let try_body = func_body.dangling_instr_seq(block_ty).id();
+        func_body.instr_seq(try_body).i32_const(5).drop();
+
+        // Create dummy label targets (these are branch targets, not handler blocks)
+        let catch_label = func_body.dangling_instr_seq(block_ty).id();
+        let catch_all_label = func_body.dangling_instr_seq(block_ty).id();
+
+        func_body
+            .i32_const(1)
+            .drop()
+            .instr(TryTable {
+                seq: try_body,
+                catches: vec![
+                    TryTableCatch::Catch {
+                        tag: tag_id,
+                        label: catch_label,
+                    },
+                    TryTableCatch::CatchAll {
+                        label: catch_all_label,
+                    },
+                ],
+            })
+            .i32_const(99)
+            .drop();
+
+        let func_id = builder.finish(vec![], &mut module.funcs);
+        let func = module.funcs.get_mut(func_id).kind.unwrap_local_mut();
+
+        let mut visitor = TestVisitor::default();
+        crate::ir::dfs_in_order(&mut visitor, func, func.entry_block());
+
+        // Expected order:
+        // - start (entry block)
+        // - 1, drop (before try-table)
+        // - try-table instruction
+        // - tag (from Catch clause visiting tag ID)
+        // - start, 5, drop, end (try body)
+        // - 99, drop (after try-table)
+        // - end (entry block)
+        // Note: catch labels are branch targets, not separate blocks to traverse
+        let expected = [
+            "start",
+            "1",
+            "drop",
+            "try-table",
+            "tag",
+            "start",
+            "5",
+            "drop",
+            "end", // try body
+            "99",
+            "drop",
+            "end",
         ];
 
         assert_eq!(

@@ -111,26 +111,17 @@ pub fn dfs_in_order<'instr>(
                 }
 
                 // Pause iteration through this sequence's instructions.
-                // Traverse the try_table body and catch handlers.
+                // Traverse the try_table body.
                 Instr::TryTable(TryTable { seq, catches }) => {
                     stack.push((seq_id, index + 1));
-                    // Visit catch instructions in order.
+                    // Visit catch clauses to mark tags as used.
+                    // Note: The labels in TryTable catches are branch targets, not handler
+                    // blocks. They reference blocks already in the control flow and will be
+                    // visited naturally during traversal.
                     for catch in catches.iter() {
                         log::trace!("dfs_in_order: ({:?}).visit(..)", catch);
                         catch.visit(visitor);
                     }
-                    // Push catch handler labels in reverse order so they are visited in order
-                    for catch in catches.iter().rev() {
-                        use crate::ir::TryTableCatch;
-                        let label = match catch {
-                            TryTableCatch::Catch { label, .. }
-                            | TryTableCatch::CatchRef { label, .. }
-                            | TryTableCatch::CatchAll { label }
-                            | TryTableCatch::CatchAllRef { label } => label,
-                        };
-                        stack.push((*label, 0));
-                    }
-                    // Push the try body last so it's visited first
                     stack.push((*seq, 0));
                     continue 'traversing_blocks;
                 }
@@ -260,20 +251,12 @@ pub fn dfs_pre_order_mut(
                 }
 
                 Instr::TryTable(TryTable { seq, catches }) => {
-                    // Visit catch instructions in order.
+                    // Visit catch clauses to mark tags as used.
+                    // Note: The labels in TryTable catches are branch targets, not handler
+                    // blocks. They reference blocks already in the control flow and will be
+                    // visited naturally during traversal.
                     for catch in catches.iter_mut() {
                         catch.visit_mut(visitor);
-                    }
-                    // Push catch handler labels
-                    for catch in catches.iter() {
-                        use crate::ir::TryTableCatch;
-                        let label = match catch {
-                            TryTableCatch::Catch { label, .. }
-                            | TryTableCatch::CatchRef { label, .. }
-                            | TryTableCatch::CatchAll { label }
-                            | TryTableCatch::CatchAllRef { label } => label,
-                        };
-                        stack.push(*label);
                     }
                     stack.push(*seq);
                 }
@@ -480,14 +463,13 @@ mod tests {
 
         let mut func_body = builder.func_body();
 
-        let catch_handler = func_body.dangling_instr_seq(block_ty).id();
-        let catch_all_handler = func_body.dangling_instr_seq(block_ty).id();
-
-        func_body.instr_seq(catch_handler).i32_const(10).drop();
-        func_body.instr_seq(catch_all_handler).i32_const(20).drop();
-
+        // Build the try body
         let try_body = func_body.dangling_instr_seq(block_ty).id();
         func_body.instr_seq(try_body).i32_const(5).drop();
+
+        // Create dummy label targets (these are branch targets, not handler blocks)
+        let catch_label = func_body.dangling_instr_seq(block_ty).id();
+        let catch_all_label = func_body.dangling_instr_seq(block_ty).id();
 
         func_body
             .i32_const(1)
@@ -497,10 +479,10 @@ mod tests {
                 catches: vec![
                     TryTableCatch::Catch {
                         tag: tag_id,
-                        label: catch_handler,
+                        label: catch_label,
                     },
                     TryTableCatch::CatchAll {
-                        label: catch_all_handler,
+                        label: catch_all_label,
                     },
                 ],
             })
@@ -517,12 +499,11 @@ mod tests {
         // - start (entry block)
         // - 1, drop (before try-table)
         // - try-table instruction
-        // - tag (from Catch clause)
+        // - tag (from Catch clause visiting tag ID)
         // - start, 5, drop, end (try body)
-        // - start, 10, drop, end (catch handler)
-        // - start, 20, drop, end (catch-all handler)
         // - 99, drop (after try-table)
         // - end (entry block)
+        // Note: catch labels are branch targets, not separate blocks to traverse
         let expected = [
             "start",
             "1",
@@ -533,14 +514,6 @@ mod tests {
             "5",
             "drop",
             "end", // try body
-            "start",
-            "10",
-            "drop",
-            "end", // catch handler
-            "start",
-            "20",
-            "drop",
-            "end", // catch-all handler
             "99",
             "drop",
             "end",

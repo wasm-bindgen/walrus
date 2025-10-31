@@ -112,8 +112,13 @@ pub fn dfs_in_order<'instr>(
 
                 // Pause iteration through this sequence's instructions.
                 // Traverse the try_table body.
-                Instr::TryTable(TryTable { seq, .. }) => {
+                Instr::TryTable(TryTable { seq, catches }) => {
                     stack.push((seq_id, index + 1));
+                    // Visit catch instructions in order.
+                    for catch in catches.iter() {
+                        log::trace!("dfs_in_order: ({:?}).visit(..)", catch);
+                        catch.visit(visitor);
+                    }
                     stack.push((*seq, 0));
                     continue 'traversing_blocks;
                 }
@@ -242,7 +247,11 @@ pub fn dfs_pre_order_mut(
                     stack.push(*consequent);
                 }
 
-                Instr::TryTable(TryTable { seq, .. }) => {
+                Instr::TryTable(TryTable { seq, catches }) => {
+                    // Visit catch instructions in order.
+                    for catch in catches.iter_mut() {
+                        catch.visit_mut(visitor);
+                    }
                     stack.push(*seq);
                 }
 

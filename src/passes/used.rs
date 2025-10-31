@@ -323,11 +323,4 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
     fn visit_tag_id(&mut self, &tag: &TagId) {
         self.stack.push_tag(tag);
     }
-
-    fn visit_try_table(&mut self, instr: &TryTable) {
-        // Visit the catches to mark tags as used
-        for catch in &instr.catches {
-            catch.visit(self);
-        }
-    }
 }

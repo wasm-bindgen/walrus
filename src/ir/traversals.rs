@@ -261,6 +261,13 @@ pub fn dfs_pre_order_mut(
                     stack.push(*seq);
                 }
 
+                Instr::Try(Try { seq, catches }) => {
+                    for catch in catches.iter_mut() {
+                        catch.visit_mut(visitor);
+                    }
+                    stack.push(*seq);
+                }
+
                 _ => {}
             }
         }

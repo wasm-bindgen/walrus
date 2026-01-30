@@ -1,6 +1,6 @@
 use crate::ir::*;
 use crate::tombstone_arena::TombstoneArena;
-use crate::{FunctionId, LocalFunction, ModuleFunctions, ModuleTypes, TypeId, ValType};
+use crate::{FunctionId, LocalFunction, ModuleFunctions, ModuleTypes, TagId, TypeId, ValType};
 use std::ops::{Deref, DerefMut};
 
 /// Build instances of `LocalFunction`.

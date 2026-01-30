@@ -265,6 +265,19 @@ pub fn dfs_pre_order_mut(
                     for catch in catches.iter_mut() {
                         catch.visit_mut(visitor);
                     }
+                    // Push catch handlers in reverse order so they are visited in order
+                    for catch in catches.iter().rev() {
+                        match catch {
+                            LegacyCatch::Catch { handler, .. }
+                            | LegacyCatch::CatchAll { handler } => {
+                                stack.push(*handler);
+                            }
+                            LegacyCatch::Delegate { .. } => {
+                                // Delegate doesn't have a handler block
+                            }
+                        }
+                    }
+                    // Push the try body last so it's visited first
                     stack.push(*seq);
                 }
 
@@ -323,6 +336,10 @@ mod tests {
             self.push("try-table");
         }
 
+        fn visit_try(&mut self, _: &Try) {
+            self.push("try");
+        }
+
         fn visit_tag_id(&mut self, _: &crate::TagId) {
             self.push("tag");
         }
@@ -363,6 +380,10 @@ mod tests {
             self.push("try-table");
         }
 
+        fn visit_try_mut(&mut self, _: &mut Try) {
+            self.push("try");
+        }
+
         fn visit_tag_id_mut(&mut self, _: &mut crate::TagId) {
             self.push("tag");
         }
@@ -370,7 +391,34 @@ mod tests {
 
     fn make_test_func(module: &mut crate::Module) -> &mut LocalFunction {
         let block_ty = module.types.add(&[], &[]);
+        let tag_type = module.types.add(&[], &[]);
+        let tag_id = module.tags.add(tag_type);
         let mut builder = crate::FunctionBuilder::new(&mut module.types, &[], &[]);
+
+        let try_block = Instr::Try(Try {
+            seq: builder
+                .dangling_instr_seq(block_ty)
+                .i32_const(7)
+                .drop()
+                .id(),
+            catches: vec![
+                LegacyCatch::Catch {
+                    tag: tag_id,
+                    handler: builder
+                        .dangling_instr_seq(block_ty)
+                        .i32_const(8)
+                        .drop()
+                        .id(),
+                },
+                LegacyCatch::CatchAll {
+                    handler: builder
+                        .dangling_instr_seq(block_ty)
+                        .i32_const(9)
+                        .drop()
+                        .id(),
+                },
+            ],
+        });
 
         builder
             .func_body()
@@ -393,6 +441,9 @@ mod tests {
                     .drop();
             })
             .i32_const(6)
+            .drop()
+            .instr(try_block)
+            .i32_const(10)
             .drop();
 
         let func_id = builder.finish(vec![], &mut module.funcs);
@@ -407,10 +458,27 @@ mod tests {
         let mut visitor = TestVisitor::default();
         crate::ir::dfs_in_order(&mut visitor, func, func.entry_block());
 
-        let expected = [
-            "start", "1", "drop", "block", "start", "2", "drop", "if-else", "start", "3", "drop",
-            "end", "start", "4", "drop", "end", "5", "drop", "end", "6", "drop", "end",
-        ];
+        let mut expected = vec![];
+        // Entry block start, then first instructions
+        expected.extend(vec!["start", "1", "drop", "block"]);
+        // Inside the block
+        expected.extend(vec!["start", "2", "drop", "if-else"]);
+        // Consequent
+        expected.extend(vec!["start", "3", "drop", "end"]);
+        // Alternative
+        expected.extend(vec!["start", "4", "drop", "end"]);
+        // Rest of block
+        expected.extend(vec!["5", "drop", "end"]);
+        // After block, before try
+        expected.extend(vec!["6", "drop", "try", "tag"]);
+        // Try body
+        expected.extend(vec!["start", "7", "drop", "end"]);
+        // Catch handler
+        expected.extend(vec!["start", "8", "drop", "end"]);
+        // CatchAll handler
+        expected.extend(vec!["start", "9", "drop", "end"]);
+        // After try
+        expected.extend(vec!["10", "drop", "end"]);
 
         assert_eq!(
             visitor.visits,
@@ -428,8 +496,16 @@ mod tests {
 
         let mut expected = vec![];
         // function entry
-        expected.extend(vec!["start", "1", "drop", "block", "6", "drop", "end"]);
-        // block
+        expected.extend(vec![
+            "start", "1", "drop", "block", "6", "drop", "try", "tag", "10", "drop", "end",
+        ]);
+        // try body (pushed last, visited first due to LIFO)
+        expected.extend(vec!["start", "7", "drop", "end"]);
+        // catch handler
+        expected.extend(vec!["start", "8", "drop", "end"]);
+        // catch_all handler
+        expected.extend(vec!["start", "9", "drop", "end"]);
+        // block (pushed first, visited last)
         expected.extend(vec!["start", "2", "drop", "if-else", "5", "drop", "end"]);
         // consequent
         expected.extend(vec!["start", "3", "drop", "end"]);
@@ -447,10 +523,27 @@ mod tests {
         visitor.visits.clear();
         crate::ir::dfs_in_order(&mut visitor, func, func.entry_block());
 
-        let expected = [
-            "start", "2", "drop", "block", "start", "3", "drop", "if-else", "start", "4", "drop",
-            "end", "start", "5", "drop", "end", "6", "drop", "end", "7", "drop", "end",
-        ];
+        let mut expected = vec![];
+        // Entry block start, then first instructions (all values +1)
+        expected.extend(vec!["start", "2", "drop", "block"]);
+        // Inside the block
+        expected.extend(vec!["start", "3", "drop", "if-else"]);
+        // Consequent
+        expected.extend(vec!["start", "4", "drop", "end"]);
+        // Alternative
+        expected.extend(vec!["start", "5", "drop", "end"]);
+        // Rest of block
+        expected.extend(vec!["6", "drop", "end"]);
+        // After block, before try
+        expected.extend(vec!["7", "drop", "try", "tag"]);
+        // Try body
+        expected.extend(vec!["start", "8", "drop", "end"]);
+        // Catch handler
+        expected.extend(vec!["start", "9", "drop", "end"]);
+        // CatchAll handler
+        expected.extend(vec!["start", "10", "drop", "end"]);
+        // After try
+        expected.extend(vec!["11", "drop", "end"]);
 
         assert_eq!(
             visitor.visits,

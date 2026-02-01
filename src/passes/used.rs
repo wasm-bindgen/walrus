@@ -248,7 +248,7 @@ impl Used {
                         stack.push_func(*f);
                     });
                 }
-                if let ElementItems::Expressions(RefType::Funcref, items) = &e.items {
+                if let ElementItems::Expressions(RefType::FUNCREF, items) = &e.items {
                     for item in items {
                         match item {
                             ConstExpr::Global(g) => {

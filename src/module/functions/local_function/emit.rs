@@ -1,8 +1,8 @@
 use crate::emit::IdsToIndices;
+use crate::ir::*;
 use crate::map::IdHashMap;
 use crate::module::functions::LocalFunction;
 use crate::module::memories::MemoryId;
-use crate::{ir::*, RefType};
 use wasm_encoder::Instruction;
 
 pub(crate) fn run(
@@ -965,20 +965,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             TableGrow(e) => Instruction::TableGrow(self.indices.get_table_index(e.table)),
             TableSize(e) => Instruction::TableSize(self.indices.get_table_index(e.table)),
             TableFill(e) => Instruction::TableFill(self.indices.get_table_index(e.table)),
-            RefNull(e) => Instruction::RefNull(match &e.ty {
-                RefType::Externref => wasm_encoder::HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Extern,
-                },
-                RefType::Funcref => wasm_encoder::HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Func,
-                },
-                RefType::Exnref => wasm_encoder::HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Exn,
-                },
-            }),
+            RefNull(e) => Instruction::RefNull(e.ty.heap_type.into()),
             RefIsNull(_) => Instruction::RefIsNull,
             RefFunc(e) => Instruction::RefFunc(self.indices.get_func_index(e.func)),
             RefAsNonNull(_) => Instruction::RefAsNonNull,

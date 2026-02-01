@@ -42,7 +42,7 @@ fn test_try_catch_module_valid() {
     let e_f64_ty = module.types.add(&[ValType::F64], &[]);
     let e_f64 = module.tags.add(e_f64_ty);
 
-    let e_xref_ty = module.types.add(&[ValType::Ref(RefType::Externref)], &[]);
+    let e_xref_ty = module.types.add(&[ValType::Ref(RefType::EXTERNREF)], &[]);
     let e_xref = module.tags.add(e_xref_ty);
 
     // Lines 21-25: func $throw-if (param i32) (result i32)
@@ -621,7 +621,7 @@ fn test_try_catch_module_valid() {
     // Line 161: (table funcref (elem $throw-void))
     let table = module
         .tables
-        .add_local(false, 1, None, walrus::RefType::Funcref);
+        .add_local(false, 1, None, walrus::RefType::FUNCREF);
     let _elem = module.elements.add(
         walrus::ElementKind::Active {
             table,

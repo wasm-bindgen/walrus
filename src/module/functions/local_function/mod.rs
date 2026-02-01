@@ -999,8 +999,8 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         Operator::RefNull { hty } => {
             let ty = match hty {
                 wasmparser::HeapType::Abstract { shared: _, ty } => match ty {
-                    wasmparser::AbstractHeapType::Func => RefType::Funcref,
-                    wasmparser::AbstractHeapType::Extern => RefType::Externref,
+                    wasmparser::AbstractHeapType::Func => RefType::FUNCREF,
+                    wasmparser::AbstractHeapType::Extern => RefType::EXTERNREF,
                     other => {
                         panic!("unsupported abstract heap type for ref.null: {:?}", other)
                     }

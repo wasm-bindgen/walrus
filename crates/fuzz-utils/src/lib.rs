@@ -68,7 +68,7 @@ where
             .join("..") // pop `crates`
             .join("target")
             .join("walrus-fuzz");
-        fs::create_dir_all(&dir).expect(&format!("should create directory: {:?}", dir));
+        fs::create_dir_all(&dir).unwrap_or_else(|_| panic!("should create directory: {:?}", dir));
 
         let scratch = tempfile::NamedTempFile::new_in(dir).expect("should create temp file OK");
 
@@ -160,6 +160,7 @@ where
                 Ok(()) => {
                     // We reduced fuel as far as we could, so return the last
                     // failing test case.
+                    #[allow(clippy::question_mark)]
                     if failing.is_err() {
                         return failing;
                     }

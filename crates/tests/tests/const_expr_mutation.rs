@@ -1,3 +1,4 @@
+#![allow(clippy::approx_constant)]
 //! Tests for const expression mutation API
 
 use walrus::{ConstExpr, ConstOp, Module, ModuleConfig, RefType, ValType};
@@ -249,11 +250,11 @@ fn create_global_with_extended_const_expr_ref_null() {
     config.generate_producers_section(false);
     let mut module = Module::with_config(config.clone());
 
-    let init = ConstExpr::Extended(vec![ConstOp::RefNull(RefType::Funcref)]);
+    let init = ConstExpr::Extended(vec![ConstOp::RefNull(RefType::FUNCREF)]);
 
     let global_id = module
         .globals
-        .add_local(ValType::Ref(RefType::Funcref), false, false, init);
+        .add_local(ValType::Ref(RefType::FUNCREF), false, false, init);
     module.exports.add("g", global_id);
 
     let wasm = module.emit_wasm();
@@ -276,7 +277,7 @@ fn create_global_with_extended_const_expr_ref_func() {
 
     let global_id = module
         .globals
-        .add_local(ValType::Ref(RefType::Funcref), false, false, init);
+        .add_local(ValType::Ref(RefType::FUNCREF), false, false, init);
     module.exports.add("f", func_id);
     module.exports.add("g", global_id);
 

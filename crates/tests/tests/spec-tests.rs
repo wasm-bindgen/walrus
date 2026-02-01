@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use anyhow::{bail, Context};
 use std::fs;
 use std::path::Path;

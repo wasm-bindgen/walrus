@@ -134,9 +134,9 @@ impl Module {
                 }
                 wasmparser::ElementItems::Expressions(ref_type, items) => {
                     let ty = match ref_type {
-                        wasmparser::RefType::FUNCREF => RefType::Funcref,
-                        wasmparser::RefType::EXTERNREF => RefType::Externref,
-                        wasmparser::RefType::EXNREF => RefType::Exnref,
+                        wasmparser::RefType::FUNCREF => RefType::FUNCREF,
+                        wasmparser::RefType::EXTERNREF => RefType::EXTERNREF,
+                        wasmparser::RefType::EXNREF => RefType::EXNREF,
                         _ => bail!("unsupported ref type in element segment {}", i),
                     };
                     let mut const_exprs = Vec::with_capacity(items.count() as usize);
@@ -232,11 +232,7 @@ impl Emit for ModuleElements {
                     emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
                 ElementItems::Expressions(ty, const_exprs) => {
-                    let ref_type = match ty {
-                        RefType::Funcref => wasm_encoder::RefType::FUNCREF,
-                        RefType::Externref => wasm_encoder::RefType::EXTERNREF,
-                        RefType::Exnref => wasm_encoder::RefType::EXNREF,
-                    };
+                    let ref_type: wasm_encoder::RefType = (*ty).into();
                     let const_exprs = const_exprs
                         .iter()
                         .map(|expr| expr.to_wasmencoder_type(cx))

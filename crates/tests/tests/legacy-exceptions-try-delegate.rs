@@ -368,7 +368,7 @@ fn test_try_delegate_module_valid() {
     // Lines 134-147: table and return_call_indirect
     let table = module
         .tables
-        .add_local(false, 1, None, walrus::RefType::Funcref);
+        .add_local(false, 1, None, walrus::RefType::FUNCREF);
     let _elem = module.elements.add(
         walrus::ElementKind::Active {
             table,

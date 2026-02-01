@@ -77,8 +77,8 @@ impl ConstExpr {
                 RefNull { hty } => {
                     let val_type = match hty {
                         wasmparser::HeapType::Abstract { shared: _, ty } => match ty {
-                            wasmparser::AbstractHeapType::Func => RefType::Funcref,
-                            wasmparser::AbstractHeapType::Extern => RefType::Externref,
+                            wasmparser::AbstractHeapType::Func => RefType::FUNCREF,
+                            wasmparser::AbstractHeapType::Extern => RefType::EXTERNREF,
                             other => bail!(
                                 "unsupported abstract heap type in constant expression: {other:?}"
                             ),
@@ -135,20 +135,7 @@ impl ConstExpr {
             ConstExpr::Global(g) => {
                 wasm_encoder::ConstExpr::global_get(cx.indices.get_global_index(*g))
             }
-            ConstExpr::RefNull(ty) => wasm_encoder::ConstExpr::ref_null(match ty {
-                RefType::Externref => wasm_encoder::HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Extern,
-                },
-                RefType::Funcref => wasm_encoder::HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Func,
-                },
-                RefType::Exnref => wasm_encoder::HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Exn,
-                },
-            }),
+            ConstExpr::RefNull(ty) => wasm_encoder::ConstExpr::ref_null(ty.heap_type.into()),
             ConstExpr::RefFunc(f) => {
                 wasm_encoder::ConstExpr::ref_func(cx.indices.get_func_index(*f))
             }
@@ -171,21 +158,9 @@ impl ConstExpr {
                             Instruction::GlobalGet(cx.indices.get_global_index(*g))
                                 .encode(&mut bytes)
                         }
-                        ConstOp::RefNull(ty) => Instruction::RefNull(match ty {
-                            RefType::Externref => wasm_encoder::HeapType::Abstract {
-                                shared: false,
-                                ty: wasm_encoder::AbstractHeapType::Extern,
-                            },
-                            RefType::Funcref => wasm_encoder::HeapType::Abstract {
-                                shared: false,
-                                ty: wasm_encoder::AbstractHeapType::Func,
-                            },
-                            RefType::Exnref => wasm_encoder::HeapType::Abstract {
-                                shared: false,
-                                ty: wasm_encoder::AbstractHeapType::Exn,
-                            },
-                        })
-                        .encode(&mut bytes),
+                        ConstOp::RefNull(ty) => {
+                            Instruction::RefNull(ty.heap_type.into()).encode(&mut bytes)
+                        }
                         ConstOp::RefFunc(f) => {
                             Instruction::RefFunc(cx.indices.get_func_index(*f)).encode(&mut bytes)
                         }

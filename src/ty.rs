@@ -141,29 +141,76 @@ pub enum ValType {
 }
 
 /// A reference type.
-///
-/// The "function references" and "gc" proposals will add more reference types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum RefType {
-    /// A nullable reference to an untyped function
-    Funcref,
-    /// A nullable reference to an extern object
-    Externref,
-    /// A nullable reference to an exception (exnref from exception handling proposal)
-    Exnref,
+pub struct RefType {
+    /// Whether this reference type is nullable.
+    pub nullable: bool,
+    /// The heap type that this reference points to.
+    pub heap_type: HeapType,
+}
+
+impl RefType {
+    /// Alias for the `anyref` type in WebAssembly.
+    pub const ANYREF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Any),
+    };
+
+    /// Alias for the `anyref` type in WebAssembly.
+    pub const EQREF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Eq),
+    };
+
+    /// Alias for the `funcref` type in WebAssembly.
+    pub const FUNCREF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Func),
+    };
+
+    /// Alias for the `externref` type in WebAssembly.
+    pub const EXTERNREF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Extern),
+    };
+
+    /// Alias for the `i31ref` type in WebAssembly.
+    pub const I31REF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::I31),
+    };
+
+    /// Alias for the `arrayref` type in WebAssembly.
+    pub const ARRAYREF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Array),
+    };
+
+    /// Alias for the `exnref` type in WebAssembly.
+    pub const EXNREF: RefType = RefType {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Exn),
+    };
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<wasm_encoder::RefType> for RefType {
+    fn into(self) -> wasm_encoder::RefType {
+        wasm_encoder::RefType {
+            nullable: self.nullable,
+            heap_type: self.heap_type.into(),
+        }
+    }
 }
 
 impl TryFrom<wasmparser::RefType> for RefType {
     type Error = anyhow::Error;
 
     fn try_from(ref_type: wasmparser::RefType) -> Result<RefType> {
-        match ref_type {
-            wasmparser::RefType::FUNCREF => Ok(RefType::Funcref),
-            wasmparser::RefType::EXTERNREF => Ok(RefType::Externref),
-            wasmparser::RefType::EXNREF => Ok(RefType::Exnref),
-            _ => bail!("unsupported ref type {:?}", ref_type),
-        }
+        Ok(RefType {
+            nullable: ref_type.is_nullable(),
+            heap_type: ref_type.heap_type().try_into()?,
+        })
     }
 }
 
@@ -181,11 +228,13 @@ impl ValType {
             ValType::F32 => wasm_encoder::ValType::F32,
             ValType::F64 => wasm_encoder::ValType::F64,
             ValType::V128 => wasm_encoder::ValType::V128,
-            ValType::Ref(ref_type) => match ref_type {
-                RefType::Externref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::EXTERNREF),
-                RefType::Funcref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::FUNCREF),
-                RefType::Exnref => wasm_encoder::ValType::Ref(wasm_encoder::RefType::EXNREF),
-            },
+            ValType::Ref(RefType {
+                nullable,
+                heap_type,
+            }) => wasm_encoder::ValType::Ref(wasm_encoder::RefType {
+                nullable: *nullable,
+                heap_type: (*heap_type).into(),
+            }),
         }
     }
 
@@ -196,12 +245,13 @@ impl ValType {
             wasmparser::ValType::F32 => Ok(ValType::F32),
             wasmparser::ValType::F64 => Ok(ValType::F64),
             wasmparser::ValType::V128 => Ok(ValType::V128),
-            wasmparser::ValType::Ref(ref_type) => match *ref_type {
-                wasmparser::RefType::EXTERNREF => Ok(ValType::Ref(RefType::Externref)),
-                wasmparser::RefType::FUNCREF => Ok(ValType::Ref(RefType::Funcref)),
-                wasmparser::RefType::EXNREF => Ok(ValType::Ref(RefType::Exnref)),
-                _ => bail!("unsupported ref type {:?}", ref_type),
-            },
+            wasmparser::ValType::Ref(wasmparser::RefType::CONT)
+            | wasmparser::ValType::Ref(wasmparser::RefType::CONTREF)
+            | wasmparser::ValType::Ref(wasmparser::RefType::NULLCONTREF)
+            | wasmparser::ValType::Ref(wasmparser::RefType::NOCONT) => {
+                bail!("The stack switching proposal is not supported")
+            }
+            wasmparser::ValType::Ref(ref_type) => Ok(ValType::Ref((*ref_type).try_into()?)),
         }
     }
 }
@@ -217,10 +267,134 @@ impl fmt::Display for ValType {
                 ValType::F32 => "f32",
                 ValType::F64 => "f64",
                 ValType::V128 => "v128",
-                ValType::Ref(RefType::Externref) => "externref",
-                ValType::Ref(RefType::Funcref) => "funcref",
-                ValType::Ref(RefType::Exnref) => "exnref",
+                ValType::Ref(RefType {
+                    nullable: false,
+                    heap_type,
+                }) => return write!(f, "ref null {heap_type}"),
+                ValType::Ref(RefType {
+                    nullable: true,
+                    heap_type,
+                }) => return write!(f, "ref {heap_type}"),
             }
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum HeapType {
+    Abstract(AbstractHeapType),
+    Concrete(u32),
+}
+
+impl std::fmt::Display for HeapType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HeapType::Abstract(ab_heap_type) => write!(
+                f,
+                "{}",
+                match ab_heap_type {
+                    AbstractHeapType::Func => "func",
+                    AbstractHeapType::Extern => "extern",
+                    AbstractHeapType::Any => "any",
+                    AbstractHeapType::None => "none",
+                    AbstractHeapType::NoExtern => "noextern",
+                    AbstractHeapType::NoFunc => "nofunc",
+                    AbstractHeapType::Eq => "eq",
+                    AbstractHeapType::Struct => "struct",
+                    AbstractHeapType::Array => "array",
+                    AbstractHeapType::I31 => "i31",
+                    AbstractHeapType::Exn => "exn",
+                    AbstractHeapType::NoExn => "noexn",
+                }
+            ),
+            HeapType::Concrete(id) => write!(f, "{id}"),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<wasm_encoder::HeapType> for HeapType {
+    fn into(self) -> wasm_encoder::HeapType {
+        match self {
+            HeapType::Abstract(ab_heap_type) => wasm_encoder::HeapType::Abstract {
+                shared: false,
+                ty: ab_heap_type.into(),
+            },
+            HeapType::Concrete(_) => todo!(),
+        }
+    }
+}
+
+impl TryFrom<wasmparser::HeapType> for HeapType {
+    type Error = anyhow::Error;
+
+    fn try_from(heap_type: wasmparser::HeapType) -> std::result::Result<Self, Self::Error> {
+        Ok(match heap_type {
+            wasmparser::HeapType::Abstract { shared: _, ty } => HeapType::Abstract(ty.try_into()?),
+            wasmparser::HeapType::Concrete(_) => todo!(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum AbstractHeapType {
+    Func,
+    Extern,
+    Any,
+    None,
+    NoExtern,
+    NoFunc,
+    Eq,
+    Struct,
+    Array,
+    I31,
+    Exn,
+    NoExn,
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<wasm_encoder::AbstractHeapType> for AbstractHeapType {
+    fn into(self) -> wasm_encoder::AbstractHeapType {
+        match self {
+            AbstractHeapType::Func => wasm_encoder::AbstractHeapType::Func,
+            AbstractHeapType::Extern => wasm_encoder::AbstractHeapType::Extern,
+            AbstractHeapType::Any => wasm_encoder::AbstractHeapType::Any,
+            AbstractHeapType::None => wasm_encoder::AbstractHeapType::None,
+            AbstractHeapType::NoExtern => wasm_encoder::AbstractHeapType::NoExtern,
+            AbstractHeapType::NoFunc => wasm_encoder::AbstractHeapType::NoFunc,
+            AbstractHeapType::Eq => wasm_encoder::AbstractHeapType::Eq,
+            AbstractHeapType::Struct => wasm_encoder::AbstractHeapType::Struct,
+            AbstractHeapType::Array => wasm_encoder::AbstractHeapType::Array,
+            AbstractHeapType::I31 => wasm_encoder::AbstractHeapType::I31,
+            AbstractHeapType::Exn => wasm_encoder::AbstractHeapType::Exn,
+            AbstractHeapType::NoExn => wasm_encoder::AbstractHeapType::NoExn,
+        }
+    }
+}
+
+impl TryFrom<wasmparser::AbstractHeapType> for AbstractHeapType {
+    type Error = anyhow::Error;
+
+    fn try_from(
+        ab_heap_type: wasmparser::AbstractHeapType,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(match ab_heap_type {
+            wasmparser::AbstractHeapType::Func => AbstractHeapType::Func,
+            wasmparser::AbstractHeapType::Extern => AbstractHeapType::Extern,
+            wasmparser::AbstractHeapType::Any => AbstractHeapType::Any,
+            wasmparser::AbstractHeapType::None => AbstractHeapType::None,
+            wasmparser::AbstractHeapType::NoExtern => AbstractHeapType::NoExtern,
+            wasmparser::AbstractHeapType::NoFunc => AbstractHeapType::NoFunc,
+            wasmparser::AbstractHeapType::Eq => AbstractHeapType::Eq,
+            wasmparser::AbstractHeapType::Struct => AbstractHeapType::Struct,
+            wasmparser::AbstractHeapType::Array => AbstractHeapType::Array,
+            wasmparser::AbstractHeapType::I31 => AbstractHeapType::I31,
+            wasmparser::AbstractHeapType::Exn => AbstractHeapType::Exn,
+            wasmparser::AbstractHeapType::NoExn => AbstractHeapType::NoExn,
+            wasmparser::AbstractHeapType::Cont | wasmparser::AbstractHeapType::NoCont => {
+                bail!("Stack switching proposal is not supported")
+            }
+        })
     }
 }

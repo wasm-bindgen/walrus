@@ -130,7 +130,7 @@ impl ModuleTables {
     ///
     /// Returns an error if there are two function tables in this module
     pub fn main_function_table(&self) -> Result<Option<TableId>> {
-        let mut tables = self.iter().filter(|t| t.element_ty == RefType::Funcref);
+        let mut tables = self.iter().filter(|t| t.element_ty == RefType::FUNCREF);
         let id = match tables.next() {
             Some(t) => t.id(),
             None => return Ok(None),
@@ -188,11 +188,7 @@ impl Emit for ModuleTables {
                 table64: table.table64,
                 minimum: table.initial,
                 maximum: table.maximum,
-                element_type: match table.element_ty {
-                    RefType::Externref => wasm_encoder::RefType::EXTERNREF,
-                    RefType::Funcref => wasm_encoder::RefType::FUNCREF,
-                    RefType::Exnref => wasm_encoder::RefType::EXNREF,
-                },
+                element_type: table.element_ty.into(),
                 shared: false,
             });
         }

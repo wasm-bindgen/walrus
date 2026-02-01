@@ -307,11 +307,7 @@ impl Emit for ModuleImports {
                         cx.indices.push_table(id);
                         let table = cx.module.tables.get(id);
                         wasm_encoder::EntityType::Table(wasm_encoder::TableType {
-                            element_type: match table.element_ty {
-                                RefType::Externref => wasm_encoder::RefType::EXTERNREF,
-                                RefType::Funcref => wasm_encoder::RefType::FUNCREF,
-                                RefType::Exnref => wasm_encoder::RefType::EXNREF,
-                            },
+                            element_type: table.element_ty.into(),
                             table64: table.table64,
                             minimum: table.initial,
                             maximum: table.maximum,

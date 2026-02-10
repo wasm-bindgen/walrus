@@ -927,7 +927,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     (Xchg, I64) => Instruction::I64AtomicRmwXchg(memarg),
                     (Xchg, I32_8) => Instruction::I32AtomicRmw8XchgU(memarg),
                     (Xchg, I32_16) => Instruction::I32AtomicRmw16XchgU(memarg),
-                    (Xchg, I64_8) => Instruction::I64AtomicRmw16XchgU(memarg),
+                    (Xchg, I64_8) => Instruction::I64AtomicRmw8XchgU(memarg),
                     (Xchg, I64_16) => Instruction::I64AtomicRmw16XchgU(memarg),
                     (Xchg, I64_32) => Instruction::I64AtomicRmw32XchgU(memarg),
                 }

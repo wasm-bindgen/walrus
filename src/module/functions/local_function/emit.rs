@@ -887,7 +887,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     (Add, I64) => Instruction::I64AtomicRmwAdd(memarg),
                     (Add, I32_8) => Instruction::I32AtomicRmw8AddU(memarg),
                     (Add, I32_16) => Instruction::I32AtomicRmw16AddU(memarg),
-                    (Add, I64_8) => Instruction::I64AtomicRmw16AddU(memarg),
+                    (Add, I64_8) => Instruction::I64AtomicRmw8AddU(memarg),
                     (Add, I64_16) => Instruction::I64AtomicRmw16AddU(memarg),
                     (Add, I64_32) => Instruction::I64AtomicRmw32AddU(memarg),
 
@@ -895,7 +895,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     (Sub, I64) => Instruction::I64AtomicRmwSub(memarg),
                     (Sub, I32_8) => Instruction::I32AtomicRmw8SubU(memarg),
                     (Sub, I32_16) => Instruction::I32AtomicRmw16SubU(memarg),
-                    (Sub, I64_8) => Instruction::I64AtomicRmw16SubU(memarg),
+                    (Sub, I64_8) => Instruction::I64AtomicRmw8SubU(memarg),
                     (Sub, I64_16) => Instruction::I64AtomicRmw16SubU(memarg),
                     (Sub, I64_32) => Instruction::I64AtomicRmw32SubU(memarg),
 
@@ -903,7 +903,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     (And, I64) => Instruction::I64AtomicRmwAnd(memarg),
                     (And, I32_8) => Instruction::I32AtomicRmw8AndU(memarg),
                     (And, I32_16) => Instruction::I32AtomicRmw16AndU(memarg),
-                    (And, I64_8) => Instruction::I64AtomicRmw16AndU(memarg),
+                    (And, I64_8) => Instruction::I64AtomicRmw8AndU(memarg),
                     (And, I64_16) => Instruction::I64AtomicRmw16AndU(memarg),
                     (And, I64_32) => Instruction::I64AtomicRmw32AndU(memarg),
 
@@ -911,7 +911,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     (Or, I64) => Instruction::I64AtomicRmwOr(memarg),
                     (Or, I32_8) => Instruction::I32AtomicRmw8OrU(memarg),
                     (Or, I32_16) => Instruction::I32AtomicRmw16OrU(memarg),
-                    (Or, I64_8) => Instruction::I64AtomicRmw16OrU(memarg),
+                    (Or, I64_8) => Instruction::I64AtomicRmw8OrU(memarg),
                     (Or, I64_16) => Instruction::I64AtomicRmw16OrU(memarg),
                     (Or, I64_32) => Instruction::I64AtomicRmw32OrU(memarg),
 
@@ -919,7 +919,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     (Xor, I64) => Instruction::I64AtomicRmwXor(memarg),
                     (Xor, I32_8) => Instruction::I32AtomicRmw8XorU(memarg),
                     (Xor, I32_16) => Instruction::I32AtomicRmw16XorU(memarg),
-                    (Xor, I64_8) => Instruction::I64AtomicRmw16XorU(memarg),
+                    (Xor, I64_8) => Instruction::I64AtomicRmw8XorU(memarg),
                     (Xor, I64_16) => Instruction::I64AtomicRmw16XorU(memarg),
                     (Xor, I64_32) => Instruction::I64AtomicRmw32XorU(memarg),
 

@@ -55,7 +55,8 @@ impl Emit for ModuleDebugData {
                 .map(write::Address::Constant)
         };
 
-        let from_dwarf = cx
+        #[allow(deprecated)]
+        let from_dwarf: read::Dwarf<EndianSlice<'_, LittleEndian>> = cx
             .module
             .debug
             .dwarf

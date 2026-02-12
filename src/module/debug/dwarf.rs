@@ -58,15 +58,11 @@ where
         from_unit: &mut gimli::read::EntriesCursor<R>,
         unit: &mut DebuggingInformationCursor,
     ) {
-        while let (Ok(Some((_, from_debug_entry))), Some(debug_entry)) =
+        while let (Ok(Some(from_debug_entry)), Some(debug_entry)) =
             (from_unit.next_dfs(), unit.next_dfs())
         {
-            let low_pc = from_debug_entry
-                .attr_value(constants::DW_AT_low_pc)
-                .expect("low_pc");
-            let high_pc = from_debug_entry
-                .attr_value(constants::DW_AT_high_pc)
-                .expect("high_pc");
+            let low_pc = from_debug_entry.attr_value(constants::DW_AT_low_pc);
+            let high_pc = from_debug_entry.attr_value(constants::DW_AT_high_pc);
 
             if let (Some(AttributeValue::Addr(low_addr)), Some(AttributeValue::Udata(offset))) =
                 (low_pc, high_pc)
@@ -133,6 +129,7 @@ where
                         timestamp: comp_file.timestamp(),
                         size: comp_file.size(),
                         md5: *comp_file.md5(),
+                        source: None,
                     }),
                 )
             }
@@ -149,6 +146,7 @@ where
             encoding,
             from_header.line_encoding(),
             comp_dir,
+            None,
             comp_name,
             comp_file_info,
         );
@@ -182,6 +180,7 @@ where
                 timestamp: from_file.timestamp(),
                 size: from_file.size(),
                 md5: *from_file.md5(),
+                source: None,
             });
             files.push(program.add_file(from_name, from_dir, from_info));
         }
@@ -216,13 +215,13 @@ where
                     }
                     from_base_address = val;
 
-                    from_row.execute(read::LineInstruction::SetAddress(0), &mut from_program);
+                    from_row.execute(read::LineInstruction::SetAddress(0), &mut from_program)?;
                 }
                 read::LineInstruction::DefineFile(_) => {
                     return Err(write::ConvertError::UnsupportedLineInstruction);
                 }
                 _ => {
-                    if from_row.execute(instruction, &mut from_program) {
+                    if from_row.execute(instruction, &mut from_program)? {
                         if !program.in_sequence() {
                             // begin new sequence if exists
                             current_sequence_base_address = (self.convert_address)(
@@ -346,6 +345,7 @@ mod tests {
                 default_is_stmt: true,
             },
             write::LineString::String(dir1.to_vec()),
+            None,
             comp_file.clone(),
             None,
         );
@@ -358,13 +358,10 @@ mod tests {
             program.end_sequence(address_offset);
         }
 
+        let mut line_strings = write::LineStringTable::default();
+        let mut strings = write::StringTable::default();
         program
-            .write(
-                debug_line,
-                encoding,
-                &write::DebugLineStrOffsets::none(),
-                &write::DebugStrOffsets::none(),
-            )
+            .write(debug_line, encoding, &mut line_strings, &mut strings)
             .unwrap();
 
         let debug_line = read::DebugLine::new(debug_line.slice(), LittleEndian);
@@ -449,12 +446,14 @@ mod tests {
                 .convert_line_program(incomplete_debug_line)
                 .unwrap();
 
+            let mut line_strings = write::LineStringTable::default();
+            let mut strings = write::StringTable::default();
             converted_program
                 .write(
                     &mut converted_debug_line,
                     converted_program.encoding(),
-                    &write::DebugLineStrOffsets::none(),
-                    &write::DebugStrOffsets::none(),
+                    &mut line_strings,
+                    &mut strings,
                 )
                 .unwrap();
         }
@@ -495,12 +494,14 @@ mod tests {
                 .convert_line_program(incomplete_debug_line)
                 .unwrap();
 
+            let mut line_strings = write::LineStringTable::default();
+            let mut strings = write::StringTable::default();
             converted_program
                 .write(
                     &mut converted_debug_line,
                     converted_program.encoding(),
-                    &write::DebugLineStrOffsets::none(),
-                    &write::DebugStrOffsets::none(),
+                    &mut line_strings,
+                    &mut strings,
                 )
                 .unwrap();
         }
@@ -544,12 +545,10 @@ mod tests {
         }
 
         let mut sections = write::Sections::new(write::EndianVec::new(LittleEndian));
+        let mut line_strings = write::LineStringTable::default();
+        let mut strings = write::StringTable::default();
         unit_table
-            .write(
-                &mut sections,
-                &write::DebugLineStrOffsets::none(),
-                &write::DebugStrOffsets::none(),
-            )
+            .write(&mut sections, &mut line_strings, &mut strings)
             .unwrap();
         sections
     }

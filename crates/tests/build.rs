@@ -6,11 +6,8 @@ use walkdir::WalkDir;
 
 fn is_known_failing(name: &str) -> bool {
     match name {
-        // Tests that require the "gc" feature.
+        // Tests that require the "gc" feature (struct/array types not yet supported).
         "tests_spec_tests_array_fill_wast"
-        | "tests_spec_tests_br_on_cast_wast"
-        | "tests_spec_tests_br_on_cast_fail_wast"
-        | "tests_spec_tests_i31_wast"
         | "tests_spec_tests_array_new_elem_wast"
         | "tests_spec_tests_array_new_data_wast"
         | "tests_spec_tests_array_init_elem_wast"
@@ -52,6 +49,8 @@ fn is_known_failing(name: &str) -> bool {
         // Tests that require GC proposal features not yet supported.
         | "tests_spec_tests_tag_wast"  // Uses recursive types (rec)
         | "tests_spec_tests_try_table_wast"  // Uses typed refs like (ref (module 0))
+        | "tests_spec_tests_br_on_cast_wast"  // Uses concrete heap types
+        | "tests_spec_tests_br_on_cast_fail_wast"  // Uses concrete heap types
         => true,
 
         _ => false,

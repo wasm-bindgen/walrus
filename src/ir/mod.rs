@@ -8,8 +8,8 @@ mod traversals;
 pub use self::traversals::*;
 
 use crate::{
-    DataId, ElementId, FunctionId, GlobalId, LocalFunction, MemoryId, ModuleTypes, RefType,
-    TableId, TagId, TypeId, ValType,
+    DataId, ElementId, FunctionId, GlobalId, HeapType, LocalFunction, MemoryId, ModuleTypes,
+    RefType, TableId, TagId, TypeId, ValType,
 };
 use id_arena::Id;
 use std::fmt;
@@ -589,6 +589,99 @@ pub enum Instr {
         /// The type index of the function being called
         ty: TypeId,
     },
+
+    /// `ref.i31` - wrap i32 as i31ref
+    ///
+    /// Takes bottom 31 bits of an i32 and returns a non-null i31ref.
+    RefI31 {},
+
+    /// `i31.get_s` - extract signed i32 from i31ref
+    ///
+    /// Sign-extends the 31-bit value to 32 bits. Traps on null.
+    I31GetS {},
+
+    /// `i31.get_u` - extract unsigned i32 from i31ref
+    ///
+    /// Zero-extends the 31-bit value to 32 bits. Traps on null.
+    I31GetU {},
+
+    /// `ref.test` - test if reference matches heap type
+    ///
+    /// Returns 1 if reference is subtype of target type, 0 otherwise.
+    /// For nullable test: null returns 1. For non-nullable test: null returns 0.
+    RefTest {
+        /// Whether the test allows null
+        #[walrus(skip_visit)]
+        nullable: bool,
+        /// The heap type to test against
+        #[walrus(skip_visit)]
+        heap_type: HeapType,
+    },
+
+    /// `ref.cast` - cast reference to heap type, trap on failure
+    ///
+    /// Returns reference cast to target type. Traps if cast fails.
+    /// For nullable cast: null passes. For non-nullable cast: null traps.
+    RefCast {
+        /// Whether null is allowed
+        #[walrus(skip_visit)]
+        nullable: bool,
+        /// The heap type to cast to
+        #[walrus(skip_visit)]
+        heap_type: HeapType,
+    },
+
+    /// `br_on_cast` - branch if cast succeeds
+    ///
+    /// If cast succeeds: branch to label with cast value on stack.
+    /// If cast fails: fall through with original value on stack.
+    BrOnCast {
+        /// Branch target
+        block: InstrSeqId,
+        /// Whether input type is nullable
+        #[walrus(skip_visit)]
+        from_nullable: bool,
+        /// Input heap type
+        #[walrus(skip_visit)]
+        from_heap_type: HeapType,
+        /// Whether target type is nullable
+        #[walrus(skip_visit)]
+        to_nullable: bool,
+        /// Target heap type
+        #[walrus(skip_visit)]
+        to_heap_type: HeapType,
+    },
+
+    /// `br_on_cast_fail` - branch if cast fails
+    ///
+    /// If cast fails: branch to label with original value.
+    /// If cast succeeds: fall through with cast value.
+    BrOnCastFail {
+        /// Branch target
+        block: InstrSeqId,
+        /// Whether input type is nullable
+        #[walrus(skip_visit)]
+        from_nullable: bool,
+        /// Input heap type
+        #[walrus(skip_visit)]
+        from_heap_type: HeapType,
+        /// Whether target type is nullable
+        #[walrus(skip_visit)]
+        to_nullable: bool,
+        /// Target heap type
+        #[walrus(skip_visit)]
+        to_heap_type: HeapType,
+    },
+
+    /// `any.convert_extern` - convert externref to anyref
+    ///
+    /// Internalizes an external reference.
+    AnyConvertExtern {},
+
+    /// `extern.convert_any` - convert anyref to externref
+    ///
+    /// Externalizes an internal reference.
+    ExternConvertAny {},
 
     /// `v128.bitselect`
     V128Bitselect {},
@@ -1455,7 +1548,16 @@ impl Instr {
             | Instr::ElemDrop(..)
             | Instr::Drop(..)
             | Instr::TryTable(..)
-            | Instr::Try(..) => false,
+            | Instr::Try(..)
+            | Instr::RefI31(..)
+            | Instr::I31GetS(..)
+            | Instr::I31GetU(..)
+            | Instr::RefTest(..)
+            | Instr::RefCast(..)
+            | Instr::BrOnCast(..)
+            | Instr::BrOnCastFail(..)
+            | Instr::AnyConvertExtern(..)
+            | Instr::ExternConvertAny(..) => false,
         }
     }
 }

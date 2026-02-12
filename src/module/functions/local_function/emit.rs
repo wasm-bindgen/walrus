@@ -965,7 +965,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             TableGrow(e) => Instruction::TableGrow(self.indices.get_table_index(e.table)),
             TableSize(e) => Instruction::TableSize(self.indices.get_table_index(e.table)),
             TableFill(e) => Instruction::TableFill(self.indices.get_table_index(e.table)),
-            RefNull(e) => Instruction::RefNull(e.ty.heap_type.into()),
+            RefNull(e) => Instruction::RefNull(e.ty.heap_type.to_wasmencoder_heap_type()),
             RefIsNull(_) => Instruction::RefIsNull,
             RefFunc(e) => Instruction::RefFunc(self.indices.get_func_index(e.func)),
             RefAsNonNull(_) => Instruction::RefAsNonNull,
@@ -1051,6 +1051,57 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
 
             // Legacy exception handling
             Rethrow(e) => Instruction::Rethrow(e.relative_depth),
+
+            // GC Proposal Instructions
+            RefI31(_) => Instruction::RefI31,
+            I31GetS(_) => Instruction::I31GetS,
+            I31GetU(_) => Instruction::I31GetU,
+            RefTest(e) => {
+                let heap_type = e.heap_type.to_wasmencoder_heap_type();
+                if e.nullable {
+                    Instruction::RefTestNullable(heap_type)
+                } else {
+                    Instruction::RefTestNonNull(heap_type)
+                }
+            }
+            RefCast(e) => {
+                let heap_type = e.heap_type.to_wasmencoder_heap_type();
+                if e.nullable {
+                    Instruction::RefCastNullable(heap_type)
+                } else {
+                    Instruction::RefCastNonNull(heap_type)
+                }
+            }
+            BrOnCast(e) => {
+                let relative_depth = self.branch_target(e.block);
+                Instruction::BrOnCast {
+                    relative_depth,
+                    from_ref_type: wasm_encoder::RefType {
+                        nullable: e.from_nullable,
+                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(),
+                    },
+                    to_ref_type: wasm_encoder::RefType {
+                        nullable: e.to_nullable,
+                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(),
+                    },
+                }
+            }
+            BrOnCastFail(e) => {
+                let relative_depth = self.branch_target(e.block);
+                Instruction::BrOnCastFail {
+                    relative_depth,
+                    from_ref_type: wasm_encoder::RefType {
+                        nullable: e.from_nullable,
+                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(),
+                    },
+                    to_ref_type: wasm_encoder::RefType {
+                        nullable: e.to_nullable,
+                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(),
+                    },
+                }
+            }
+            AnyConvertExtern(_) => Instruction::AnyConvertExtern,
+            ExternConvertAny(_) => Instruction::ExternConvertAny,
         });
     }
 }

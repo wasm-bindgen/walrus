@@ -248,16 +248,19 @@ impl Used {
                         stack.push_func(*f);
                     });
                 }
-                if let ElementItems::Expressions(RefType::FUNCREF, items) = &e.items {
-                    for item in items {
-                        match item {
-                            ConstExpr::Global(g) => {
-                                stack.push_global(*g);
+                if let ElementItems::Expressions(ref_type, items) = &e.items {
+                    // Check if it's a funcref type (nullable or not)
+                    if ref_type == &RefType::FUNCREF {
+                        for item in items {
+                            match item {
+                                ConstExpr::Global(g) => {
+                                    stack.push_global(*g);
+                                }
+                                ConstExpr::RefFunc(f) => {
+                                    stack.push_func(*f);
+                                }
+                                _ => {}
                             }
-                            ConstExpr::RefFunc(f) => {
-                                stack.push_func(*f);
-                            }
-                            _ => {}
                         }
                     }
                 }

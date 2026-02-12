@@ -3,8 +3,8 @@
 use crate::emit::EmitContext;
 use crate::ir::Value;
 use crate::parse::IndicesToIds;
-use crate::RefType;
 use crate::{FunctionId, GlobalId, Result};
+use crate::{HeapType, RefType};
 use anyhow::bail;
 
 /// A constant which is produced in WebAssembly, typically used in global
@@ -54,6 +54,8 @@ pub enum ConstOp {
     I64Sub,
     /// i64 multiplication
     I64Mul,
+    /// Create i31ref from i32
+    RefI31,
 }
 
 impl ConstExpr {
@@ -75,19 +77,12 @@ impl ConstExpr {
                     ops.push(ConstOp::GlobalGet(ids.get_global(global_index)?))
                 }
                 RefNull { hty } => {
-                    let val_type = match hty {
-                        wasmparser::HeapType::Abstract { shared: _, ty } => match ty {
-                            wasmparser::AbstractHeapType::Func => RefType::FUNCREF,
-                            wasmparser::AbstractHeapType::Extern => RefType::EXTERNREF,
-                            other => bail!(
-                                "unsupported abstract heap type in constant expression: {other:?}"
-                            ),
-                        },
-                        wasmparser::HeapType::Concrete(_) => {
-                            bail!("unsupported concrete heap type in constant expression")
-                        }
+                    let heap_type = HeapType::try_from(hty)?;
+                    let ref_type = RefType {
+                        nullable: true,
+                        heap_type,
                     };
-                    ops.push(ConstOp::RefNull(val_type));
+                    ops.push(ConstOp::RefNull(ref_type));
                 }
                 RefFunc { function_index } => {
                     ops.push(ConstOp::RefFunc(ids.get_func(function_index)?))
@@ -98,6 +93,7 @@ impl ConstExpr {
                 I64Add => ops.push(ConstOp::I64Add),
                 I64Sub => ops.push(ConstOp::I64Sub),
                 I64Mul => ops.push(ConstOp::I64Mul),
+                RefI31 => ops.push(ConstOp::RefI31),
                 _ => bail!("unsupported operation in constant expression: {:?}", op),
             }
         }
@@ -135,7 +131,9 @@ impl ConstExpr {
             ConstExpr::Global(g) => {
                 wasm_encoder::ConstExpr::global_get(cx.indices.get_global_index(*g))
             }
-            ConstExpr::RefNull(ty) => wasm_encoder::ConstExpr::ref_null(ty.heap_type.into()),
+            ConstExpr::RefNull(ty) => {
+                wasm_encoder::ConstExpr::ref_null(ty.heap_type.to_wasmencoder_heap_type())
+            }
             ConstExpr::RefFunc(f) => {
                 wasm_encoder::ConstExpr::ref_func(cx.indices.get_func_index(*f))
             }
@@ -159,7 +157,8 @@ impl ConstExpr {
                                 .encode(&mut bytes)
                         }
                         ConstOp::RefNull(ty) => {
-                            Instruction::RefNull(ty.heap_type.into()).encode(&mut bytes)
+                            Instruction::RefNull(ty.heap_type.to_wasmencoder_heap_type())
+                                .encode(&mut bytes)
                         }
                         ConstOp::RefFunc(f) => {
                             Instruction::RefFunc(cx.indices.get_func_index(*f)).encode(&mut bytes)
@@ -170,6 +169,7 @@ impl ConstExpr {
                         ConstOp::I64Add => Instruction::I64Add.encode(&mut bytes),
                         ConstOp::I64Sub => Instruction::I64Sub.encode(&mut bytes),
                         ConstOp::I64Mul => Instruction::I64Mul.encode(&mut bytes),
+                        ConstOp::RefI31 => Instruction::RefI31.encode(&mut bytes),
                     }
                 }
                 // Don't add End instruction - wasm_encoder::ConstExpr::raw adds it automatically

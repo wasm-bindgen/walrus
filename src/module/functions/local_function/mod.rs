@@ -7,7 +7,7 @@ use self::context::ValidationContext;
 use crate::emit::IdsToIndices;
 use crate::map::{IdHashMap, IdHashSet};
 use crate::parse::IndicesToIds;
-use crate::{ir::*, RefType};
+use crate::{ir::*, HeapType, RefType};
 use crate::{Data, DataId, FunctionBuilder, FunctionId, MemoryId, Module, Result, TypeId, ValType};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -997,17 +997,10 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.alloc_instr(TableFill { table }, loc);
         }
         Operator::RefNull { hty } => {
-            let ty = match hty {
-                wasmparser::HeapType::Abstract { shared: _, ty } => match ty {
-                    wasmparser::AbstractHeapType::Func => RefType::FUNCREF,
-                    wasmparser::AbstractHeapType::Extern => RefType::EXTERNREF,
-                    other => {
-                        panic!("unsupported abstract heap type for ref.null: {:?}", other)
-                    }
-                },
-                wasmparser::HeapType::Concrete(_) => {
-                    panic!("unsupported concrete heap type for ref.null")
-                }
+            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.null");
+            let ty = RefType {
+                nullable: true,
+                heap_type,
             };
             ctx.alloc_instr(RefNull { ty }, loc);
         }
@@ -1038,6 +1031,107 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         Operator::ReturnCallRef { type_index } => {
             let ty = ctx.indices.get_type(type_index).unwrap();
             ctx.alloc_instr(ReturnCallRef { ty }, loc);
+        }
+
+        // GC Proposal Instructions
+        Operator::RefI31 => {
+            ctx.alloc_instr(RefI31 {}, loc);
+        }
+        Operator::I31GetS => {
+            ctx.alloc_instr(I31GetS {}, loc);
+        }
+        Operator::I31GetU => {
+            ctx.alloc_instr(I31GetU {}, loc);
+        }
+        Operator::RefTestNonNull { hty } => {
+            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.test");
+            ctx.alloc_instr(
+                RefTest {
+                    nullable: false,
+                    heap_type,
+                },
+                loc,
+            );
+        }
+        Operator::RefTestNullable { hty } => {
+            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.test");
+            ctx.alloc_instr(
+                RefTest {
+                    nullable: true,
+                    heap_type,
+                },
+                loc,
+            );
+        }
+        Operator::RefCastNonNull { hty } => {
+            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.cast");
+            ctx.alloc_instr(
+                RefCast {
+                    nullable: false,
+                    heap_type,
+                },
+                loc,
+            );
+        }
+        Operator::RefCastNullable { hty } => {
+            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.cast");
+            ctx.alloc_instr(
+                RefCast {
+                    nullable: true,
+                    heap_type,
+                },
+                loc,
+            );
+        }
+        Operator::BrOnCast {
+            relative_depth,
+            from_ref_type,
+            to_ref_type,
+        } => {
+            let n = relative_depth as usize;
+            let block = ctx.control(n).unwrap().block;
+            let from_heap_type =
+                HeapType::try_from(from_ref_type.heap_type()).expect("unsupported from heap type");
+            let to_heap_type =
+                HeapType::try_from(to_ref_type.heap_type()).expect("unsupported to heap type");
+            ctx.alloc_instr(
+                BrOnCast {
+                    block,
+                    from_nullable: from_ref_type.is_nullable(),
+                    from_heap_type,
+                    to_nullable: to_ref_type.is_nullable(),
+                    to_heap_type,
+                },
+                loc,
+            );
+        }
+        Operator::BrOnCastFail {
+            relative_depth,
+            from_ref_type,
+            to_ref_type,
+        } => {
+            let n = relative_depth as usize;
+            let block = ctx.control(n).unwrap().block;
+            let from_heap_type =
+                HeapType::try_from(from_ref_type.heap_type()).expect("unsupported from heap type");
+            let to_heap_type =
+                HeapType::try_from(to_ref_type.heap_type()).expect("unsupported to heap type");
+            ctx.alloc_instr(
+                BrOnCastFail {
+                    block,
+                    from_nullable: from_ref_type.is_nullable(),
+                    from_heap_type,
+                    to_nullable: to_ref_type.is_nullable(),
+                    to_heap_type,
+                },
+                loc,
+            );
+        }
+        Operator::AnyConvertExtern => {
+            ctx.alloc_instr(AnyConvertExtern {}, loc);
+        }
+        Operator::ExternConvertAny => {
+            ctx.alloc_instr(ExternConvertAny {}, loc);
         }
 
         Operator::I8x16Swizzle => {
@@ -1571,25 +1665,6 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             array_type_index: _,
             array_elem_index: _,
         }
-        | Operator::RefTestNonNull { hty: _ }
-        | Operator::RefTestNullable { hty: _ }
-        | Operator::RefCastNonNull { hty: _ }
-        | Operator::RefCastNullable { hty: _ }
-        | Operator::BrOnCast {
-            relative_depth: _,
-            from_ref_type: _,
-            to_ref_type: _,
-        }
-        | Operator::BrOnCastFail {
-            relative_depth: _,
-            from_ref_type: _,
-            to_ref_type: _,
-        }
-        | Operator::AnyConvertExtern
-        | Operator::ExternConvertAny
-        | Operator::RefI31
-        | Operator::I31GetS
-        | Operator::I31GetU
         | Operator::MemoryDiscard { mem: _ }
         | Operator::GlobalAtomicGet {
             ordering: _,

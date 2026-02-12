@@ -166,7 +166,7 @@ impl Module {
         for entry in section {
             let entry = entry?;
             let item = match entry.kind {
-                Func => ExportItem::Function(ids.get_func(entry.index)?),
+                Func | FuncExact => ExportItem::Function(ids.get_func(entry.index)?),
                 Table => ExportItem::Table(ids.get_table(entry.index)?),
                 Memory => ExportItem::Memory(ids.get_memory(entry.index)?),
                 Global => ExportItem::Global(ids.get_global(entry.index)?),

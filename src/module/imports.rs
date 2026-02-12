@@ -154,10 +154,10 @@ impl Module {
         ids: &mut IndicesToIds,
     ) -> Result<()> {
         log::debug!("parse import section");
-        for entry in section {
+        for entry in section.into_imports() {
             let entry = entry?;
             match entry.ty {
-                wasmparser::TypeRef::Func(idx) => {
+                wasmparser::TypeRef::Func(idx) | wasmparser::TypeRef::FuncExact(idx) => {
                     let ty = ids.get_type(idx)?;
                     let id = self.add_import_func(entry.module, entry.name, ty);
                     ids.push_func(id.0);
@@ -307,7 +307,7 @@ impl Emit for ModuleImports {
                         cx.indices.push_table(id);
                         let table = cx.module.tables.get(id);
                         wasm_encoder::EntityType::Table(wasm_encoder::TableType {
-                            element_type: table.element_ty.into(),
+                            element_type: table.element_ty.to_wasmencoder_ref_type(),
                             table64: table.table64,
                             minimum: table.initial,
                             maximum: table.maximum,

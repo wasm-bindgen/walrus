@@ -6,7 +6,7 @@ use crate::emit::{Emit, EmitContext};
 use crate::map::IdHashSet;
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{Element, ImportId, Module, RefType, Result};
+use crate::{ConstExpr, Element, ImportId, Module, RefType, Result};
 use anyhow::bail;
 
 /// The id of a table.
@@ -24,6 +24,10 @@ pub struct Table {
     pub maximum: Option<u64>,
     /// The type of the elements in this table
     pub element_ty: RefType,
+    /// The initialization expression for the table elements.
+    /// Required for non-defaultable (non-nullable) element types.
+    /// If None, the table is initialized with null references.
+    pub init: Option<ConstExpr>,
     /// Whether or not this table is imported, and if so what imports it.
     pub import: Option<ImportId>,
     /// Active data segments that will be used to initialize this memory.
@@ -66,6 +70,7 @@ impl ModuleTables {
             initial,
             maximum,
             element_ty,
+            init: None,
             import: Some(import),
             elem_segments: Default::default(),
             name: None,
@@ -81,6 +86,19 @@ impl ModuleTables {
         maximum: Option<u64>,
         element_ty: RefType,
     ) -> TableId {
+        self.add_local_with_init(table64, initial, maximum, element_ty, None)
+    }
+
+    /// Construct a new table with an optional initializer expression.
+    /// The initializer is required for non-defaultable (non-nullable) element types.
+    pub fn add_local_with_init(
+        &mut self,
+        table64: bool,
+        initial: u64,
+        maximum: Option<u64>,
+        element_ty: RefType,
+        init: Option<ConstExpr>,
+    ) -> TableId {
         let id = self.arena.next_id();
         let id2 = self.arena.alloc(Table {
             id,
@@ -88,6 +106,7 @@ impl ModuleTables {
             initial,
             maximum,
             element_ty,
+            init,
             import: None,
             elem_segments: Default::default(),
             name: None,
@@ -157,11 +176,16 @@ impl Module {
         log::debug!("parse table section");
         for t in section {
             let t = t?;
-            let id = self.tables.add_local(
+            let init = match t.init {
+                wasmparser::TableInit::RefNull => None,
+                wasmparser::TableInit::Expr(expr) => Some(ConstExpr::eval(&expr, ids)?),
+            };
+            let id = self.tables.add_local_with_init(
                 t.ty.table64,
                 t.ty.initial,
                 t.ty.maximum,
                 t.ty.element_type.try_into()?,
+                init,
             );
             ids.push_table(id);
         }
@@ -184,13 +208,23 @@ impl Emit for ModuleTables {
         for table in self.iter().filter(|t| t.import.is_none()) {
             cx.indices.push_table(table.id());
 
-            wasm_table_section.table(wasm_encoder::TableType {
+            let table_type = wasm_encoder::TableType {
                 table64: table.table64,
                 minimum: table.initial,
                 maximum: table.maximum,
-                element_type: table.element_ty.into(),
+                element_type: table.element_ty.to_wasmencoder_ref_type(),
                 shared: false,
-            });
+            };
+
+            match &table.init {
+                Some(init_expr) => {
+                    wasm_table_section
+                        .table_with_init(table_type, &init_expr.to_wasmencoder_type(cx));
+                }
+                None => {
+                    wasm_table_section.table(table_type);
+                }
+            }
         }
 
         cx.wasm_module.section(&wasm_table_section);

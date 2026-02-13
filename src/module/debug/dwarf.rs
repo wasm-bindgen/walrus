@@ -58,11 +58,15 @@ where
         from_unit: &mut gimli::read::EntriesCursor<R>,
         unit: &mut DebuggingInformationCursor,
     ) {
-        while let (Ok(Some(from_debug_entry)), Some(debug_entry)) =
+        while let (Ok(Some((_, from_debug_entry))), Some(debug_entry)) =
             (from_unit.next_dfs(), unit.next_dfs())
         {
-            let low_pc = from_debug_entry.attr_value(constants::DW_AT_low_pc);
-            let high_pc = from_debug_entry.attr_value(constants::DW_AT_high_pc);
+            let low_pc = from_debug_entry
+                .attr_value(constants::DW_AT_low_pc)
+                .expect("low_pc");
+            let high_pc = from_debug_entry
+                .attr_value(constants::DW_AT_high_pc)
+                .expect("high_pc");
 
             if let (Some(AttributeValue::Addr(low_addr)), Some(AttributeValue::Udata(offset))) =
                 (low_pc, high_pc)
@@ -358,10 +362,13 @@ mod tests {
             program.end_sequence(address_offset);
         }
 
-        let mut line_strings = write::LineStringTable::default();
-        let mut strings = write::StringTable::default();
         program
-            .write(debug_line, encoding, &mut line_strings, &mut strings)
+            .write(
+                debug_line,
+                encoding,
+                &write::DebugLineStrOffsets::none(),
+                &write::DebugStrOffsets::none(),
+            )
             .unwrap();
 
         let debug_line = read::DebugLine::new(debug_line.slice(), LittleEndian);
@@ -446,14 +453,12 @@ mod tests {
                 .convert_line_program(incomplete_debug_line)
                 .unwrap();
 
-            let mut line_strings = write::LineStringTable::default();
-            let mut strings = write::StringTable::default();
             converted_program
                 .write(
                     &mut converted_debug_line,
                     converted_program.encoding(),
-                    &mut line_strings,
-                    &mut strings,
+                    &write::DebugLineStrOffsets::none(),
+                    &write::DebugStrOffsets::none(),
                 )
                 .unwrap();
         }
@@ -494,14 +499,12 @@ mod tests {
                 .convert_line_program(incomplete_debug_line)
                 .unwrap();
 
-            let mut line_strings = write::LineStringTable::default();
-            let mut strings = write::StringTable::default();
             converted_program
                 .write(
                     &mut converted_debug_line,
                     converted_program.encoding(),
-                    &mut line_strings,
-                    &mut strings,
+                    &write::DebugLineStrOffsets::none(),
+                    &write::DebugStrOffsets::none(),
                 )
                 .unwrap();
         }
@@ -545,10 +548,12 @@ mod tests {
         }
 
         let mut sections = write::Sections::new(write::EndianVec::new(LittleEndian));
-        let mut line_strings = write::LineStringTable::default();
-        let mut strings = write::StringTable::default();
         unit_table
-            .write(&mut sections, &mut line_strings, &mut strings)
+            .write(
+                &mut sections,
+                &write::DebugLineStrOffsets::none(),
+                &write::DebugStrOffsets::none(),
+            )
             .unwrap();
         sections
     }

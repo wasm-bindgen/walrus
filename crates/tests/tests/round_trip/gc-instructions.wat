@@ -308,7 +308,7 @@
     (export "load_any_as_extern" (func 11))
     (export "roundtrip_extern" (func 12))
     (@producers
-      (processed-by "walrus" "0.24.5")
+      (processed-by "walrus" "0.25.0")
     )
   )
 ;)

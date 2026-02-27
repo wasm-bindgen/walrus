@@ -320,9 +320,9 @@ impl Emit for ModuleImports {
                         wasm_encoder::EntityType::Memory(wasm_encoder::MemoryType {
                             minimum: mem.initial,
                             maximum: mem.maximum,
-                            memory64: false,
+                            memory64: mem.memory64,
                             shared: mem.shared,
-                            page_size_log2: None,
+                            page_size_log2: mem.page_size_log2,
                         })
                     }
                     ImportKind::Global(id) => {

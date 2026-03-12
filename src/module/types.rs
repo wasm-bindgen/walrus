@@ -97,6 +97,107 @@ impl ModuleTypes {
         id
     }
 
+    /// Add a new struct type to this module (final, no supertype).
+    ///
+    /// Deduplicates with existing structurally identical types.
+    /// Creates an implicit singleton rec group for genuinely new types.
+    pub fn add_struct(&mut self, fields: Vec<FieldType>) -> TypeId {
+        self.add_composite(
+            CompositeType::Struct(StructType {
+                fields: fields.into_boxed_slice(),
+            }),
+            true,
+            None,
+        )
+    }
+
+    /// Add a new array type to this module (final, no supertype).
+    ///
+    /// Deduplicates with existing structurally identical types.
+    /// Creates an implicit singleton rec group for genuinely new types.
+    pub fn add_array(&mut self, element: FieldType) -> TypeId {
+        self.add_composite(
+            CompositeType::Array(ArrayType { field: element }),
+            true,
+            None,
+        )
+    }
+
+    /// Add any composite type with explicit subtyping controls.
+    ///
+    /// Deduplicates with existing structurally identical types.
+    /// Creates an implicit singleton rec group for genuinely new types.
+    pub fn add_composite(
+        &mut self,
+        comp: CompositeType,
+        is_final: bool,
+        supertype: Option<TypeId>,
+    ) -> TypeId {
+        let next_id = self.arena.next_id();
+        let ty = Type::new_composite(next_id, comp, is_final, supertype);
+        let id = self.arena.insert(ty);
+        if id == next_id {
+            self.rec_groups.push(RecGroup {
+                types: vec![id],
+                is_explicit: false,
+            });
+        }
+        id
+    }
+
+    /// Add an explicit recursive type group.
+    ///
+    /// Pre-allocates `count` placeholder `TypeId`s and passes them to the
+    /// `build` closure so that it can use them as forward references when
+    /// constructing mutually-recursive type definitions. The closure must
+    /// return exactly `count` type definitions as
+    /// `(CompositeType, is_final, supertype)` tuples.
+    ///
+    /// Types in a rec group are **not** deduplicated — each gets a unique
+    /// `TypeId`, matching the semantics of the wasm binary format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the closure returns a different number of types than `count`.
+    pub fn add_rec_group(
+        &mut self,
+        count: usize,
+        build: impl FnOnce(&[TypeId]) -> Vec<(CompositeType, bool, Option<TypeId>)>,
+    ) -> Vec<TypeId> {
+        // Pre-allocate placeholder TypeIds.
+        let mut type_ids = Vec::with_capacity(count);
+        for _ in 0..count {
+            let id = self.arena.next_id();
+            let id = self.arena.alloc_unique(Type::placeholder(id));
+            type_ids.push(id);
+        }
+
+        // Let the caller build the real type definitions using the
+        // pre-allocated ids for forward references.
+        let defs = build(&type_ids);
+        assert_eq!(
+            defs.len(),
+            count,
+            "add_rec_group: closure returned {} types, expected {}",
+            defs.len(),
+            count,
+        );
+
+        // Finalize each placeholder with its real definition.
+        for (&type_id, (comp, is_final, supertype)) in type_ids.iter().zip(defs) {
+            let real_type = Type::new_composite(type_id, comp, is_final, supertype);
+            self.arena.replace_and_register(type_id, real_type);
+        }
+
+        // Register the explicit rec group.
+        self.rec_groups.push(RecGroup {
+            types: type_ids.clone(),
+            is_explicit: true,
+        });
+
+        type_ids
+    }
+
     pub(crate) fn add_entry_ty(&mut self, results: &[ValType]) -> TypeId {
         let next_id = self.arena.next_id();
         let id = self.arena.insert(Type::for_function_entry(

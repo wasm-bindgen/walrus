@@ -38,4 +38,7 @@ pub use crate::function_builder::{FunctionBuilder, InstrSeqBuilder};
 pub use crate::ir::{Local, LocalId};
 pub use crate::module::*;
 pub use crate::parse::IndicesToIds;
-pub use crate::ty::{AbstractHeapType, HeapType, RefType, Type, TypeId, ValType};
+pub use crate::ty::{
+    AbstractHeapType, ArrayType, CompositeType, FieldType, FunctionType, HeapType, RecGroup,
+    RecGroupId, RefType, StorageType, StructType, Type, TypeId, ValType,
+};

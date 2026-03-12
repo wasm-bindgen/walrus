@@ -12,12 +12,274 @@ use std::hash;
 /// An identifier for types.
 pub type TypeId = Id<Type>;
 
-/// A function type.
+/// An identifier for recursive type groups.
+pub type RecGroupId = Id<RecGroup>;
+
+/// A recursive type group.
+///
+/// In the GC proposal, types can be grouped into recursive type groups that
+/// allow mutual references between types. Each type in a module belongs to
+/// exactly one recursive group (singleton groups for non-recursive types).
+#[derive(Debug, Clone)]
+pub struct RecGroup {
+    /// The types in this recursive group, in definition order.
+    pub types: Vec<TypeId>,
+}
+
+// ---------------------------------------------------------------------------
+// GC type definitions: storage types, field types, aggregate types
+// ---------------------------------------------------------------------------
+
+/// A packed storage type for struct and array fields.
+///
+/// Packed types allow storing smaller integers in fields for memory efficiency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum StorageType {
+    /// A standard value type.
+    Val(ValType),
+    /// An 8-bit integer (packed).
+    I8,
+    /// A 16-bit integer (packed).
+    I16,
+}
+
+impl StorageType {
+    /// Unpack a storage type to its corresponding value type.
+    ///
+    /// Packed integer types (`I8`, `I16`) unpack to `I32`.
+    pub fn unpack(&self) -> ValType {
+        match self {
+            StorageType::Val(v) => *v,
+            StorageType::I8 | StorageType::I16 => ValType::I32,
+        }
+    }
+}
+
+impl fmt::Display for StorageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StorageType::Val(v) => write!(f, "{v}"),
+            StorageType::I8 => write!(f, "i8"),
+            StorageType::I16 => write!(f, "i16"),
+        }
+    }
+}
+
+/// A field type for struct and array fields.
+///
+/// Combines a storage type with a mutability flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FieldType {
+    /// The storage type of this field.
+    pub element_type: StorageType,
+    /// Whether this field is mutable.
+    pub mutable: bool,
+}
+
+impl fmt::Display for FieldType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.mutable {
+            write!(f, "(mut {})", self.element_type)
+        } else {
+            write!(f, "{}", self.element_type)
+        }
+    }
+}
+
+/// A function type, consisting of parameter and result types.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FunctionType {
+    /// The parameter types.
+    params: Box<[ValType]>,
+    /// The result types.
+    results: Box<[ValType]>,
+}
+
+impl FunctionType {
+    /// Create a new function type.
+    pub fn new(params: Box<[ValType]>, results: Box<[ValType]>) -> Self {
+        FunctionType { params, results }
+    }
+
+    /// Get the parameter types.
+    #[inline]
+    pub fn params(&self) -> &[ValType] {
+        &self.params
+    }
+
+    /// Get the result types.
+    #[inline]
+    pub fn results(&self) -> &[ValType] {
+        &self.results
+    }
+}
+
+impl fmt::Display for FunctionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(func")?;
+        if !self.params.is_empty() {
+            let params = self
+                .params
+                .iter()
+                .map(|p| format!("{p}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            write!(f, " (param {params})")?;
+        }
+        if !self.results.is_empty() {
+            let results = self
+                .results
+                .iter()
+                .map(|r| format!("{r}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            write!(f, " (result {results})")?;
+        }
+        write!(f, ")")
+    }
+}
+
+/// A struct type, consisting of a sequence of field types.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StructType {
+    /// The fields of this struct type.
+    pub fields: Box<[FieldType]>,
+}
+
+impl fmt::Display for StructType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| format!("(field {field})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if fields.is_empty() {
+            write!(f, "(struct)")
+        } else {
+            write!(f, "(struct {fields})")
+        }
+    }
+}
+
+/// An array type, consisting of a single field type for all elements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ArrayType {
+    /// The element type of this array.
+    pub field: FieldType,
+}
+
+impl fmt::Display for ArrayType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(array {})", self.field)
+    }
+}
+
+/// A composite type that can be a function, struct, or array.
+///
+/// This corresponds to the `comptype` production in the WebAssembly GC spec.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CompositeType {
+    /// A function type.
+    Function(FunctionType),
+    /// A struct type (GC proposal).
+    Struct(StructType),
+    /// An array type (GC proposal).
+    Array(ArrayType),
+}
+
+impl CompositeType {
+    /// Returns `Some` if this is a function type.
+    pub fn as_function(&self) -> Option<&FunctionType> {
+        match self {
+            CompositeType::Function(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference if this is a function type.
+    pub fn as_function_mut(&mut self) -> Option<&mut FunctionType> {
+        match self {
+            CompositeType::Function(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some` if this is a struct type.
+    pub fn as_struct(&self) -> Option<&StructType> {
+        match self {
+            CompositeType::Struct(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Returns `Some` if this is an array type.
+    pub fn as_array(&self) -> Option<&ArrayType> {
+        match self {
+            CompositeType::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Unwrap as a function type, panicking if it's not one.
+    pub fn unwrap_function(&self) -> &FunctionType {
+        self.as_function().expect("expected a function type")
+    }
+
+    /// Unwrap as a struct type, panicking if it's not one.
+    pub fn unwrap_struct(&self) -> &StructType {
+        self.as_struct().expect("expected a struct type")
+    }
+
+    /// Unwrap as an array type, panicking if it's not one.
+    pub fn unwrap_array(&self) -> &ArrayType {
+        self.as_array().expect("expected an array type")
+    }
+
+    /// Returns `true` if this is a function type.
+    pub fn is_function(&self) -> bool {
+        matches!(self, CompositeType::Function(_))
+    }
+
+    /// Returns `true` if this is a struct type.
+    pub fn is_struct(&self) -> bool {
+        matches!(self, CompositeType::Struct(_))
+    }
+
+    /// Returns `true` if this is an array type.
+    pub fn is_array(&self) -> bool {
+        matches!(self, CompositeType::Array(_))
+    }
+}
+
+impl fmt::Display for CompositeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompositeType::Function(ft) => write!(f, "{ft}"),
+            CompositeType::Struct(st) => write!(f, "{st}"),
+            CompositeType::Array(at) => write!(f, "{at}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Type: the top-level type definition (subtype wrapper)
+// ---------------------------------------------------------------------------
+
+/// A WebAssembly type definition.
+///
+/// With the GC proposal, types can be function types, struct types, or array
+/// types, and can participate in subtyping and recursive type groups.
 #[derive(Debug, Clone)]
 pub struct Type {
     id: TypeId,
-    params: Box<[ValType]>,
-    results: Box<[ValType]>,
+    /// The composite type definition (function, struct, or array).
+    comp: CompositeType,
+    /// Whether this type is final (cannot be further subtyped).
+    /// Defaults to `true` for types without explicit subtype declarations.
+    pub is_final: bool,
+    /// Optional supertype that this type extends.
+    pub supertype: Option<TypeId>,
 
     // Whether or not this type is for a multi-value function entry block, and
     // therefore is for internal use only and shouldn't be emitted when we
@@ -35,8 +297,9 @@ impl PartialEq for Type {
     #[inline]
     fn eq(&self, rhs: &Type) -> bool {
         // NB: do not compare id or name.
-        self.params == rhs.params
-            && self.results == rhs.results
+        self.comp == rhs.comp
+            && self.is_final == rhs.is_final
+            && self.supertype == rhs.supertype
             && self.is_for_function_entry == rhs.is_for_function_entry
     }
 }
@@ -51,9 +314,10 @@ impl PartialOrd for Type {
 
 impl Ord for Type {
     fn cmp(&self, rhs: &Type) -> Ordering {
-        self.params()
-            .cmp(rhs.params())
-            .then_with(|| self.results().cmp(rhs.results()))
+        self.comp
+            .cmp(&rhs.comp)
+            .then_with(|| self.is_final.cmp(&rhs.is_final))
+            .then_with(|| self.supertype.cmp(&rhs.supertype))
     }
 }
 
@@ -61,16 +325,19 @@ impl hash::Hash for Type {
     #[inline]
     fn hash<H: hash::Hasher>(&self, h: &mut H) {
         // Do not hash id or name.
-        self.params.hash(h);
-        self.results.hash(h);
+        self.comp.hash(h);
+        self.is_final.hash(h);
+        self.supertype.hash(h);
         self.is_for_function_entry.hash(h);
     }
 }
 
 impl Tombstone for Type {
     fn on_delete(&mut self) {
-        self.params = Box::new([]);
-        self.results = Box::new([]);
+        self.comp = CompositeType::Function(FunctionType {
+            params: Box::new([]),
+            results: Box::new([]),
+        });
     }
 }
 
@@ -80,8 +347,9 @@ impl Type {
     pub(crate) fn new(id: TypeId, params: Box<[ValType]>, results: Box<[ValType]>) -> Type {
         Type {
             id,
-            params,
-            results,
+            comp: CompositeType::Function(FunctionType { params, results }),
+            is_final: true,
+            supertype: None,
             is_for_function_entry: false,
             name: None,
         }
@@ -93,9 +361,27 @@ impl Type {
         let params = vec![].into();
         Type {
             id,
-            params,
-            results,
+            comp: CompositeType::Function(FunctionType { params, results }),
+            is_final: true,
+            supertype: None,
             is_for_function_entry: true,
+            name: None,
+        }
+    }
+
+    /// Construct a new type with a given composite type.
+    pub(crate) fn new_composite(
+        id: TypeId,
+        comp: CompositeType,
+        is_final: bool,
+        supertype: Option<TypeId>,
+    ) -> Type {
+        Type {
+            id,
+            comp,
+            is_final,
+            supertype,
+            is_for_function_entry: false,
             name: None,
         }
     }
@@ -106,22 +392,82 @@ impl Type {
         self.id
     }
 
+    /// Get a reference to the composite type.
+    #[inline]
+    pub fn kind(&self) -> &CompositeType {
+        &self.comp
+    }
+
+    /// Get a mutable reference to the composite type.
+    #[inline]
+    pub fn kind_mut(&mut self) -> &mut CompositeType {
+        &mut self.comp
+    }
+
     /// Get the parameters to this function type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this type is not a function type.
     #[inline]
     pub fn params(&self) -> &[ValType] {
-        &self.params
+        self.comp.unwrap_function().params()
     }
 
     /// Get the results of this function type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this type is not a function type.
     #[inline]
     pub fn results(&self) -> &[ValType] {
-        &self.results
+        self.comp.unwrap_function().results()
+    }
+
+    /// Returns this type's composite type as a function type, if it is one.
+    #[inline]
+    pub fn as_function(&self) -> Option<&FunctionType> {
+        self.comp.as_function()
+    }
+
+    /// Returns this type's composite type as a struct type, if it is one.
+    #[inline]
+    pub fn as_struct(&self) -> Option<&StructType> {
+        self.comp.as_struct()
+    }
+
+    /// Returns this type's composite type as an array type, if it is one.
+    #[inline]
+    pub fn as_array(&self) -> Option<&ArrayType> {
+        self.comp.as_array()
+    }
+
+    /// Whether this type is a function type.
+    #[inline]
+    pub fn is_function(&self) -> bool {
+        self.comp.is_function()
+    }
+
+    /// Whether this type is a struct type.
+    #[inline]
+    pub fn is_struct(&self) -> bool {
+        self.comp.is_struct()
+    }
+
+    /// Whether this type is an array type.
+    #[inline]
+    pub fn is_array(&self) -> bool {
+        self.comp.is_array()
     }
 
     pub(crate) fn is_for_function_entry(&self) -> bool {
         self.is_for_function_entry
     }
 }
+
+// ---------------------------------------------------------------------------
+// Value types
+// ---------------------------------------------------------------------------
 
 /// A value type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -140,6 +486,10 @@ pub enum ValType {
     Ref(RefType),
 }
 
+// ---------------------------------------------------------------------------
+// Heap types
+// ---------------------------------------------------------------------------
+
 /// A heap type for GC reference types.
 ///
 /// This represents the kind of heap object a reference points to.
@@ -148,19 +498,22 @@ pub enum ValType {
 pub enum HeapType {
     /// Abstract heap type (abstract types like func, extern, any, etc.)
     Abstract(AbstractHeapType),
-    /// Concrete (indexed) heap type - currently not supported
-    Concrete(u32),
+    /// Concrete (indexed) heap type, referencing a defined type by its id.
+    Concrete(TypeId),
 }
 
 impl HeapType {
     /// Convert to wasm_encoder HeapType.
+    ///
+    /// For concrete heap types, this currently panics. Use
+    /// `to_wasmencoder_heap_type_with_indices` for concrete type support.
     pub fn to_wasmencoder_heap_type(self) -> wasm_encoder::HeapType {
         match self {
             HeapType::Abstract(ab_heap_type) => wasm_encoder::HeapType::Abstract {
                 shared: false,
                 ty: ab_heap_type.into(),
             },
-            HeapType::Concrete(_) => todo!("concrete heap types not yet supported"),
+            HeapType::Concrete(id) => wasm_encoder::HeapType::Concrete(id.index() as u32),
         }
     }
 }
@@ -174,7 +527,7 @@ impl TryFrom<wasmparser::HeapType> for HeapType {
                 Ok(HeapType::Abstract(ty.try_into()?))
             }
             wasmparser::HeapType::Concrete(_) | wasmparser::HeapType::Exact(_) => {
-                bail!("concrete (indexed) heap types are not yet supported")
+                bail!("concrete (indexed) heap types are not yet supported in this context; use HeapType::from_wasmparser_with_ids instead")
             }
         }
     }
@@ -201,10 +554,14 @@ impl fmt::Display for HeapType {
                     AbstractHeapType::NoExn => "noexn",
                 }
             ),
-            HeapType::Concrete(id) => write!(f, "{id}"),
+            HeapType::Concrete(id) => write!(f, "{}", id.index()),
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Abstract heap types
+// ---------------------------------------------------------------------------
 
 /// Abstract heap types for GC reference types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -281,6 +638,10 @@ impl TryFrom<wasmparser::AbstractHeapType> for AbstractHeapType {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reference types
+// ---------------------------------------------------------------------------
 
 /// A reference type.
 ///
@@ -410,13 +771,17 @@ impl fmt::Display for RefType {
                 HeapType::Abstract(AbstractHeapType::NoExtern) => write!(f, "nullexternref"),
                 HeapType::Abstract(AbstractHeapType::NoFunc) => write!(f, "nullfuncref"),
                 HeapType::Abstract(AbstractHeapType::NoExn) => write!(f, "nullexnref"),
-                HeapType::Concrete(idx) => write!(f, "(ref null {idx})"),
+                HeapType::Concrete(id) => write!(f, "(ref null {})", id.index()),
             }
         } else {
             write!(f, "(ref {})", self.heap_type)
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// ValType conversion impls
+// ---------------------------------------------------------------------------
 
 impl ValType {
     pub(crate) fn from_wasmparser_type(ty: wasmparser::ValType) -> Result<Box<[ValType]>> {

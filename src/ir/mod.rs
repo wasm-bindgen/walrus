@@ -1805,8 +1805,16 @@ impl<'instr> Visit<'instr> for InstrSeq {
     where
         V: Visitor<'instr>,
     {
-        if let InstrSeqType::MultiValue(ref ty) = self.ty {
-            visitor.visit_type_id(ty);
+        match &self.ty {
+            InstrSeqType::MultiValue(ref ty) => {
+                visitor.visit_type_id(ty);
+            }
+            InstrSeqType::Simple(Some(ValType::Ref(ref_type))) => {
+                if let crate::ty::HeapType::Concrete(type_id) = &ref_type.heap_type {
+                    visitor.visit_type_id(type_id);
+                }
+            }
+            InstrSeqType::Simple(_) => {}
         }
     }
 }
@@ -1816,8 +1824,16 @@ impl VisitMut for InstrSeq {
     where
         V: VisitorMut,
     {
-        if let InstrSeqType::MultiValue(ref mut ty) = self.ty {
-            visitor.visit_type_id_mut(ty);
+        match &mut self.ty {
+            InstrSeqType::MultiValue(ref mut ty) => {
+                visitor.visit_type_id_mut(ty);
+            }
+            InstrSeqType::Simple(Some(ValType::Ref(ref_type))) => {
+                if let crate::ty::HeapType::Concrete(ref mut type_id) = &mut ref_type.heap_type {
+                    visitor.visit_type_id_mut(type_id);
+                }
+            }
+            InstrSeqType::Simple(_) => {}
         }
     }
 }

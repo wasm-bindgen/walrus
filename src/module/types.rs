@@ -101,6 +101,36 @@ impl ModuleTypes {
     ///
     /// Deduplicates with existing structurally identical types.
     /// Creates an implicit singleton rec group for genuinely new types.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use walrus::*;
+    ///
+    /// let mut module = Module::default();
+    ///
+    /// // Create: (type $point (struct (field (mut i32)) (field (mut i32))))
+    /// let point_ty = module.types.add_struct(vec![
+    ///     FieldType { element_type: StorageType::Val(ValType::I32), mutable: true },
+    ///     FieldType { element_type: StorageType::Val(ValType::I32), mutable: true },
+    /// ]);
+    ///
+    /// // Use in a function: (func (param i32 i32) (result (ref $point)))
+    /// let point_ref = ValType::Ref(RefType {
+    ///     nullable: true,
+    ///     heap_type: HeapType::Concrete(point_ty),
+    /// });
+    /// let mut builder = FunctionBuilder::new(
+    ///     &mut module.types,
+    ///     &[ValType::I32, ValType::I32],
+    ///     &[point_ref],
+    /// );
+    /// let x = module.locals.add(ValType::I32);
+    /// let y = module.locals.add(ValType::I32);
+    /// builder.func_body().local_get(x).local_get(y).struct_new(point_ty);
+    /// let func = builder.finish(vec![x, y], &mut module.funcs);
+    /// module.exports.add("make_point", func);
+    /// ```
     pub fn add_struct(&mut self, fields: Vec<FieldType>) -> TypeId {
         self.add_composite(
             CompositeType::Struct(StructType {
@@ -115,6 +145,36 @@ impl ModuleTypes {
     ///
     /// Deduplicates with existing structurally identical types.
     /// Creates an implicit singleton rec group for genuinely new types.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use walrus::*;
+    ///
+    /// let mut module = Module::default();
+    ///
+    /// // Create: (type $i32_arr (array (mut i32)))
+    /// let arr_ty = module.types.add_array(FieldType {
+    ///     element_type: StorageType::Val(ValType::I32),
+    ///     mutable: true,
+    /// });
+    ///
+    /// // Use in a function: (func (param i32 i32) (result (ref $i32_arr)))
+    /// let arr_ref = ValType::Ref(RefType {
+    ///     nullable: true,
+    ///     heap_type: HeapType::Concrete(arr_ty),
+    /// });
+    /// let mut builder = FunctionBuilder::new(
+    ///     &mut module.types,
+    ///     &[ValType::I32, ValType::I32],
+    ///     &[arr_ref],
+    /// );
+    /// let init = module.locals.add(ValType::I32);
+    /// let len = module.locals.add(ValType::I32);
+    /// builder.func_body().local_get(init).local_get(len).array_new(arr_ty);
+    /// let func = builder.finish(vec![init, len], &mut module.funcs);
+    /// module.exports.add("make_array", func);
+    /// ```
     pub fn add_array(&mut self, element: FieldType) -> TypeId {
         self.add_composite(
             CompositeType::Array(ArrayType { field: element }),
@@ -127,6 +187,40 @@ impl ModuleTypes {
     ///
     /// Deduplicates with existing structurally identical types.
     /// Creates an implicit singleton rec group for genuinely new types.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use walrus::*;
+    ///
+    /// let mut module = Module::default();
+    ///
+    /// // Create a non-final base type:
+    /// // (type $base (sub (struct (field i32))))
+    /// let base = module.types.add_composite(
+    ///     CompositeType::Struct(StructType {
+    ///         fields: vec![FieldType {
+    ///             element_type: StorageType::Val(ValType::I32),
+    ///             mutable: false,
+    ///         }].into_boxed_slice(),
+    ///     }),
+    ///     false, // not final — open for subtyping
+    ///     None,
+    /// );
+    ///
+    /// // Create a final derived type:
+    /// // (type $derived (sub final $base (struct (field i32) (field f64))))
+    /// let derived = module.types.add_composite(
+    ///     CompositeType::Struct(StructType {
+    ///         fields: vec![
+    ///             FieldType { element_type: StorageType::Val(ValType::I32), mutable: false },
+    ///             FieldType { element_type: StorageType::Val(ValType::F64), mutable: false },
+    ///         ].into_boxed_slice(),
+    ///     }),
+    ///     true, // final
+    ///     Some(base),
+    /// );
+    /// ```
     pub fn add_composite(
         &mut self,
         comp: CompositeType,
@@ -155,6 +249,48 @@ impl ModuleTypes {
     ///
     /// Types in a rec group are **not** deduplicated — each gets a unique
     /// `TypeId`, matching the semantics of the wasm binary format.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use walrus::*;
+    ///
+    /// let mut module = Module::default();
+    ///
+    /// // Create two mutually-recursive struct types:
+    /// // (rec
+    /// //   (type $a (struct (field (ref null $b))))
+    /// //   (type $b (struct (field (ref null $a))))
+    /// // )
+    /// let ids = module.types.add_rec_group(2, |type_ids| {
+    ///     let a_id = type_ids[0];
+    ///     let b_id = type_ids[1];
+    ///
+    ///     let a_def = CompositeType::Struct(StructType {
+    ///         fields: vec![FieldType {
+    ///             element_type: StorageType::Val(ValType::Ref(RefType {
+    ///                 nullable: true,
+    ///                 heap_type: HeapType::Concrete(b_id), // forward ref to $b
+    ///             })),
+    ///             mutable: false,
+    ///         }].into_boxed_slice(),
+    ///     });
+    ///
+    ///     let b_def = CompositeType::Struct(StructType {
+    ///         fields: vec![FieldType {
+    ///             element_type: StorageType::Val(ValType::Ref(RefType {
+    ///                 nullable: true,
+    ///                 heap_type: HeapType::Concrete(a_id), // back ref to $a
+    ///             })),
+    ///             mutable: false,
+    ///         }].into_boxed_slice(),
+    ///     });
+    ///
+    ///     vec![(a_def, true, None), (b_def, true, None)]
+    /// });
+    ///
+    /// assert_eq!(ids.len(), 2);
+    /// ```
     ///
     /// # Panics
     ///
@@ -216,7 +352,11 @@ impl ModuleTypes {
     /// Find the existing type for the given parameters and results.
     pub fn find(&self, params: &[ValType], results: &[ValType]) -> Option<TypeId> {
         self.arena.iter().find_map(|(id, ty)| {
-            if !ty.is_for_function_entry() && ty.params() == params && ty.results() == results {
+            if ty.is_function()
+                && !ty.is_for_function_entry()
+                && ty.params() == params
+                && ty.results() == results
+            {
                 Some(id)
             } else {
                 None
@@ -226,7 +366,11 @@ impl ModuleTypes {
 
     pub(crate) fn find_for_function_entry(&self, results: &[ValType]) -> Option<TypeId> {
         self.arena.iter().find_map(|(id, ty)| {
-            if ty.is_for_function_entry() && ty.params().is_empty() && ty.results() == results {
+            if ty.is_function()
+                && ty.is_for_function_entry()
+                && ty.params().is_empty()
+                && ty.results() == results
+            {
                 Some(id)
             } else {
                 None
@@ -264,8 +408,13 @@ impl Module {
             let rec_group_start = type_index_base;
 
             match &*sub_types {
-                // wasmparser should never return an empty recursion group
-                [] => bail!("rec group must contain at least one type"),
+                // Empty explicit rec group — valid per spec, just record it.
+                [] => {
+                    self.types.rec_groups.push(RecGroup {
+                        types: vec![],
+                        is_explicit: true,
+                    });
+                }
                 // Implicit singleton rec group. Pre-allocate a placeholder
                 // so self-references within the type body can resolve
                 // (e.g., linked-list nodes). After parsing, try to
@@ -415,10 +564,13 @@ impl Emit for ModuleTypes {
             }
 
             // Skip rec groups that only contain entry types (internal-only).
-            if rec_group
-                .types
-                .iter()
-                .all(|id| self.arena[*id].is_for_function_entry())
+            // Note: `.all()` on an empty iterator returns true, so guard
+            // against empty rec groups (which are valid and must be emitted).
+            if !rec_group.types.is_empty()
+                && rec_group
+                    .types
+                    .iter()
+                    .all(|id| self.arena[*id].is_for_function_entry())
             {
                 continue;
             }

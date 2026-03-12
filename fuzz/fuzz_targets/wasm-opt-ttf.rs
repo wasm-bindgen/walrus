@@ -3,8 +3,7 @@
 #[macro_use]
 extern crate libfuzzer_sys;
 
-use bufrng::BufRng;
-use walrus_fuzz_utils::{Config, WasmOptTtf};
+use walrus_fuzz_utils::{BufRng, Config, WasmOptTtf};
 
 fuzz_target!(|data: &[u8]| {
     let data = if data.is_empty() { &[0] } else { data };

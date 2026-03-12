@@ -105,6 +105,26 @@ impl fmt::Display for StorageType {
 /// A field type for struct and array fields.
 ///
 /// Combines a storage type with a mutability flag.
+///
+/// # Example
+///
+/// ```
+/// use walrus::{FieldType, StorageType, ValType};
+///
+/// // A mutable i32 field (unpacked)
+/// let int_field = FieldType {
+///     element_type: StorageType::Val(ValType::I32),
+///     mutable: true,
+/// };
+///
+/// // An immutable packed i8 field (uses struct.get_s / struct.get_u)
+/// let byte_field = FieldType {
+///     element_type: StorageType::I8,
+///     mutable: false,
+/// };
+///
+/// assert_eq!(byte_field.element_type.unpack(), ValType::I32);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FieldType {
     /// The storage type of this field.
@@ -242,6 +262,28 @@ impl fmt::Display for ArrayType {
 /// A composite type that can be a function, struct, or array.
 ///
 /// This corresponds to the `comptype` production in the WebAssembly GC spec.
+///
+/// # Example
+///
+/// ```
+/// use walrus::*;
+///
+/// // A struct composite type
+/// let struct_comp = CompositeType::Struct(StructType {
+///     fields: vec![
+///         FieldType { element_type: StorageType::Val(ValType::I32), mutable: true },
+///         FieldType { element_type: StorageType::Val(ValType::F64), mutable: false },
+///     ].into_boxed_slice(),
+/// });
+/// assert!(struct_comp.is_struct());
+///
+/// // A function composite type
+/// let func_comp = CompositeType::Function(FunctionType::new(
+///     vec![ValType::I32].into_boxed_slice(),
+///     vec![ValType::I64].into_boxed_slice(),
+/// ));
+/// assert!(func_comp.is_function());
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CompositeType {
     /// A function type.
@@ -960,8 +1002,11 @@ impl fmt::Display for RefType {
 // ---------------------------------------------------------------------------
 
 impl ValType {
-    pub(crate) fn from_wasmparser_type(ty: wasmparser::ValType) -> Result<Box<[ValType]>> {
-        let v = vec![ValType::parse(&ty)?];
+    pub(crate) fn from_wasmparser_type(
+        ty: wasmparser::ValType,
+        ids: &crate::parse::IndicesToIds,
+    ) -> Result<Box<[ValType]>> {
+        let v = vec![ValType::from_wasmparser(&ty, ids, 0)?];
         Ok(v.into_boxed_slice())
     }
 
@@ -979,23 +1024,6 @@ impl ValType {
             ValType::Ref(ref_type) => {
                 wasm_encoder::ValType::Ref(ref_type.to_wasmencoder_ref_type(indices))
             }
-        }
-    }
-
-    pub(crate) fn parse(input: &wasmparser::ValType) -> Result<ValType> {
-        match input {
-            wasmparser::ValType::I32 => Ok(ValType::I32),
-            wasmparser::ValType::I64 => Ok(ValType::I64),
-            wasmparser::ValType::F32 => Ok(ValType::F32),
-            wasmparser::ValType::F64 => Ok(ValType::F64),
-            wasmparser::ValType::V128 => Ok(ValType::V128),
-            wasmparser::ValType::Ref(wasmparser::RefType::CONT)
-            | wasmparser::ValType::Ref(wasmparser::RefType::CONTREF)
-            | wasmparser::ValType::Ref(wasmparser::RefType::NULLCONTREF)
-            | wasmparser::ValType::Ref(wasmparser::RefType::NOCONT) => {
-                bail!("The stack switching proposal is not supported")
-            }
-            wasmparser::ValType::Ref(ref_type) => Ok(ValType::Ref((*ref_type).try_into()?)),
         }
     }
 

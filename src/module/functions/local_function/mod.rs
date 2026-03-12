@@ -285,7 +285,7 @@ impl LocalFunction {
 
 fn block_result_tys(ctx: &ValidationContext, ty: wasmparser::BlockType) -> Result<Box<[ValType]>> {
     match ty {
-        wasmparser::BlockType::Type(ty) => ValType::from_wasmparser_type(ty),
+        wasmparser::BlockType::Type(ty) => ValType::from_wasmparser_type(ty, ctx.indices),
         wasmparser::BlockType::FuncType(idx) => {
             let ty = ctx.indices.get_type(idx)?;
             Ok(ctx.module.types.results(ty).into())

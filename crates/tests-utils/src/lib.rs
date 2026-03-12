@@ -72,6 +72,7 @@ where
         "--enable-bulk-memory",
         // "--enable-reference-types",
         "--enable-simd",
+        "--enable-gc",
     ]);
     cmd.args(args);
     println!("running: {:?}", cmd);

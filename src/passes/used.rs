@@ -1,5 +1,6 @@
 use crate::ir::*;
 use crate::map::IdHashSet;
+use crate::ty::HeapType;
 use crate::{ConstExpr, Data, DataId, DataKind, Element, ExportItem, Function};
 use crate::{ElementId, ElementItems, ElementKind, Module, RefType, Tag, TagId, Type, TypeId};
 use crate::{FunctionId, FunctionKind, Global, GlobalId};
@@ -345,5 +346,35 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
 
     fn visit_tag_id(&mut self, &tag: &TagId) {
         self.stack.push_tag(tag);
+    }
+
+    // HeapType fields on RefTest, RefCast, BrOnCast, BrOnCastFail are marked
+    // #[walrus(skip_visit)] so HeapType::Concrete(TypeId) references are
+    // invisible to the auto-generated visitor. Override per-instruction
+    // callbacks to manually mark those types as used.
+
+    fn visit_ref_test(&mut self, instr: &RefTest) {
+        mark_heap_type_used(&mut self.stack.used, instr.heap_type);
+    }
+
+    fn visit_ref_cast(&mut self, instr: &RefCast) {
+        mark_heap_type_used(&mut self.stack.used, instr.heap_type);
+    }
+
+    fn visit_br_on_cast(&mut self, instr: &BrOnCast) {
+        mark_heap_type_used(&mut self.stack.used, instr.from_heap_type);
+        mark_heap_type_used(&mut self.stack.used, instr.to_heap_type);
+    }
+
+    fn visit_br_on_cast_fail(&mut self, instr: &BrOnCastFail) {
+        mark_heap_type_used(&mut self.stack.used, instr.from_heap_type);
+        mark_heap_type_used(&mut self.stack.used, instr.to_heap_type);
+    }
+}
+
+/// If `heap_type` is `HeapType::Concrete(type_id)`, mark that type as used.
+fn mark_heap_type_used(used: &mut Used, heap_type: HeapType) {
+    if let HeapType::Concrete(type_id) = heap_type {
+        used.types.insert(type_id);
     }
 }

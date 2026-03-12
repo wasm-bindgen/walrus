@@ -683,6 +683,207 @@ pub enum Instr {
     /// Externalizes an internal reference.
     ExternConvertAny {},
 
+    /// `ref.eq` - compare two references for equality
+    ///
+    /// Pops two `eqref` values and pushes `i32` (1 if equal, 0 otherwise).
+    /// Two null references are considered equal.
+    RefEq {},
+
+    // ----- GC struct instructions -----
+    /// `struct.new` - create a new struct instance
+    ///
+    /// Pops field values from the stack (one per field, in order) and
+    /// pushes a non-null reference to the new struct.
+    StructNew {
+        /// The struct type being instantiated.
+        ty: TypeId,
+    },
+
+    /// `struct.new_default` - create a new struct with default field values
+    ///
+    /// All fields are initialized to their default values (0 for numerics,
+    /// null for references). Pushes a non-null reference to the new struct.
+    StructNewDefault {
+        /// The struct type being instantiated.
+        ty: TypeId,
+    },
+
+    /// `struct.get` - read a field from a struct
+    ///
+    /// Pops a struct reference and pushes the field value. Traps on null.
+    /// For unpacked field types only (i32, i64, f32, f64, v128, ref).
+    StructGet {
+        /// The struct type.
+        ty: TypeId,
+        /// The field index within the struct.
+        #[walrus(skip_visit)]
+        field: u32,
+    },
+
+    /// `struct.get_s` - read a packed field with sign extension
+    ///
+    /// Like `struct.get` but for packed field types (i8, i16).
+    /// Sign-extends the value to i32.
+    StructGetS {
+        /// The struct type.
+        ty: TypeId,
+        /// The field index within the struct.
+        #[walrus(skip_visit)]
+        field: u32,
+    },
+
+    /// `struct.get_u` - read a packed field with zero extension
+    ///
+    /// Like `struct.get` but for packed field types (i8, i16).
+    /// Zero-extends the value to i32.
+    StructGetU {
+        /// The struct type.
+        ty: TypeId,
+        /// The field index within the struct.
+        #[walrus(skip_visit)]
+        field: u32,
+    },
+
+    /// `struct.set` - write a field in a struct
+    ///
+    /// Pops a struct reference and value, sets the mutable field. Traps on null.
+    StructSet {
+        /// The struct type.
+        ty: TypeId,
+        /// The field index within the struct.
+        #[walrus(skip_visit)]
+        field: u32,
+    },
+
+    // ----- GC array instructions -----
+    /// `array.new` - create a new array filled with a value
+    ///
+    /// Pops a value and length, pushes a new array filled with that value.
+    ArrayNew {
+        /// The array type being instantiated.
+        ty: TypeId,
+    },
+
+    /// `array.new_default` - create a new array with default values
+    ///
+    /// Pops a length, pushes a new array filled with default values.
+    ArrayNewDefault {
+        /// The array type being instantiated.
+        ty: TypeId,
+    },
+
+    /// `array.new_fixed` - create a new array from stack values
+    ///
+    /// Pops `len` values from the stack, pushes a new array containing them.
+    ArrayNewFixed {
+        /// The array type being instantiated.
+        ty: TypeId,
+        /// The number of elements (statically known).
+        #[walrus(skip_visit)]
+        len: u32,
+    },
+
+    /// `array.new_data` - create a new array from a data segment
+    ///
+    /// Pops an offset and length, creates array from passive data segment.
+    ArrayNewData {
+        /// The array type being instantiated.
+        ty: TypeId,
+        /// The data segment to read from.
+        data: DataId,
+    },
+
+    /// `array.new_elem` - create a new array from an element segment
+    ///
+    /// Pops an offset and length, creates array from passive element segment.
+    ArrayNewElem {
+        /// The array type being instantiated.
+        ty: TypeId,
+        /// The element segment to read from.
+        elem: ElementId,
+    },
+
+    /// `array.get` - read an element from an array
+    ///
+    /// Pops an array reference and index, pushes the element value.
+    /// For unpacked element types only. Traps on null or out of bounds.
+    ArrayGet {
+        /// The array type.
+        ty: TypeId,
+    },
+
+    /// `array.get_s` - read a packed element with sign extension
+    ///
+    /// Like `array.get` but for packed element types (i8, i16).
+    /// Sign-extends the value to i32.
+    ArrayGetS {
+        /// The array type.
+        ty: TypeId,
+    },
+
+    /// `array.get_u` - read a packed element with zero extension
+    ///
+    /// Like `array.get` but for packed element types (i8, i16).
+    /// Zero-extends the value to i32.
+    ArrayGetU {
+        /// The array type.
+        ty: TypeId,
+    },
+
+    /// `array.set` - write an element in an array
+    ///
+    /// Pops an array reference, index, and value. Traps on null or out of bounds.
+    ArraySet {
+        /// The array type.
+        ty: TypeId,
+    },
+
+    /// `array.len` - get the length of an array
+    ///
+    /// Pops an array reference, pushes the length as i32. Traps on null.
+    ArrayLen {},
+
+    /// `array.fill` - fill a range of array elements with a value
+    ///
+    /// Pops array ref, offset, value, and length. Traps on null or out of bounds.
+    ArrayFill {
+        /// The array type.
+        ty: TypeId,
+    },
+
+    /// `array.copy` - copy elements between arrays
+    ///
+    /// Pops dst ref, dst offset, src ref, src offset, length.
+    /// Traps on null or out of bounds.
+    ArrayCopy {
+        /// The destination array type.
+        dst_ty: TypeId,
+        /// The source array type.
+        src_ty: TypeId,
+    },
+
+    /// `array.init_data` - initialize array elements from a data segment
+    ///
+    /// Pops array ref, offset, data offset, and length.
+    /// Traps on null or out of bounds.
+    ArrayInitData {
+        /// The array type.
+        ty: TypeId,
+        /// The data segment to read from.
+        data: DataId,
+    },
+
+    /// `array.init_elem` - initialize array elements from an element segment
+    ///
+    /// Pops array ref, offset, elem offset, and length.
+    /// Traps on null or out of bounds.
+    ArrayInitElem {
+        /// The array type.
+        ty: TypeId,
+        /// The element segment to read from.
+        elem: ElementId,
+    },
+
     /// `v128.bitselect`
     V128Bitselect {},
 
@@ -1557,7 +1758,28 @@ impl Instr {
             | Instr::BrOnCast(..)
             | Instr::BrOnCastFail(..)
             | Instr::AnyConvertExtern(..)
-            | Instr::ExternConvertAny(..) => false,
+            | Instr::ExternConvertAny(..)
+            | Instr::RefEq(..)
+            | Instr::StructNew(..)
+            | Instr::StructNewDefault(..)
+            | Instr::StructGet(..)
+            | Instr::StructGetS(..)
+            | Instr::StructGetU(..)
+            | Instr::StructSet(..)
+            | Instr::ArrayNew(..)
+            | Instr::ArrayNewDefault(..)
+            | Instr::ArrayNewFixed(..)
+            | Instr::ArrayNewData(..)
+            | Instr::ArrayNewElem(..)
+            | Instr::ArrayGet(..)
+            | Instr::ArrayGetS(..)
+            | Instr::ArrayGetU(..)
+            | Instr::ArraySet(..)
+            | Instr::ArrayLen(..)
+            | Instr::ArrayFill(..)
+            | Instr::ArrayCopy(..)
+            | Instr::ArrayInitData(..)
+            | Instr::ArrayInitElem(..) => false,
         }
     }
 }

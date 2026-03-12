@@ -1104,6 +1104,59 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             }
             AnyConvertExtern(_) => Instruction::AnyConvertExtern,
             ExternConvertAny(_) => Instruction::ExternConvertAny,
+
+            // GC struct/array instructions
+            RefEq(_) => Instruction::RefEq,
+            StructNew(e) => Instruction::StructNew(self.indices.get_type_index(e.ty)),
+            StructNewDefault(e) => Instruction::StructNewDefault(self.indices.get_type_index(e.ty)),
+            StructGet(e) => Instruction::StructGet {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            StructGetS(e) => Instruction::StructGetS {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            StructGetU(e) => Instruction::StructGetU {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            StructSet(e) => Instruction::StructSet {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            ArrayNew(e) => Instruction::ArrayNew(self.indices.get_type_index(e.ty)),
+            ArrayNewDefault(e) => Instruction::ArrayNewDefault(self.indices.get_type_index(e.ty)),
+            ArrayNewFixed(e) => Instruction::ArrayNewFixed {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_size: e.len,
+            },
+            ArrayNewData(e) => Instruction::ArrayNewData {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_data_index: self.indices.get_data_index(e.data),
+            },
+            ArrayNewElem(e) => Instruction::ArrayNewElem {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_elem_index: self.indices.get_element_index(e.elem),
+            },
+            ArrayGet(e) => Instruction::ArrayGet(self.indices.get_type_index(e.ty)),
+            ArrayGetS(e) => Instruction::ArrayGetS(self.indices.get_type_index(e.ty)),
+            ArrayGetU(e) => Instruction::ArrayGetU(self.indices.get_type_index(e.ty)),
+            ArraySet(e) => Instruction::ArraySet(self.indices.get_type_index(e.ty)),
+            ArrayLen(_) => Instruction::ArrayLen,
+            ArrayFill(e) => Instruction::ArrayFill(self.indices.get_type_index(e.ty)),
+            ArrayCopy(e) => Instruction::ArrayCopy {
+                array_type_index_dst: self.indices.get_type_index(e.dst_ty),
+                array_type_index_src: self.indices.get_type_index(e.src_ty),
+            },
+            ArrayInitData(e) => Instruction::ArrayInitData {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_data_index: self.indices.get_data_index(e.data),
+            },
+            ArrayInitElem(e) => Instruction::ArrayInitElem {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_elem_index: self.indices.get_element_index(e.elem),
+            },
         });
     }
 }

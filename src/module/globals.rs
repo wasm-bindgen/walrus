@@ -125,7 +125,7 @@ impl Module {
             let g = g?;
             let init_expr = ConstExpr::eval(&g.init_expr, ids)?;
             let id = self.globals.add_local(
-                ValType::parse(&g.ty.content_type)?,
+                ValType::from_wasmparser(&g.ty.content_type, ids, 0)?,
                 g.ty.mutable,
                 g.ty.shared,
                 init_expr,

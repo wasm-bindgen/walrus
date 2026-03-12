@@ -555,7 +555,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         Operator::Drop => ctx.alloc_instr(Drop {}, loc),
         Operator::Select => ctx.alloc_instr(Select { ty: None }, loc),
         Operator::TypedSelect { ty } => {
-            let ty = ValType::parse(&ty).unwrap();
+            let ty = ValType::from_wasmparser(&ty, ctx.indices, 0).unwrap();
             ctx.alloc_instr(Select { ty: Some(ty) }, loc);
         }
         Operator::Return => {
@@ -1001,7 +1001,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.alloc_instr(TableFill { table }, loc);
         }
         Operator::RefNull { hty } => {
-            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.null");
+            let heap_type = HeapType::from_wasmparser(hty, ctx.indices, 0).unwrap();
             let ty = RefType {
                 nullable: true,
                 heap_type,

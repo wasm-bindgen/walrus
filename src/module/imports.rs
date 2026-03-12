@@ -1,7 +1,5 @@
 //! A wasm module's imports.
 
-use std::convert::TryInto;
-
 use anyhow::Context;
 
 use crate::emit::{Emit, EmitContext};
@@ -169,7 +167,7 @@ impl Module {
                         t.table64,
                         t.initial,
                         t.maximum,
-                        t.element_type.try_into()?,
+                        RefType::from_wasmparser(t.element_type, ids, 0)?,
                     );
                     ids.push_table(id.0);
                 }
@@ -189,7 +187,7 @@ impl Module {
                     let id = self.add_import_global(
                         entry.module,
                         entry.name,
-                        ValType::parse(&g.content_type)?,
+                        ValType::from_wasmparser(&g.content_type, ids, 0)?,
                         g.mutable,
                         g.shared,
                     );

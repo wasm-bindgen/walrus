@@ -165,24 +165,34 @@ impl Module {
             match &*sub_types {
                 // wasmparser should never return an empty recursion group
                 [] => bail!("rec group must contain at least one type"),
-                // Implicit singleton rec group: no self-references or
-                // forward references possible. Use deduplicating insert() so
-                // structurally identical types share a single TypeId.
+                // Implicit singleton rec group. Pre-allocate a placeholder
+                // so self-references within the type body can resolve
+                // (e.g., linked-list nodes). After parsing, try to
+                // deduplicate with an existing structurally identical type.
                 [sub_type] if !is_explicit => {
+                    let next_id = self.types.arena.next_id();
+                    let placeholder_id = self.types.arena.alloc_unique(Type::placeholder(next_id));
+                    ids.push_type(placeholder_id);
+
                     let comp =
                         parse_composite_type(&sub_type.composite_type, ids, rec_group_start)?;
                     let supertype =
                         resolve_supertype(sub_type.supertype_idx, ids, rec_group_start)?;
-                    let next_id = self.types.arena.next_id();
-                    let ty = Type::new_composite(next_id, comp, sub_type.is_final, supertype);
-                    let id = self.types.arena.insert(ty);
-                    ids.push_type(id);
-                    // Only create a rec group for genuinely new types. When
-                    // insert() deduplicates to an existing id, that type
-                    // already has a rec group.
-                    if id == next_id {
+                    let real_type =
+                        Type::new_composite(placeholder_id, comp, sub_type.is_final, supertype);
+
+                    // Try to deduplicate: if a structurally identical type
+                    // already exists, remap to it and discard the placeholder.
+                    if let Some(existing_id) = self.types.arena.find(&real_type) {
+                        ids.remap_type(rec_group_start, existing_id);
+                        self.types.arena.remove(placeholder_id);
+                    } else {
+                        // Genuinely new type — finalize the placeholder.
+                        self.types
+                            .arena
+                            .replace_and_register(placeholder_id, real_type);
                         self.types.rec_groups.push(RecGroup {
-                            types: vec![id],
+                            types: vec![placeholder_id],
                             is_explicit: false,
                         });
                     }

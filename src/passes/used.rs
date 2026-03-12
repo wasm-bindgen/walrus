@@ -205,7 +205,7 @@ impl Used {
                     GlobalKind::Local(ConstExpr::Value(_))
                     | GlobalKind::Local(ConstExpr::RefNull(_)) => {}
                     GlobalKind::Local(ConstExpr::Extended(ops)) => {
-                        // Mark globals and functions referenced in extended const expressions
+                        // Mark globals, functions, and types referenced in extended const expressions
                         for op in ops {
                             match op {
                                 crate::const_expr::ConstOp::GlobalGet(g) => {
@@ -213,6 +213,15 @@ impl Used {
                                 }
                                 crate::const_expr::ConstOp::RefFunc(f) => {
                                     stack.push_func(*f);
+                                }
+                                crate::const_expr::ConstOp::StructNew(ty)
+                                | crate::const_expr::ConstOp::StructNewDefault(ty)
+                                | crate::const_expr::ConstOp::ArrayNew(ty)
+                                | crate::const_expr::ConstOp::ArrayNewDefault(ty) => {
+                                    stack.used.types.insert(*ty);
+                                }
+                                crate::const_expr::ConstOp::ArrayNewFixed { ty, .. } => {
+                                    stack.used.types.insert(*ty);
                                 }
                                 _ => {}
                             }

@@ -385,7 +385,7 @@ impl Module {
                 let pos = locals_reader.original_position();
                 let (count, ty) = locals_reader.read()?;
                 validator.define_locals(pos, count, ty)?;
-                let ty = ValType::parse(&ty)?;
+                let ty = ValType::from_wasmparser(&ty, indices, 0)?;
                 for _ in 0..count {
                     let local_id = self.locals.add(ty);
                     let idx = indices.push_local(id, local_id);

@@ -55,6 +55,14 @@ impl<T: Clone + Eq + Hash> ArenaSet<T> {
         self.already_in_arena.insert(val, id);
     }
 
+    /// Look up a value in the dedup map without inserting.
+    ///
+    /// Returns the existing `Id` if a structurally identical value was
+    /// previously registered via `insert()` or `replace_and_register()`.
+    pub(crate) fn find(&self, val: &T) -> Option<Id<T>> {
+        self.already_in_arena.get(val).copied()
+    }
+
     /// Check whether the given id is still live (not deleted / tombstoned).
     pub fn contains(&self, id: Id<T>) -> bool {
         self.arena.contains(id)

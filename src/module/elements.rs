@@ -133,7 +133,7 @@ impl Module {
                     ElementItems::Functions(function_ids)
                 }
                 wasmparser::ElementItems::Expressions(ref_type, items) => {
-                    let ty = RefType::try_from(ref_type)?;
+                    let ty = RefType::from_wasmparser(ref_type, ids, 0)?;
                     let mut const_exprs = Vec::with_capacity(items.count() as usize);
                     for item in items {
                         let const_expr = item?;

@@ -160,7 +160,7 @@ impl Emit for ModuleGlobals {
 
             wasm_global_section.global(
                 wasm_encoder::GlobalType {
-                    val_type: global.ty.to_wasmencoder_type(),
+                    val_type: global.ty.to_wasmencoder_type(cx.indices),
                     mutable: global.mutable,
                     shared: global.shared,
                 },

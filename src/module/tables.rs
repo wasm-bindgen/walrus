@@ -212,7 +212,7 @@ impl Emit for ModuleTables {
                 table64: table.table64,
                 minimum: table.initial,
                 maximum: table.maximum,
-                element_type: table.element_ty.to_wasmencoder_ref_type(),
+                element_type: table.element_ty.to_wasmencoder_ref_type(cx.indices),
                 shared: false,
             };
 

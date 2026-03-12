@@ -227,7 +227,7 @@ impl Emit for ModuleElements {
                     emit_elem(cx, &mut wasm_element_section, &element.kind, els);
                 }
                 ElementItems::Expressions(ty, const_exprs) => {
-                    let ref_type = ty.to_wasmencoder_ref_type();
+                    let ref_type = ty.to_wasmencoder_ref_type(cx.indices);
                     let const_exprs = const_exprs
                         .iter()
                         .map(|expr| expr.to_wasmencoder_type(cx))

@@ -15,4 +15,8 @@
     (func (;1;) (type 0))
     (export "a" (func $f))
     (export "b" (func 1))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

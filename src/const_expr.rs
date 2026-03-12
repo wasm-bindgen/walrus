@@ -132,7 +132,7 @@ impl ConstExpr {
                 wasm_encoder::ConstExpr::global_get(cx.indices.get_global_index(*g))
             }
             ConstExpr::RefNull(ty) => {
-                wasm_encoder::ConstExpr::ref_null(ty.heap_type.to_wasmencoder_heap_type())
+                wasm_encoder::ConstExpr::ref_null(ty.heap_type.to_wasmencoder_heap_type(cx.indices))
             }
             ConstExpr::RefFunc(f) => {
                 wasm_encoder::ConstExpr::ref_func(cx.indices.get_func_index(*f))
@@ -157,7 +157,7 @@ impl ConstExpr {
                                 .encode(&mut bytes)
                         }
                         ConstOp::RefNull(ty) => {
-                            Instruction::RefNull(ty.heap_type.to_wasmencoder_heap_type())
+                            Instruction::RefNull(ty.heap_type.to_wasmencoder_heap_type(cx.indices))
                                 .encode(&mut bytes)
                         }
                         ConstOp::RefFunc(f) => {

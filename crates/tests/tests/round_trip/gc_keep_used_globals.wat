@@ -8,4 +8,8 @@
   (module
     (global $used (;0;) i32 i32.const 666)
     (export "g" (global $used))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

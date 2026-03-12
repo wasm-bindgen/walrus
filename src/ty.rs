@@ -24,6 +24,12 @@ pub type RecGroupId = Id<RecGroup>;
 pub struct RecGroup {
     /// The types in this recursive group, in definition order.
     pub types: Vec<TypeId>,
+    /// Whether this rec group was declared with an explicit `(rec ...)` wrapper.
+    ///
+    /// Explicit singleton rec groups are semantically distinct from implicit
+    /// singletons in the GC spec (they affect type identity). This flag is
+    /// preserved so that emission can reproduce the original encoding.
+    pub is_explicit: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +57,19 @@ impl StorageType {
         match self {
             StorageType::Val(v) => *v,
             StorageType::I8 | StorageType::I16 => ValType::I32,
+        }
+    }
+
+    /// Convert to wasm_encoder StorageType, resolving concrete type indices
+    /// via `IdsToIndices`.
+    pub(crate) fn to_wasmencoder_type(
+        &self,
+        indices: &crate::emit::IdsToIndices,
+    ) -> wasm_encoder::StorageType {
+        match self {
+            StorageType::I8 => wasm_encoder::StorageType::I8,
+            StorageType::I16 => wasm_encoder::StorageType::I16,
+            StorageType::Val(vt) => wasm_encoder::StorageType::Val(vt.to_wasmencoder_type(indices)),
         }
     }
 
@@ -95,6 +114,18 @@ pub struct FieldType {
 }
 
 impl FieldType {
+    /// Convert to wasm_encoder FieldType, resolving concrete type indices
+    /// via `IdsToIndices`.
+    pub(crate) fn to_wasmencoder_type(
+        &self,
+        indices: &crate::emit::IdsToIndices,
+    ) -> wasm_encoder::FieldType {
+        wasm_encoder::FieldType {
+            element_type: self.element_type.to_wasmencoder_type(indices),
+            mutable: self.mutable,
+        }
+    }
+
     /// Convert a wasmparser FieldType to a walrus FieldType, resolving
     /// concrete type indices via `IndicesToIds`.
     pub(crate) fn from_wasmparser(
@@ -512,6 +543,52 @@ impl Type {
     pub(crate) fn is_for_function_entry(&self) -> bool {
         self.is_for_function_entry
     }
+
+    /// Collect all `TypeId`s that this type directly references.
+    ///
+    /// This includes concrete heap types in parameters/results/fields and the
+    /// supertype, if any. Used by the GC pass to transitively keep types alive.
+    pub fn referenced_types(&self, out: &mut Vec<TypeId>) {
+        // Supertype reference
+        if let Some(sup) = self.supertype {
+            out.push(sup);
+        }
+        // Composite type references
+        match &self.comp {
+            CompositeType::Function(ft) => {
+                collect_val_type_refs(ft.params(), out);
+                collect_val_type_refs(ft.results(), out);
+            }
+            CompositeType::Struct(st) => {
+                for field in st.fields.iter() {
+                    collect_storage_type_refs(&field.element_type, out);
+                }
+            }
+            CompositeType::Array(at) => {
+                collect_storage_type_refs(&at.field.element_type, out);
+            }
+        }
+    }
+}
+
+/// Collect `TypeId` references from a slice of value types.
+fn collect_val_type_refs(val_types: &[ValType], out: &mut Vec<TypeId>) {
+    for vt in val_types {
+        if let ValType::Ref(rt) = vt {
+            if let HeapType::Concrete(id) = rt.heap_type {
+                out.push(id);
+            }
+        }
+    }
+}
+
+/// Collect `TypeId` references from a storage type.
+fn collect_storage_type_refs(st: &StorageType, out: &mut Vec<TypeId>) {
+    if let StorageType::Val(ValType::Ref(rt)) = st {
+        if let HeapType::Concrete(id) = rt.heap_type {
+            out.push(id);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,17 +629,18 @@ pub enum HeapType {
 }
 
 impl HeapType {
-    /// Convert to wasm_encoder HeapType.
-    ///
-    /// For concrete heap types, this currently panics. Use
-    /// `to_wasmencoder_heap_type_with_indices` for concrete type support.
-    pub fn to_wasmencoder_heap_type(self) -> wasm_encoder::HeapType {
+    /// Convert to wasm_encoder HeapType, resolving concrete type indices via
+    /// `IdsToIndices`.
+    pub fn to_wasmencoder_heap_type(
+        self,
+        indices: &crate::emit::IdsToIndices,
+    ) -> wasm_encoder::HeapType {
         match self {
             HeapType::Abstract(ab_heap_type) => wasm_encoder::HeapType::Abstract {
                 shared: false,
                 ty: ab_heap_type.into(),
             },
-            HeapType::Concrete(id) => wasm_encoder::HeapType::Concrete(id.index() as u32),
+            HeapType::Concrete(id) => wasm_encoder::HeapType::Concrete(indices.get_type_index(id)),
         }
     }
 }
@@ -813,19 +891,16 @@ impl RefType {
         self.nullable
     }
 
-    /// Convert to wasm_encoder RefType.
-    pub fn to_wasmencoder_ref_type(self) -> wasm_encoder::RefType {
+    /// Convert to wasm_encoder RefType, resolving concrete type indices via
+    /// `IdsToIndices`.
+    pub fn to_wasmencoder_ref_type(
+        self,
+        indices: &crate::emit::IdsToIndices,
+    ) -> wasm_encoder::RefType {
         wasm_encoder::RefType {
             nullable: self.nullable,
-            heap_type: self.heap_type.to_wasmencoder_heap_type(),
+            heap_type: self.heap_type.to_wasmencoder_heap_type(indices),
         }
-    }
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<wasm_encoder::RefType> for RefType {
-    fn into(self) -> wasm_encoder::RefType {
-        self.to_wasmencoder_ref_type()
     }
 }
 
@@ -891,7 +966,10 @@ impl ValType {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn to_wasmencoder_type(&self) -> wasm_encoder::ValType {
+    pub(crate) fn to_wasmencoder_type(
+        &self,
+        indices: &crate::emit::IdsToIndices,
+    ) -> wasm_encoder::ValType {
         match self {
             ValType::I32 => wasm_encoder::ValType::I32,
             ValType::I64 => wasm_encoder::ValType::I64,
@@ -899,7 +977,7 @@ impl ValType {
             ValType::F64 => wasm_encoder::ValType::F64,
             ValType::V128 => wasm_encoder::ValType::V128,
             ValType::Ref(ref_type) => {
-                wasm_encoder::ValType::Ref(ref_type.to_wasmencoder_ref_type())
+                wasm_encoder::ValType::Ref(ref_type.to_wasmencoder_ref_type(indices))
             }
         }
     }

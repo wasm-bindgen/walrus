@@ -781,7 +781,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             }
 
             Select(e) => match e.ty {
-                Some(ty) => Instruction::TypedSelect(ty.to_wasmencoder_type()),
+                Some(ty) => Instruction::TypedSelect(ty.to_wasmencoder_type(self.indices)),
                 None => Instruction::Select,
             },
 
@@ -965,7 +965,9 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             TableGrow(e) => Instruction::TableGrow(self.indices.get_table_index(e.table)),
             TableSize(e) => Instruction::TableSize(self.indices.get_table_index(e.table)),
             TableFill(e) => Instruction::TableFill(self.indices.get_table_index(e.table)),
-            RefNull(e) => Instruction::RefNull(e.ty.heap_type.to_wasmencoder_heap_type()),
+            RefNull(e) => {
+                Instruction::RefNull(e.ty.heap_type.to_wasmencoder_heap_type(self.indices))
+            }
             RefIsNull(_) => Instruction::RefIsNull,
             RefFunc(e) => Instruction::RefFunc(self.indices.get_func_index(e.func)),
             RefAsNonNull(_) => Instruction::RefAsNonNull,
@@ -1057,7 +1059,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             I31GetS(_) => Instruction::I31GetS,
             I31GetU(_) => Instruction::I31GetU,
             RefTest(e) => {
-                let heap_type = e.heap_type.to_wasmencoder_heap_type();
+                let heap_type = e.heap_type.to_wasmencoder_heap_type(self.indices);
                 if e.nullable {
                     Instruction::RefTestNullable(heap_type)
                 } else {
@@ -1065,7 +1067,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                 }
             }
             RefCast(e) => {
-                let heap_type = e.heap_type.to_wasmencoder_heap_type();
+                let heap_type = e.heap_type.to_wasmencoder_heap_type(self.indices);
                 if e.nullable {
                     Instruction::RefCastNullable(heap_type)
                 } else {
@@ -1078,11 +1080,11 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     relative_depth,
                     from_ref_type: wasm_encoder::RefType {
                         nullable: e.from_nullable,
-                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                     to_ref_type: wasm_encoder::RefType {
                         nullable: e.to_nullable,
-                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                 }
             }
@@ -1092,11 +1094,11 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     relative_depth,
                     from_ref_type: wasm_encoder::RefType {
                         nullable: e.from_nullable,
-                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                     to_ref_type: wasm_encoder::RefType {
                         nullable: e.to_nullable,
-                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                 }
             }
@@ -1117,7 +1119,7 @@ impl Emit<'_, '_> {
         match ty {
             InstrSeqType::Simple(None) => wasm_encoder::BlockType::Empty,
             InstrSeqType::Simple(Some(ty)) => {
-                wasm_encoder::BlockType::Result(ty.to_wasmencoder_type())
+                wasm_encoder::BlockType::Result(ty.to_wasmencoder_type(self.indices))
             }
             InstrSeqType::MultiValue(ty) => {
                 wasm_encoder::BlockType::FunctionType(self.indices.get_type_index(ty))

@@ -55,6 +55,11 @@ impl<T: Clone + Eq + Hash> ArenaSet<T> {
         self.already_in_arena.insert(val, id);
     }
 
+    /// Check whether the given id is still live (not deleted / tombstoned).
+    pub fn contains(&self, id: Id<T>) -> bool {
+        self.arena.contains(id)
+    }
+
     /// Remove an item from this set
     pub fn remove(&mut self, id: Id<T>)
     where

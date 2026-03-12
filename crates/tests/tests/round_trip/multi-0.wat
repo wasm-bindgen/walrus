@@ -10,4 +10,8 @@
       local.get 0
     )
     (export "i64.dup" (func 0))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

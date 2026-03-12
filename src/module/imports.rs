@@ -307,7 +307,7 @@ impl Emit for ModuleImports {
                         cx.indices.push_table(id);
                         let table = cx.module.tables.get(id);
                         wasm_encoder::EntityType::Table(wasm_encoder::TableType {
-                            element_type: table.element_ty.to_wasmencoder_ref_type(),
+                            element_type: table.element_ty.to_wasmencoder_ref_type(cx.indices),
                             table64: table.table64,
                             minimum: table.initial,
                             maximum: table.maximum,
@@ -329,7 +329,7 @@ impl Emit for ModuleImports {
                         cx.indices.push_global(id);
                         let g = cx.module.globals.get(id);
                         wasm_encoder::EntityType::Global(wasm_encoder::GlobalType {
-                            val_type: g.ty.to_wasmencoder_type(),
+                            val_type: g.ty.to_wasmencoder_type(cx.indices),
                             mutable: g.mutable,
                             shared: g.shared,
                         })

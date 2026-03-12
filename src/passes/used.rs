@@ -273,6 +273,26 @@ impl Used {
             }
         }
 
+        // Transitively mark all types referenced by used types. GC types
+        // (structs, arrays) and function types with ref-typed parameters can
+        // reference other types via HeapType::Concrete(TypeId). Without this
+        // transitive closure, the GC pass would delete types that are still
+        // needed during emission.
+        {
+            let mut type_stack: Vec<TypeId> = stack.used.types.iter().copied().collect();
+            let mut refs = Vec::new();
+            while let Some(type_id) = type_stack.pop() {
+                let ty = module.types.get(type_id);
+                refs.clear();
+                ty.referenced_types(&mut refs);
+                for &ref_id in &refs {
+                    if stack.used.types.insert(ref_id) {
+                        type_stack.push(ref_id);
+                    }
+                }
+            }
+        }
+
         // Wabt seems to have weird behavior where a `data` segment, if present
         // even if passive, requires a `memory` declaration. Our GC pass is
         // pretty aggressive and if you have a passive data segment and only

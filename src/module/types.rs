@@ -89,7 +89,10 @@ impl ModuleTypes {
         // Create a singleton rec group if this is a genuinely new type
         // (not deduplicated to an existing one that already has a group).
         if id == next_id {
-            self.rec_groups.push(RecGroup { types: vec![id] });
+            self.rec_groups.push(RecGroup {
+                types: vec![id],
+                is_explicit: false,
+            });
         }
         id
     }
@@ -101,7 +104,10 @@ impl ModuleTypes {
             results.to_vec().into_boxed_slice(),
         ));
         if id == next_id {
-            self.rec_groups.push(RecGroup { types: vec![id] });
+            self.rec_groups.push(RecGroup {
+                types: vec![id],
+                is_explicit: false,
+            });
         }
         id
     }
@@ -167,11 +173,19 @@ impl Module {
                         parse_composite_type(&sub_type.composite_type, ids, rec_group_start)?;
                     let supertype =
                         resolve_supertype(sub_type.supertype_idx, ids, rec_group_start)?;
-                    let id = self.types.arena.next_id();
-                    let ty = Type::new_composite(id, comp, sub_type.is_final, supertype);
+                    let next_id = self.types.arena.next_id();
+                    let ty = Type::new_composite(next_id, comp, sub_type.is_final, supertype);
                     let id = self.types.arena.insert(ty);
                     ids.push_type(id);
-                    self.types.rec_groups.push(RecGroup { types: vec![id] });
+                    // Only create a rec group for genuinely new types. When
+                    // insert() deduplicates to an existing id, that type
+                    // already has a rec group.
+                    if id == next_id {
+                        self.types.rec_groups.push(RecGroup {
+                            types: vec![id],
+                            is_explicit: false,
+                        });
+                    }
                     type_index_base += 1;
                 }
                 sub_types => {
@@ -198,7 +212,10 @@ impl Module {
                     }
 
                     let group_len = type_ids.len() as u32;
-                    self.types.rec_groups.push(RecGroup { types: type_ids });
+                    self.types.rec_groups.push(RecGroup {
+                        types: type_ids,
+                        is_explicit: true,
+                    });
                     type_index_base += group_len;
                 }
             }
@@ -277,28 +294,105 @@ impl Emit for ModuleTypes {
         log::debug!("emitting type section");
 
         let mut wasm_type_section = wasm_encoder::TypeSection::new();
+        let mut any_emitted = false;
 
-        let mut tys = self
-            .arena
-            .iter()
-            .filter(|(_, ty)| !ty.is_for_function_entry())
-            .collect::<Vec<_>>();
+        for rec_group in &self.rec_groups {
+            // Skip rec groups where any member type has been deleted (e.g.,
+            // by the GC pass removing unused types).
+            if rec_group.types.iter().any(|id| !self.arena.contains(*id)) {
+                continue;
+            }
 
-        if tys.is_empty() {
-            return;
+            // Skip rec groups that only contain entry types (internal-only).
+            if rec_group
+                .types
+                .iter()
+                .all(|id| self.arena[*id].is_for_function_entry())
+            {
+                continue;
+            }
+
+            // Register all types in this group for index assignment before
+            // building SubTypes, so that forward references within the group
+            // resolve correctly.
+            for &type_id in &rec_group.types {
+                cx.indices.push_type(type_id);
+            }
+
+            // Build wasm-encoder SubTypes.
+            let sub_types: Vec<wasm_encoder::SubType> = rec_group
+                .types
+                .iter()
+                .map(|&id| walrus_type_to_encoder_subtype(&self.arena[id], cx.indices))
+                .collect();
+
+            // Emit: use rec() for explicit or multi-type groups, subtype() for
+            // implicit singletons.
+            if rec_group.is_explicit || sub_types.len() > 1 {
+                wasm_type_section.ty().rec(sub_types);
+            } else {
+                debug_assert_eq!(sub_types.len(), 1);
+                wasm_type_section.ty().subtype(&sub_types[0]);
+            }
+            any_emitted = true;
         }
 
-        // Sort for deterministic ordering.
-        tys.sort_by_key(|&(_, ty)| ty);
-
-        for (id, ty) in tys {
-            cx.indices.push_type(id);
-            wasm_type_section.ty().function(
-                ty.params().iter().map(ValType::to_wasmencoder_type),
-                ty.results().iter().map(ValType::to_wasmencoder_type),
-            );
+        if any_emitted {
+            cx.wasm_module.section(&wasm_type_section);
         }
+    }
+}
 
-        cx.wasm_module.section(&wasm_type_section);
+/// Convert a walrus `Type` to a `wasm_encoder::SubType`.
+fn walrus_type_to_encoder_subtype(
+    ty: &Type,
+    indices: &crate::emit::IdsToIndices,
+) -> wasm_encoder::SubType {
+    let composite_type = walrus_composite_to_encoder(ty.kind(), indices);
+    wasm_encoder::SubType {
+        is_final: ty.is_final,
+        supertype_idx: ty.supertype.map(|id| indices.get_type_index(id)),
+        composite_type: wasm_encoder::CompositeType {
+            inner: composite_type,
+            shared: false,
+            descriptor: None,
+            describes: None,
+        },
+    }
+}
+
+/// Convert a walrus `CompositeType` to a `wasm_encoder::CompositeInnerType`.
+fn walrus_composite_to_encoder(
+    comp: &CompositeType,
+    indices: &crate::emit::IdsToIndices,
+) -> wasm_encoder::CompositeInnerType {
+    match comp {
+        CompositeType::Function(ft) => {
+            let params: Vec<wasm_encoder::ValType> = ft
+                .params()
+                .iter()
+                .map(|vt| vt.to_wasmencoder_type(indices))
+                .collect();
+            let results: Vec<wasm_encoder::ValType> = ft
+                .results()
+                .iter()
+                .map(|vt| vt.to_wasmencoder_type(indices))
+                .collect();
+            wasm_encoder::CompositeInnerType::Func(wasm_encoder::FuncType::new(params, results))
+        }
+        CompositeType::Struct(st) => {
+            let fields: Vec<wasm_encoder::FieldType> = st
+                .fields
+                .iter()
+                .map(|f| f.to_wasmencoder_type(indices))
+                .collect();
+            wasm_encoder::CompositeInnerType::Struct(wasm_encoder::StructType {
+                fields: fields.into_boxed_slice(),
+            })
+        }
+        CompositeType::Array(at) => {
+            let field = at.field.to_wasmencoder_type(indices);
+            wasm_encoder::CompositeInnerType::Array(wasm_encoder::ArrayType(field))
+        }
     }
 }

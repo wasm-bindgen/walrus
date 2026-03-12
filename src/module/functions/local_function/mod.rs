@@ -215,7 +215,11 @@ impl LocalFunction {
     }
 
     /// Emit this function's compact locals declarations.
-    pub(crate) fn emit_locals(&self, module: &Module) -> EmitLocalsResult {
+    pub(crate) fn emit_locals(
+        &self,
+        module: &Module,
+        indices: &crate::emit::IdsToIndices,
+    ) -> EmitLocalsResult {
         let used_set = self.used_locals();
         let mut used_locals = used_set.iter().cloned().collect::<Vec<_>>();
         // Sort to ensure we assign local indexes deterministically, and
@@ -260,7 +264,7 @@ impl LocalFunction {
         (
             ty_to_locals
                 .iter()
-                .map(|(ty, locals)| (locals.len() as u32, ty.to_wasmencoder_type()))
+                .map(|(ty, locals)| (locals.len() as u32, ty.to_wasmencoder_type(indices)))
                 .collect(),
             used_set,
             local_map,

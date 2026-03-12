@@ -5,12 +5,20 @@ use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
 use crate::module::Module;
 use crate::parse::IndicesToIds;
-use crate::ty::{Type, TypeId, ValType};
+use crate::ty::{
+    ArrayType, CompositeType, FieldType, FunctionType, RecGroup, StructType, Type, TypeId, ValType,
+};
+use anyhow::bail;
 
 /// The set of de-duplicated types within a module.
 #[derive(Debug, Default)]
 pub struct ModuleTypes {
     arena: ArenaSet<Type>,
+    /// Recursive type groups in definition order.
+    ///
+    /// Every type belongs to exactly one rec group. Types created without an
+    /// explicit rec group (e.g., via `add()`) get their own singleton group.
+    rec_groups: Vec<RecGroup>,
 }
 
 impl ModuleTypes {
@@ -72,20 +80,30 @@ impl ModuleTypes {
 
     /// Add a new type to this module, and return its `Id`
     pub fn add(&mut self, params: &[ValType], results: &[ValType]) -> TypeId {
-        let id = self.arena.next_id();
-        self.arena.insert(Type::new(
-            id,
+        let next_id = self.arena.next_id();
+        let id = self.arena.insert(Type::new(
+            next_id,
             params.to_vec().into_boxed_slice(),
             results.to_vec().into_boxed_slice(),
-        ))
+        ));
+        // Create a singleton rec group if this is a genuinely new type
+        // (not deduplicated to an existing one that already has a group).
+        if id == next_id {
+            self.rec_groups.push(RecGroup { types: vec![id] });
+        }
+        id
     }
 
     pub(crate) fn add_entry_ty(&mut self, results: &[ValType]) -> TypeId {
-        let id = self.arena.next_id();
-        self.arena.insert(Type::for_function_entry(
-            id,
+        let next_id = self.arena.next_id();
+        let id = self.arena.insert(Type::for_function_entry(
+            next_id,
             results.to_vec().into_boxed_slice(),
-        ))
+        ));
+        if id == next_id {
+            self.rec_groups.push(RecGroup { types: vec![id] });
+        }
+        id
     }
 
     /// Find the existing type for the given parameters and results.
@@ -108,6 +126,16 @@ impl ModuleTypes {
             }
         })
     }
+
+    /// Get the rec groups in this module, in definition order.
+    pub fn rec_groups(&self) -> &[RecGroup] {
+        &self.rec_groups
+    }
+
+    /// Find the rec group that contains the given type.
+    pub fn rec_group_for_type(&self, id: TypeId) -> Option<&RecGroup> {
+        self.rec_groups.iter().find(|rg| rg.types.contains(&id))
+    }
 }
 
 impl Module {
@@ -118,26 +146,129 @@ impl Module {
         ids: &mut IndicesToIds,
     ) -> Result<()> {
         log::debug!("parsing type section");
-        for ty in section.into_iter_err_on_gc_types() {
-            let fun_ty = ty?;
-            let id = self.types.arena.next_id();
-            let params = fun_ty
-                .params()
-                .iter()
-                .map(ValType::parse)
-                .collect::<Result<Vec<_>>>()?
-                .into_boxed_slice();
-            let results = fun_ty
-                .results()
-                .iter()
-                .map(ValType::parse)
-                .collect::<Result<Vec<_>>>()?
-                .into_boxed_slice();
-            let id = self.types.arena.insert(Type::new(id, params, results));
-            ids.push_type(id);
+
+        // Track the module-level type index across all rec groups.
+        let mut type_index_base: u32 = 0;
+
+        for rec_group_result in section {
+            let rec_group = rec_group_result?;
+            let is_explicit = rec_group.is_explicit_rec_group();
+            let sub_types: Box<[wasmparser::SubType]> = rec_group.into_types().collect();
+            let rec_group_start = type_index_base;
+
+            match &*sub_types {
+                // wasmparser should never return an empty recursion group
+                [] => bail!("rec group must contain at least one type"),
+                // Implicit singleton rec group: no self-references or
+                // forward references possible. Use deduplicating insert() so
+                // structurally identical types share a single TypeId.
+                [sub_type] if !is_explicit => {
+                    let comp =
+                        parse_composite_type(&sub_type.composite_type, ids, rec_group_start)?;
+                    let supertype =
+                        resolve_supertype(sub_type.supertype_idx, ids, rec_group_start)?;
+                    let id = self.types.arena.next_id();
+                    let ty = Type::new_composite(id, comp, sub_type.is_final, supertype);
+                    let id = self.types.arena.insert(ty);
+                    ids.push_type(id);
+                    self.types.rec_groups.push(RecGroup { types: vec![id] });
+                    type_index_base += 1;
+                }
+                sub_types => {
+                    // Explicit or multi-type rec group: types can forward-reference
+                    // each other. Pre-allocate TypeIds with placeholders so forward
+                    // references within the group can be resolved.
+                    let mut type_ids = Vec::with_capacity(sub_types.len());
+                    for _ in sub_types {
+                        let id = self.types.arena.next_id();
+                        let id = self.types.arena.alloc_unique(Type::placeholder(id));
+                        ids.push_type(id);
+                        type_ids.push(id);
+                    }
+
+                    // Parse each sub type and overwrite the placeholder.
+                    for (sub_type, &type_id) in sub_types.iter().zip(type_ids.iter()) {
+                        let comp =
+                            parse_composite_type(&sub_type.composite_type, ids, rec_group_start)?;
+                        let supertype =
+                            resolve_supertype(sub_type.supertype_idx, ids, rec_group_start)?;
+                        let real_type =
+                            Type::new_composite(type_id, comp, sub_type.is_final, supertype);
+                        self.types.arena.replace_and_register(type_id, real_type);
+                    }
+
+                    let group_len = type_ids.len() as u32;
+                    self.types.rec_groups.push(RecGroup { types: type_ids });
+                    type_index_base += group_len;
+                }
+            }
         }
 
         Ok(())
+    }
+}
+
+/// Parse a wasmparser `CompositeType` into a walrus `CompositeType`.
+fn parse_composite_type(
+    ct: &wasmparser::CompositeType,
+    ids: &IndicesToIds,
+    rec_group_start: u32,
+) -> Result<CompositeType> {
+    match &ct.inner {
+        wasmparser::CompositeInnerType::Func(func_ty) => {
+            let params = func_ty
+                .params()
+                .iter()
+                .map(|vt| ValType::from_wasmparser(vt, ids, rec_group_start))
+                .collect::<Result<Vec<_>>>()?
+                .into_boxed_slice();
+            let results = func_ty
+                .results()
+                .iter()
+                .map(|vt| ValType::from_wasmparser(vt, ids, rec_group_start))
+                .collect::<Result<Vec<_>>>()?
+                .into_boxed_slice();
+            Ok(CompositeType::Function(FunctionType::new(params, results)))
+        }
+        wasmparser::CompositeInnerType::Struct(struct_ty) => {
+            let fields = struct_ty
+                .fields
+                .iter()
+                .map(|ft| FieldType::from_wasmparser(*ft, ids, rec_group_start))
+                .collect::<Result<Vec<_>>>()?
+                .into_boxed_slice();
+            Ok(CompositeType::Struct(StructType { fields }))
+        }
+        wasmparser::CompositeInnerType::Array(array_ty) => {
+            let field = FieldType::from_wasmparser(array_ty.0, ids, rec_group_start)?;
+            Ok(CompositeType::Array(ArrayType { field }))
+        }
+        wasmparser::CompositeInnerType::Cont(_) => {
+            bail!("The stack switching proposal is not supported")
+        }
+    }
+}
+
+/// Resolve an optional supertype index from a wasmparser `PackedIndex` to a
+/// walrus `TypeId`.
+fn resolve_supertype(
+    supertype_idx: Option<wasmparser::PackedIndex>,
+    ids: &IndicesToIds,
+    rec_group_start: u32,
+) -> Result<Option<TypeId>> {
+    match supertype_idx {
+        None => Ok(None),
+        Some(packed) => {
+            let unpacked = packed.unpack();
+            match unpacked {
+                wasmparser::UnpackedIndex::Module(idx) => Ok(Some(ids.get_type(idx)?)),
+                wasmparser::UnpackedIndex::RecGroup(idx) => {
+                    Ok(Some(ids.get_type(rec_group_start + idx)?))
+                }
+                #[allow(unreachable_patterns)]
+                _ => bail!("unsupported supertype index variant"),
+            }
+        }
     }
 }
 

@@ -53,6 +53,24 @@ impl StorageType {
             StorageType::I8 | StorageType::I16 => ValType::I32,
         }
     }
+
+    /// Convert a wasmparser StorageType to a walrus StorageType, resolving
+    /// concrete type indices via `IndicesToIds`.
+    pub(crate) fn from_wasmparser(
+        st: wasmparser::StorageType,
+        ids: &crate::parse::IndicesToIds,
+        rec_group_start: u32,
+    ) -> Result<StorageType> {
+        match st {
+            wasmparser::StorageType::I8 => Ok(StorageType::I8),
+            wasmparser::StorageType::I16 => Ok(StorageType::I16),
+            wasmparser::StorageType::Val(vt) => Ok(StorageType::Val(ValType::from_wasmparser(
+                &vt,
+                ids,
+                rec_group_start,
+            )?)),
+        }
+    }
 }
 
 impl fmt::Display for StorageType {
@@ -74,6 +92,21 @@ pub struct FieldType {
     pub element_type: StorageType,
     /// Whether this field is mutable.
     pub mutable: bool,
+}
+
+impl FieldType {
+    /// Convert a wasmparser FieldType to a walrus FieldType, resolving
+    /// concrete type indices via `IndicesToIds`.
+    pub(crate) fn from_wasmparser(
+        ft: wasmparser::FieldType,
+        ids: &crate::parse::IndicesToIds,
+        rec_group_start: u32,
+    ) -> Result<FieldType> {
+        Ok(FieldType {
+            element_type: StorageType::from_wasmparser(ft.element_type, ids, rec_group_start)?,
+            mutable: ft.mutable,
+        })
+    }
 }
 
 impl fmt::Display for FieldType {
@@ -140,7 +173,7 @@ impl fmt::Display for FunctionType {
 }
 
 /// A struct type, consisting of a sequence of field types.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StructType {
     /// The fields of this struct type.
     pub fields: Box<[FieldType]>,
@@ -342,6 +375,22 @@ impl Tombstone for Type {
 }
 
 impl Type {
+    /// Construct a placeholder type for pre-allocation during parsing.
+    ///
+    /// The placeholder will be overwritten with the real type once all
+    /// forward references within a rec group can be resolved.
+    #[inline]
+    pub(crate) fn placeholder(id: TypeId) -> Type {
+        Type {
+            id,
+            comp: CompositeType::Struct(Default::default()),
+            is_final: true,
+            supertype: None,
+            is_for_function_entry: false,
+            name: None,
+        }
+    }
+
     /// Construct a new function type.
     #[inline]
     pub(crate) fn new(id: TypeId, params: Box<[ValType]>, results: Box<[ValType]>) -> Type {
@@ -527,9 +576,46 @@ impl TryFrom<wasmparser::HeapType> for HeapType {
                 Ok(HeapType::Abstract(ty.try_into()?))
             }
             wasmparser::HeapType::Concrete(_) | wasmparser::HeapType::Exact(_) => {
-                bail!("concrete (indexed) heap types are not yet supported in this context; use HeapType::from_wasmparser_with_ids instead")
+                bail!("concrete (indexed) heap types require IndicesToIds for resolution; use HeapType::from_wasmparser")
             }
         }
+    }
+}
+
+impl HeapType {
+    /// Convert a wasmparser HeapType to a walrus HeapType, resolving concrete
+    /// type indices via `IndicesToIds`.
+    ///
+    /// `rec_group_start` is the module-level type index of the first type in
+    /// the current rec group, used to resolve `RecGroup`-relative indices.
+    pub(crate) fn from_wasmparser(
+        heap_type: wasmparser::HeapType,
+        ids: &crate::parse::IndicesToIds,
+        rec_group_start: u32,
+    ) -> Result<HeapType> {
+        match heap_type {
+            wasmparser::HeapType::Abstract { shared: _, ty } => {
+                Ok(HeapType::Abstract(ty.try_into()?))
+            }
+            wasmparser::HeapType::Concrete(unpacked) | wasmparser::HeapType::Exact(unpacked) => {
+                let type_id = resolve_unpacked_index(unpacked, ids, rec_group_start)?;
+                Ok(HeapType::Concrete(type_id))
+            }
+        }
+    }
+}
+
+/// Resolve a wasmparser `UnpackedIndex` to a walrus `TypeId`.
+fn resolve_unpacked_index(
+    unpacked: wasmparser::UnpackedIndex,
+    ids: &crate::parse::IndicesToIds,
+    rec_group_start: u32,
+) -> Result<TypeId> {
+    match unpacked {
+        wasmparser::UnpackedIndex::Module(idx) => ids.get_type(idx),
+        wasmparser::UnpackedIndex::RecGroup(idx) => ids.get_type(rec_group_start + idx),
+        #[allow(unreachable_patterns)]
+        _ => bail!("unsupported type index variant"),
     }
 }
 
@@ -754,6 +840,21 @@ impl TryFrom<wasmparser::RefType> for RefType {
     }
 }
 
+impl RefType {
+    /// Convert a wasmparser RefType to a walrus RefType, resolving concrete
+    /// type indices via `IndicesToIds`.
+    pub(crate) fn from_wasmparser(
+        ref_type: wasmparser::RefType,
+        ids: &crate::parse::IndicesToIds,
+        rec_group_start: u32,
+    ) -> Result<RefType> {
+        Ok(RefType {
+            nullable: ref_type.is_nullable(),
+            heap_type: HeapType::from_wasmparser(ref_type.heap_type(), ids, rec_group_start)?,
+        })
+    }
+}
+
 impl fmt::Display for RefType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.nullable {
@@ -817,6 +918,33 @@ impl ValType {
                 bail!("The stack switching proposal is not supported")
             }
             wasmparser::ValType::Ref(ref_type) => Ok(ValType::Ref((*ref_type).try_into()?)),
+        }
+    }
+
+    /// Convert a wasmparser ValType to a walrus ValType, resolving concrete
+    /// type indices via `IndicesToIds`.
+    pub(crate) fn from_wasmparser(
+        input: &wasmparser::ValType,
+        ids: &crate::parse::IndicesToIds,
+        rec_group_start: u32,
+    ) -> Result<ValType> {
+        match input {
+            wasmparser::ValType::I32 => Ok(ValType::I32),
+            wasmparser::ValType::I64 => Ok(ValType::I64),
+            wasmparser::ValType::F32 => Ok(ValType::F32),
+            wasmparser::ValType::F64 => Ok(ValType::F64),
+            wasmparser::ValType::V128 => Ok(ValType::V128),
+            wasmparser::ValType::Ref(wasmparser::RefType::CONT)
+            | wasmparser::ValType::Ref(wasmparser::RefType::CONTREF)
+            | wasmparser::ValType::Ref(wasmparser::RefType::NULLCONTREF)
+            | wasmparser::ValType::Ref(wasmparser::RefType::NOCONT) => {
+                bail!("The stack switching proposal is not supported")
+            }
+            wasmparser::ValType::Ref(ref_type) => Ok(ValType::Ref(RefType::from_wasmparser(
+                *ref_type,
+                ids,
+                rec_group_start,
+            )?)),
         }
     }
 }

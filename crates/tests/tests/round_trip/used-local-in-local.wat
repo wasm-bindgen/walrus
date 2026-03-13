@@ -16,4 +16,8 @@
       local.set 1
     )
     (export "foo" (func $foo))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

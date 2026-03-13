@@ -36,6 +36,38 @@ impl<T: Clone + Eq + Hash> ArenaSet<T> {
         self.arena.next_id()
     }
 
+    /// Allocate a value without deduplication, returning a fresh Id.
+    ///
+    /// Used during parsing where each type index must get its own unique Id
+    /// regardless of structural equality (e.g., for forward references in
+    /// rec groups).
+    pub(crate) fn alloc_unique(&mut self, val: T) -> Id<T> {
+        self.arena.alloc(val)
+        // Deliberately does NOT update already_in_arena
+    }
+
+    /// Replace the value at an existing Id and register it in the dedup map.
+    ///
+    /// Used after `alloc_unique()` to finalize a pre-allocated slot with
+    /// its real value once all forward references can be resolved.
+    pub(crate) fn replace_and_register(&mut self, id: Id<T>, val: T) {
+        self.arena[id] = val.clone();
+        self.already_in_arena.insert(val, id);
+    }
+
+    /// Look up a value in the dedup map without inserting.
+    ///
+    /// Returns the existing `Id` if a structurally identical value was
+    /// previously registered via `insert()` or `replace_and_register()`.
+    pub(crate) fn find(&self, val: &T) -> Option<Id<T>> {
+        self.already_in_arena.get(val).copied()
+    }
+
+    /// Check whether the given id is still live (not deleted / tombstoned).
+    pub fn contains(&self, id: Id<T>) -> bool {
+        self.arena.contains(id)
+    }
+
     /// Remove an item from this set
     pub fn remove(&mut self, id: Id<T>)
     where

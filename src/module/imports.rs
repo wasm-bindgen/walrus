@@ -1,7 +1,5 @@
 //! A wasm module's imports.
 
-use std::convert::TryInto;
-
 use anyhow::Context;
 
 use crate::emit::{Emit, EmitContext};
@@ -169,7 +167,7 @@ impl Module {
                         t.table64,
                         t.initial,
                         t.maximum,
-                        t.element_type.try_into()?,
+                        RefType::from_wasmparser(t.element_type, ids, 0)?,
                     );
                     ids.push_table(id.0);
                 }
@@ -189,7 +187,7 @@ impl Module {
                     let id = self.add_import_global(
                         entry.module,
                         entry.name,
-                        ValType::parse(&g.content_type)?,
+                        ValType::from_wasmparser(&g.content_type, ids, 0)?,
                         g.mutable,
                         g.shared,
                     );
@@ -307,7 +305,7 @@ impl Emit for ModuleImports {
                         cx.indices.push_table(id);
                         let table = cx.module.tables.get(id);
                         wasm_encoder::EntityType::Table(wasm_encoder::TableType {
-                            element_type: table.element_ty.to_wasmencoder_ref_type(),
+                            element_type: table.element_ty.to_wasmencoder_ref_type(cx.indices),
                             table64: table.table64,
                             minimum: table.initial,
                             maximum: table.maximum,
@@ -329,7 +327,7 @@ impl Emit for ModuleImports {
                         cx.indices.push_global(id);
                         let g = cx.module.globals.get(id);
                         wasm_encoder::EntityType::Global(wasm_encoder::GlobalType {
-                            val_type: g.ty.to_wasmencoder_type(),
+                            val_type: g.ty.to_wasmencoder_type(cx.indices),
                             mutable: g.mutable,
                             shared: g.shared,
                         })

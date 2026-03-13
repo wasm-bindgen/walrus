@@ -53,4 +53,8 @@
       local.get 1
     )
     (export "fac" (func $fac))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

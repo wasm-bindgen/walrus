@@ -330,9 +330,124 @@ impl Module {
         Ok(())
     }
 
+    /// Ensure every function referenced by `ref.func` (in code, global
+    /// initializers, or element segment expressions) is "declared" per the wasm
+    /// spec — either exported or present in at least one element segment.
+    ///
+    /// If any referenced function lacks a declaration, a synthetic `Declared`
+    /// element segment is appended.
+    fn ensure_func_declarations(&mut self) {
+        use crate::ir::dfs_in_order;
+        use crate::map::IdHashSet;
+
+        // 1. Collect all functions referenced by ref.func in code.
+        let mut ref_funcs: IdHashSet<crate::Function> = IdHashSet::default();
+        for func in self.funcs.iter() {
+            if let FunctionKind::Local(local) = &func.kind {
+                struct RefFuncVisitor<'a> {
+                    set: &'a mut IdHashSet<crate::Function>,
+                }
+                impl<'instr> crate::ir::Visitor<'instr> for RefFuncVisitor<'_> {
+                    fn visit_ref_func(&mut self, instr: &crate::ir::RefFunc) {
+                        self.set.insert(instr.func);
+                    }
+                }
+                let mut visitor = RefFuncVisitor {
+                    set: &mut ref_funcs,
+                };
+                dfs_in_order(&mut visitor, local, local.entry_block());
+            }
+        }
+
+        // 2. Collect ref.func from global initializers and element expressions.
+        for global in self.globals.iter() {
+            Self::collect_const_expr_ref_funcs(&global.kind, &mut ref_funcs);
+        }
+        for elem in self.elements.iter() {
+            match &elem.items {
+                ElementItems::Expressions(_, exprs) => {
+                    for expr in exprs {
+                        if let crate::ConstExpr::RefFunc(f) = expr {
+                            ref_funcs.insert(*f);
+                        }
+                    }
+                }
+                // Functions listed directly are already declarations themselves.
+                ElementItems::Functions(_) => {}
+            }
+        }
+
+        if ref_funcs.is_empty() {
+            return;
+        }
+
+        // 3. Build the set of already-declared functions.
+        let mut declared: IdHashSet<crate::Function> = IdHashSet::default();
+        // Exports declare their functions.
+        for export in self.exports.iter() {
+            if let ExportItem::Function(f) = export.item {
+                declared.insert(f);
+            }
+        }
+        // Element segments declare all functions they contain.
+        for elem in self.elements.iter() {
+            match &elem.items {
+                ElementItems::Functions(funcs) => {
+                    for &f in funcs {
+                        declared.insert(f);
+                    }
+                }
+                ElementItems::Expressions(_, exprs) => {
+                    for expr in exprs {
+                        if let crate::ConstExpr::RefFunc(f) = expr {
+                            declared.insert(*f);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Find undeclared functions and synthesize a Declared element segment.
+        let undeclared: Vec<_> = ref_funcs
+            .iter()
+            .copied()
+            .filter(|f| !declared.contains(f))
+            .collect();
+        if !undeclared.is_empty() {
+            log::debug!(
+                "synthesizing Declared element segment for {} undeclared ref.func references",
+                undeclared.len()
+            );
+            self.elements
+                .add(ElementKind::Declared, ElementItems::Functions(undeclared));
+        }
+    }
+
+    /// Helper: collect ref.func from a GlobalKind.
+    fn collect_const_expr_ref_funcs(
+        kind: &GlobalKind,
+        set: &mut crate::map::IdHashSet<crate::Function>,
+    ) {
+        match kind {
+            GlobalKind::Local(crate::ConstExpr::RefFunc(f)) => {
+                set.insert(*f);
+            }
+            GlobalKind::Local(crate::ConstExpr::Extended(ops)) => {
+                for op in ops {
+                    if let crate::const_expr::ConstOp::RefFunc(f) = op {
+                        set.insert(*f);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Emit this module into an in-memory wasm buffer.
     pub fn emit_wasm(&mut self) -> Vec<u8> {
         log::debug!("start emit");
+
+        self.ensure_func_declarations();
 
         let indices = &mut IdsToIndices::default();
 

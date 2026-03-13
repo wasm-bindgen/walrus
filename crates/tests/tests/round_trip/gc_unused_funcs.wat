@@ -15,4 +15,8 @@
       i32.const 42
     )
     (export "f" (func $f))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

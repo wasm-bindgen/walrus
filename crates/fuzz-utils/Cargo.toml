@@ -8,9 +8,11 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 env_logger = "0.11.3"
-rand = { version = "0.7.0", features = ['small_rng'] }
+rand = { version = "0.8.0", features = ['small_rng'] }
 tempfile = "3.1.0"
-wasmparser = "0.212.0"
+wasmparser = "0.245.0"
+wasm-smith = "0.245.0"
+arbitrary = "1.0"
 wat = "1.0"
 
 [dependencies.walrus]
@@ -20,4 +22,3 @@ path = "../.."
 path = "../tests-utils"
 
 [dev-dependencies]
-bufrng = "1.0.1"

@@ -17,4 +17,8 @@
       select
     )
     (export "do_select" (func $do_select))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

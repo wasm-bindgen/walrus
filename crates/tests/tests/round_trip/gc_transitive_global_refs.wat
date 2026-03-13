@@ -27,4 +27,8 @@
     (global $globalB (;0;) i32 i32.const 42)
     (global $globalA (;1;) i32 global.get $globalB)
     (export "f" (func $f))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

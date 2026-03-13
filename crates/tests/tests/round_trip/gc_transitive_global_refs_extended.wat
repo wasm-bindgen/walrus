@@ -32,4 +32,8 @@
     (global $globalC (;1;) i32 i32.const 32)
     (global $globalA (;2;) i32 global.get $globalB global.get $globalC i32.add)
     (export "f" (func $f))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

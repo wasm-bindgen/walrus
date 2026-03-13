@@ -16,4 +16,8 @@
       end
     )
     (export "multiBlock" (func 0))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

@@ -9,4 +9,8 @@
   (module
     (table (;0;) 1 1 funcref)
     (export "t" (table 0))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

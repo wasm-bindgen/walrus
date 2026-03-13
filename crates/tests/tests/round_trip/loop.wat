@@ -13,4 +13,8 @@
       end
     )
     (export "inf_loop" (func $f))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

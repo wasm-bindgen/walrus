@@ -9,7 +9,9 @@ edition = "2018"
 cargo-fuzz = true
 
 [dependencies]
-bufrng = "1.0.1"
+wasm-smith = "0.245.0"
+arbitrary = "1.0"
+wasmparser = "0.245.0"
 
 [dependencies.walrus]
 path = ".."
@@ -35,3 +37,7 @@ path = "fuzz_targets/wasm-opt-ttf.rs"
 [[bin]]
 name = "raw"
 path = "fuzz_targets/raw.rs"
+
+[[bin]]
+name = "gc-smith"
+path = "fuzz_targets/gc-smith.rs"

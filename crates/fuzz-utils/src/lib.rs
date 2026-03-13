@@ -12,6 +12,54 @@ use std::path::Path;
 use std::time;
 use walrus_tests_utils::wasm_interp;
 
+/// A simple RNG that reads bytes from a fixed buffer, wrapping around when
+/// exhausted. Intended for fuzz testing only.
+pub struct BufRng<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BufRng<'a> {
+    /// Create a new `BufRng` from the given buffer.
+    ///
+    /// The buffer must not be empty.
+    pub fn new(buf: &'a [u8]) -> Self {
+        assert!(!buf.is_empty(), "BufRng buffer must not be empty");
+        BufRng { buf, pos: 0 }
+    }
+
+    fn next_byte(&mut self) -> u8 {
+        let b = self.buf[self.pos % self.buf.len()];
+        self.pos += 1;
+        b
+    }
+}
+
+impl rand::RngCore for BufRng<'_> {
+    fn next_u32(&mut self) -> u32 {
+        let mut bytes = [0u8; 4];
+        self.fill_bytes(&mut bytes);
+        u32::from_le_bytes(bytes)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut bytes = [0u8; 8];
+        self.fill_bytes(&mut bytes);
+        u64::from_le_bytes(bytes)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for b in dest.iter_mut() {
+            *b = self.next_byte();
+        }
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
 /// `Ok(T)` or a `Err(anyhow::Error)`
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
 
@@ -326,7 +374,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op(&mut self, stack: &mut Vec<ValType>) {
-        let arity = self.rng.gen_range(0, cmp::min(3, stack.len() + 1));
+        let arity = self.rng.gen_range(0..cmp::min(3, stack.len() + 1));
         match arity {
             0 => self.op_0(stack),
             1 => self.op_1(stack.pop().unwrap(), stack),
@@ -336,7 +384,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op_0(&mut self, stack: &mut Vec<ValType>) {
-        match self.rng.gen_range(0, 2) {
+        match self.rng.gen_range(0..2) {
             0 => {
                 let value = self.rng.gen::<i32>().to_string();
                 self.instr_imm("i32.const", Some(value));
@@ -350,7 +398,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op_1(&mut self, _operand: ValType, stack: &mut Vec<ValType>) {
-        match self.rng.gen_range(0, 2) {
+        match self.rng.gen_range(0..2) {
             0 => {
                 self.instr("drop");
             }
@@ -363,7 +411,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op_2(&mut self, _a: ValType, _b: ValType, stack: &mut Vec<ValType>) {
-        match self.rng.gen_range(0, 2) {
+        match self.rng.gen_range(0..2) {
             0 => {
                 self.instr("i32.add");
                 stack.push(ValType::I32);
@@ -431,6 +479,40 @@ impl TestCaseGenerator for WasmOptTtf {
             last_wat = Some(wat);
         }
     }
+}
+
+/// Round-trip a wasm binary through walrus (parse → GC → emit) and verify:
+/// 1. The output validates with wasmparser.
+/// 2. Re-parsing and re-emitting produces identical bytes (determinism).
+///
+/// Returns `Ok(())` if the input cannot be parsed by walrus (not an error for fuzzing).
+/// Panics if the output is invalid or non-deterministic.
+pub fn assert_walrus_gc_round_trip(wasm: &[u8]) {
+    let mut module = match walrus::Module::from_buffer(wasm) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    walrus::passes::gc::run(&mut module);
+    let output = module.emit_wasm();
+
+    if let Err(e) = wasmparser::validate(&output) {
+        let dir = std::env::temp_dir();
+        let _ = std::fs::write(dir.join("walrus_fuzz_input.wasm"), wasm);
+        let _ = std::fs::write(dir.join("walrus_fuzz_output.wasm"), &output);
+        panic!(
+            "walrus emitted invalid wasm after round-trip: {e}\n\
+             Input: {} bytes ({}), Output: {} bytes ({})",
+            wasm.len(),
+            dir.join("walrus_fuzz_input.wasm").display(),
+            output.len(),
+            dir.join("walrus_fuzz_output.wasm").display(),
+        );
+    }
+
+    let mut module2 =
+        walrus::Module::from_buffer(&output).expect("walrus should parse its own output");
+    let output2 = module2.emit_wasm();
+    assert_eq!(output, output2, "walrus emission should be deterministic");
 }
 
 /// Print a `anyhow::Error` with its chain.
@@ -505,11 +587,58 @@ mod tests {
     #[test]
     fn fuzz2() {
         // This was causing us to infinite loop in `WasmOptTtf::generate`.
-        let rng = bufrng::BufRng::new(&[0]);
-        let mut config = Config::<WasmOptTtf, bufrng::BufRng>::new(rng).set_fuel(1);
+        let rng = super::BufRng::new(&[0]);
+        let mut config = Config::<WasmOptTtf, super::BufRng>::new(rng).set_fuel(1);
         if let Err(e) = config.run_one() {
             print_err(&e);
             panic!("Found an error! {}", e);
         }
+    }
+
+    #[test]
+    fn wasm_smith_gc_fuzz() {
+        use arbitrary::Unstructured;
+        use rand::RngCore;
+
+        let mut rng = SmallRng::seed_from_u64(42);
+        let timeout = get_timeout()
+            .unwrap_or(super::Config::<WatGen<SmallRng>, SmallRng>::DEFAULT_TIMEOUT_SECS);
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(timeout);
+        let mut tested = 0u32;
+
+        while start.elapsed() < deadline {
+            // Generate random bytes for wasm-smith.
+            let mut data = vec![0u8; 2048];
+            rng.fill_bytes(&mut data);
+
+            let mut u = Unstructured::new(&data);
+            let mut config = wasm_smith::Config::default();
+            config.gc_enabled = true;
+            config.max_types = 10;
+            config.max_funcs = 10;
+            config.max_globals = 10;
+            config.max_tables = 4;
+            config.max_memories = 1;
+            config.threads_enabled = false;
+            config.simd_enabled = false;
+            config.exceptions_enabled = false;
+
+            let module = match wasm_smith::Module::new(config, &mut u) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            let wasm = module.to_bytes();
+            if wasmparser::validate(&wasm).is_err() {
+                continue;
+            }
+
+            super::assert_walrus_gc_round_trip(&wasm);
+            tested += 1;
+        }
+
+        eprintln!("wasm_smith_gc_fuzz: tested {tested} modules in {timeout}s");
+        assert!(tested > 0, "should have tested at least one module");
     }
 }

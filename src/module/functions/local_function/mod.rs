@@ -215,7 +215,11 @@ impl LocalFunction {
     }
 
     /// Emit this function's compact locals declarations.
-    pub(crate) fn emit_locals(&self, module: &Module) -> EmitLocalsResult {
+    pub(crate) fn emit_locals(
+        &self,
+        module: &Module,
+        indices: &crate::emit::IdsToIndices,
+    ) -> EmitLocalsResult {
         let used_set = self.used_locals();
         let mut used_locals = used_set.iter().cloned().collect::<Vec<_>>();
         // Sort to ensure we assign local indexes deterministically, and
@@ -260,7 +264,7 @@ impl LocalFunction {
         (
             ty_to_locals
                 .iter()
-                .map(|(ty, locals)| (locals.len() as u32, ty.to_wasmencoder_type()))
+                .map(|(ty, locals)| (locals.len() as u32, ty.to_wasmencoder_type(indices)))
                 .collect(),
             used_set,
             local_map,
@@ -281,7 +285,7 @@ impl LocalFunction {
 
 fn block_result_tys(ctx: &ValidationContext, ty: wasmparser::BlockType) -> Result<Box<[ValType]>> {
     match ty {
-        wasmparser::BlockType::Type(ty) => ValType::from_wasmparser_type(ty),
+        wasmparser::BlockType::Type(ty) => ValType::from_wasmparser_type(ty, ctx.indices),
         wasmparser::BlockType::FuncType(idx) => {
             let ty = ctx.indices.get_type(idx)?;
             Ok(ctx.module.types.results(ty).into())
@@ -551,7 +555,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         Operator::Drop => ctx.alloc_instr(Drop {}, loc),
         Operator::Select => ctx.alloc_instr(Select { ty: None }, loc),
         Operator::TypedSelect { ty } => {
-            let ty = ValType::parse(&ty).unwrap();
+            let ty = ValType::from_wasmparser(&ty, ctx.indices, 0).unwrap();
             ctx.alloc_instr(Select { ty: Some(ty) }, loc);
         }
         Operator::Return => {
@@ -997,7 +1001,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.alloc_instr(TableFill { table }, loc);
         }
         Operator::RefNull { hty } => {
-            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.null");
+            let heap_type = HeapType::from_wasmparser(hty, ctx.indices, 0).unwrap();
             let ty = RefType {
                 nullable: true,
                 heap_type,
@@ -1044,7 +1048,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.alloc_instr(I31GetU {}, loc);
         }
         Operator::RefTestNonNull { hty } => {
-            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.test");
+            let heap_type = HeapType::from_wasmparser(hty, ctx.indices, 0).unwrap();
             ctx.alloc_instr(
                 RefTest {
                     nullable: false,
@@ -1054,7 +1058,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             );
         }
         Operator::RefTestNullable { hty } => {
-            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.test");
+            let heap_type = HeapType::from_wasmparser(hty, ctx.indices, 0).unwrap();
             ctx.alloc_instr(
                 RefTest {
                     nullable: true,
@@ -1064,7 +1068,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             );
         }
         Operator::RefCastNonNull { hty } => {
-            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.cast");
+            let heap_type = HeapType::from_wasmparser(hty, ctx.indices, 0).unwrap();
             ctx.alloc_instr(
                 RefCast {
                     nullable: false,
@@ -1074,7 +1078,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             );
         }
         Operator::RefCastNullable { hty } => {
-            let heap_type = HeapType::try_from(hty).expect("unsupported heap type for ref.cast");
+            let heap_type = HeapType::from_wasmparser(hty, ctx.indices, 0).unwrap();
             ctx.alloc_instr(
                 RefCast {
                     nullable: true,
@@ -1091,9 +1095,9 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             let n = relative_depth as usize;
             let block = ctx.control(n).unwrap().block;
             let from_heap_type =
-                HeapType::try_from(from_ref_type.heap_type()).expect("unsupported from heap type");
+                HeapType::from_wasmparser(from_ref_type.heap_type(), ctx.indices, 0).unwrap();
             let to_heap_type =
-                HeapType::try_from(to_ref_type.heap_type()).expect("unsupported to heap type");
+                HeapType::from_wasmparser(to_ref_type.heap_type(), ctx.indices, 0).unwrap();
             ctx.alloc_instr(
                 BrOnCast {
                     block,
@@ -1113,9 +1117,9 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             let n = relative_depth as usize;
             let block = ctx.control(n).unwrap().block;
             let from_heap_type =
-                HeapType::try_from(from_ref_type.heap_type()).expect("unsupported from heap type");
+                HeapType::from_wasmparser(from_ref_type.heap_type(), ctx.indices, 0).unwrap();
             let to_heap_type =
-                HeapType::try_from(to_ref_type.heap_type()).expect("unsupported to heap type");
+                HeapType::from_wasmparser(to_ref_type.heap_type(), ctx.indices, 0).unwrap();
             ctx.alloc_instr(
                 BrOnCastFail {
                     block,
@@ -1132,6 +1136,155 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
         }
         Operator::ExternConvertAny => {
             ctx.alloc_instr(ExternConvertAny {}, loc);
+        }
+
+        // GC struct/array instructions
+        Operator::RefEq => {
+            ctx.alloc_instr(RefEq {}, loc);
+        }
+        Operator::StructNew { struct_type_index } => {
+            let ty = ctx.indices.get_type(struct_type_index).unwrap();
+            ctx.alloc_instr(StructNew { ty }, loc);
+        }
+        Operator::StructNewDefault { struct_type_index } => {
+            let ty = ctx.indices.get_type(struct_type_index).unwrap();
+            ctx.alloc_instr(StructNewDefault { ty }, loc);
+        }
+        Operator::StructGet {
+            struct_type_index,
+            field_index,
+        } => {
+            let ty = ctx.indices.get_type(struct_type_index).unwrap();
+            ctx.alloc_instr(
+                StructGet {
+                    ty,
+                    field: field_index,
+                },
+                loc,
+            );
+        }
+        Operator::StructGetS {
+            struct_type_index,
+            field_index,
+        } => {
+            let ty = ctx.indices.get_type(struct_type_index).unwrap();
+            ctx.alloc_instr(
+                StructGetS {
+                    ty,
+                    field: field_index,
+                },
+                loc,
+            );
+        }
+        Operator::StructGetU {
+            struct_type_index,
+            field_index,
+        } => {
+            let ty = ctx.indices.get_type(struct_type_index).unwrap();
+            ctx.alloc_instr(
+                StructGetU {
+                    ty,
+                    field: field_index,
+                },
+                loc,
+            );
+        }
+        Operator::StructSet {
+            struct_type_index,
+            field_index,
+        } => {
+            let ty = ctx.indices.get_type(struct_type_index).unwrap();
+            ctx.alloc_instr(
+                StructSet {
+                    ty,
+                    field: field_index,
+                },
+                loc,
+            );
+        }
+        Operator::ArrayNew { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArrayNew { ty }, loc);
+        }
+        Operator::ArrayNewDefault { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArrayNewDefault { ty }, loc);
+        }
+        Operator::ArrayNewFixed {
+            array_type_index,
+            array_size,
+        } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(
+                ArrayNewFixed {
+                    ty,
+                    len: array_size,
+                },
+                loc,
+            );
+        }
+        Operator::ArrayNewData {
+            array_type_index,
+            array_data_index,
+        } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            let data = ctx.indices.get_data(array_data_index).unwrap();
+            ctx.alloc_instr(ArrayNewData { ty, data }, loc);
+        }
+        Operator::ArrayNewElem {
+            array_type_index,
+            array_elem_index,
+        } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            let elem = ctx.indices.get_element(array_elem_index).unwrap();
+            ctx.alloc_instr(ArrayNewElem { ty, elem }, loc);
+        }
+        Operator::ArrayGet { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArrayGet { ty }, loc);
+        }
+        Operator::ArrayGetS { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArrayGetS { ty }, loc);
+        }
+        Operator::ArrayGetU { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArrayGetU { ty }, loc);
+        }
+        Operator::ArraySet { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArraySet { ty }, loc);
+        }
+        Operator::ArrayLen => {
+            ctx.alloc_instr(ArrayLen {}, loc);
+        }
+        Operator::ArrayFill { array_type_index } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            ctx.alloc_instr(ArrayFill { ty }, loc);
+        }
+        Operator::ArrayCopy {
+            array_type_index_dst,
+            array_type_index_src,
+        } => {
+            let dst_ty = ctx.indices.get_type(array_type_index_dst).unwrap();
+            let src_ty = ctx.indices.get_type(array_type_index_src).unwrap();
+            ctx.alloc_instr(ArrayCopy { dst_ty, src_ty }, loc);
+        }
+        Operator::ArrayInitData {
+            array_type_index,
+            array_data_index,
+        } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            let data = ctx.indices.get_data(array_data_index).unwrap();
+            ctx.alloc_instr(ArrayInitData { ty, data }, loc);
+        }
+        Operator::ArrayInitElem {
+            array_type_index,
+            array_elem_index,
+        } => {
+            let ty = ctx.indices.get_type(array_type_index).unwrap();
+            let elem = ctx.indices.get_element(array_elem_index).unwrap();
+            ctx.alloc_instr(ArrayInitElem { ty, elem }, loc);
         }
 
         Operator::I8x16Swizzle => {
@@ -1594,78 +1747,9 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.unreachable();
         }
 
-        // List all unimplmented operators instead of have a catch-all arm.
+        // List all unimplemented operators instead of having a catch-all arm.
         // So that future upgrades won't miss additions to this list that may be important to know.
-        Operator::RefEq
-        | Operator::StructNew {
-            struct_type_index: _,
-        }
-        | Operator::StructNewDefault {
-            struct_type_index: _,
-        }
-        | Operator::StructGet {
-            struct_type_index: _,
-            field_index: _,
-        }
-        | Operator::StructGetS {
-            struct_type_index: _,
-            field_index: _,
-        }
-        | Operator::StructGetU {
-            struct_type_index: _,
-            field_index: _,
-        }
-        | Operator::StructSet {
-            struct_type_index: _,
-            field_index: _,
-        }
-        | Operator::ArrayNew {
-            array_type_index: _,
-        }
-        | Operator::ArrayNewDefault {
-            array_type_index: _,
-        }
-        | Operator::ArrayNewFixed {
-            array_type_index: _,
-            array_size: _,
-        }
-        | Operator::ArrayNewData {
-            array_type_index: _,
-            array_data_index: _,
-        }
-        | Operator::ArrayNewElem {
-            array_type_index: _,
-            array_elem_index: _,
-        }
-        | Operator::ArrayGet {
-            array_type_index: _,
-        }
-        | Operator::ArrayGetS {
-            array_type_index: _,
-        }
-        | Operator::ArrayGetU {
-            array_type_index: _,
-        }
-        | Operator::ArraySet {
-            array_type_index: _,
-        }
-        | Operator::ArrayLen
-        | Operator::ArrayFill {
-            array_type_index: _,
-        }
-        | Operator::ArrayCopy {
-            array_type_index_dst: _,
-            array_type_index_src: _,
-        }
-        | Operator::ArrayInitData {
-            array_type_index: _,
-            array_data_index: _,
-        }
-        | Operator::ArrayInitElem {
-            array_type_index: _,
-            array_elem_index: _,
-        }
-        | Operator::MemoryDiscard { mem: _ }
+        Operator::MemoryDiscard { mem: _ }
         | Operator::GlobalAtomicGet {
             ordering: _,
             global_index: _,

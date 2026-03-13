@@ -3,6 +3,7 @@
 use crate::emit::EmitContext;
 use crate::ir::Value;
 use crate::parse::IndicesToIds;
+use crate::ty::TypeId;
 use crate::{FunctionId, GlobalId, Result};
 use crate::{HeapType, RefType};
 use anyhow::bail;
@@ -56,6 +57,25 @@ pub enum ConstOp {
     I64Mul,
     /// Create i31ref from i32
     RefI31,
+    /// Create a new struct instance
+    StructNew(TypeId),
+    /// Create a new struct instance with default field values
+    StructNewDefault(TypeId),
+    /// Create a new array instance
+    ArrayNew(TypeId),
+    /// Create a new array instance with default element value
+    ArrayNewDefault(TypeId),
+    /// Create a new fixed-size array instance from inline operands
+    ArrayNewFixed {
+        /// The array type
+        ty: TypeId,
+        /// Number of elements
+        len: u32,
+    },
+    /// Convert an externref to anyref
+    AnyConvertExtern,
+    /// Convert an anyref to externref
+    ExternConvertAny,
 }
 
 impl ConstExpr {
@@ -77,7 +97,7 @@ impl ConstExpr {
                     ops.push(ConstOp::GlobalGet(ids.get_global(global_index)?))
                 }
                 RefNull { hty } => {
-                    let heap_type = HeapType::try_from(hty)?;
+                    let heap_type = HeapType::from_wasmparser(hty, ids, 0)?;
                     let ref_type = RefType {
                         nullable: true,
                         heap_type,
@@ -94,6 +114,27 @@ impl ConstExpr {
                 I64Sub => ops.push(ConstOp::I64Sub),
                 I64Mul => ops.push(ConstOp::I64Mul),
                 RefI31 => ops.push(ConstOp::RefI31),
+                StructNew { struct_type_index } => {
+                    ops.push(ConstOp::StructNew(ids.get_type(struct_type_index)?))
+                }
+                StructNewDefault { struct_type_index } => {
+                    ops.push(ConstOp::StructNewDefault(ids.get_type(struct_type_index)?))
+                }
+                ArrayNew { array_type_index } => {
+                    ops.push(ConstOp::ArrayNew(ids.get_type(array_type_index)?))
+                }
+                ArrayNewDefault { array_type_index } => {
+                    ops.push(ConstOp::ArrayNewDefault(ids.get_type(array_type_index)?))
+                }
+                ArrayNewFixed {
+                    array_type_index,
+                    array_size,
+                } => ops.push(ConstOp::ArrayNewFixed {
+                    ty: ids.get_type(array_type_index)?,
+                    len: array_size,
+                }),
+                AnyConvertExtern => ops.push(ConstOp::AnyConvertExtern),
+                ExternConvertAny => ops.push(ConstOp::ExternConvertAny),
                 _ => bail!("unsupported operation in constant expression: {:?}", op),
             }
         }
@@ -132,7 +173,7 @@ impl ConstExpr {
                 wasm_encoder::ConstExpr::global_get(cx.indices.get_global_index(*g))
             }
             ConstExpr::RefNull(ty) => {
-                wasm_encoder::ConstExpr::ref_null(ty.heap_type.to_wasmencoder_heap_type())
+                wasm_encoder::ConstExpr::ref_null(ty.heap_type.to_wasmencoder_heap_type(cx.indices))
             }
             ConstExpr::RefFunc(f) => {
                 wasm_encoder::ConstExpr::ref_func(cx.indices.get_func_index(*f))
@@ -157,7 +198,7 @@ impl ConstExpr {
                                 .encode(&mut bytes)
                         }
                         ConstOp::RefNull(ty) => {
-                            Instruction::RefNull(ty.heap_type.to_wasmencoder_heap_type())
+                            Instruction::RefNull(ty.heap_type.to_wasmencoder_heap_type(cx.indices))
                                 .encode(&mut bytes)
                         }
                         ConstOp::RefFunc(f) => {
@@ -170,6 +211,32 @@ impl ConstExpr {
                         ConstOp::I64Sub => Instruction::I64Sub.encode(&mut bytes),
                         ConstOp::I64Mul => Instruction::I64Mul.encode(&mut bytes),
                         ConstOp::RefI31 => Instruction::RefI31.encode(&mut bytes),
+                        ConstOp::StructNew(ty) => {
+                            Instruction::StructNew(cx.indices.get_type_index(*ty))
+                                .encode(&mut bytes)
+                        }
+                        ConstOp::StructNewDefault(ty) => {
+                            Instruction::StructNewDefault(cx.indices.get_type_index(*ty))
+                                .encode(&mut bytes)
+                        }
+                        ConstOp::ArrayNew(ty) => {
+                            Instruction::ArrayNew(cx.indices.get_type_index(*ty)).encode(&mut bytes)
+                        }
+                        ConstOp::ArrayNewDefault(ty) => {
+                            Instruction::ArrayNewDefault(cx.indices.get_type_index(*ty))
+                                .encode(&mut bytes)
+                        }
+                        ConstOp::ArrayNewFixed { ty, len } => Instruction::ArrayNewFixed {
+                            array_type_index: cx.indices.get_type_index(*ty),
+                            array_size: *len,
+                        }
+                        .encode(&mut bytes),
+                        ConstOp::AnyConvertExtern => {
+                            Instruction::AnyConvertExtern.encode(&mut bytes)
+                        }
+                        ConstOp::ExternConvertAny => {
+                            Instruction::ExternConvertAny.encode(&mut bytes)
+                        }
                     }
                 }
                 // Don't add End instruction - wasm_encoder::ConstExpr::raw adds it automatically

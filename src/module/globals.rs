@@ -125,7 +125,7 @@ impl Module {
             let g = g?;
             let init_expr = ConstExpr::eval(&g.init_expr, ids)?;
             let id = self.globals.add_local(
-                ValType::parse(&g.ty.content_type)?,
+                ValType::from_wasmparser(&g.ty.content_type, ids, 0)?,
                 g.ty.mutable,
                 g.ty.shared,
                 init_expr,
@@ -160,7 +160,7 @@ impl Emit for ModuleGlobals {
 
             wasm_global_section.global(
                 wasm_encoder::GlobalType {
-                    val_type: global.ty.to_wasmencoder_type(),
+                    val_type: global.ty.to_wasmencoder_type(cx.indices),
                     mutable: global.mutable,
                     shared: global.shared,
                 },

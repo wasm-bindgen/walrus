@@ -501,16 +501,18 @@ pub fn assert_walrus_gc_round_trip(wasm: &[u8]) {
     walrus::passes::gc::run(&mut module);
     let output = module.emit_wasm();
 
-    // Check validation; log but don't panic on validation errors since
-    // some may be pre-existing emission bugs unrelated to the GC pass.
     if let Err(e) = wasmparser::validate(&output) {
-        eprintln!(
-            "WARNING: walrus emitted invalid wasm after round-trip: {e}\n\
-             Input size: {} bytes, output size: {} bytes",
+        let dir = std::env::temp_dir();
+        let _ = std::fs::write(dir.join("walrus_fuzz_input.wasm"), wasm);
+        let _ = std::fs::write(dir.join("walrus_fuzz_output.wasm"), &output);
+        panic!(
+            "walrus emitted invalid wasm after round-trip: {e}\n\
+             Input: {} bytes ({}), Output: {} bytes ({})",
             wasm.len(),
-            output.len()
+            dir.join("walrus_fuzz_input.wasm").display(),
+            output.len(),
+            dir.join("walrus_fuzz_output.wasm").display(),
         );
-        return;
     }
 
     let mut module2 =

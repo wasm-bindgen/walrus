@@ -1435,7 +1435,7 @@ pub struct MemArg {
     /// The alignment of the memory operation, must be a power of two
     pub align: u32,
     /// The offset of the memory operation, in bytes from the source address
-    pub offset: u32,
+    pub offset: u64,
 }
 
 /// The different kinds of atomic rmw operations

@@ -328,7 +328,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.indices.get_memory(arg.memory).unwrap(),
             MemArg {
                 align: 1 << (arg.align as i32),
-                offset: arg.offset as u32,
+                offset: arg.offset,
             },
         )
     };

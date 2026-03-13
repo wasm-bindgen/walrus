@@ -443,13 +443,7 @@ impl TestCaseGenerator for WasmOptTtf {
 
             let wat = match walrus_tests_utils::wasm_opt(
                 input_tmp.path(),
-                vec![
-                    "-ttf",
-                    "--emit-text",
-                    "--disable-simd",
-                    "--disable-threads",
-                    "--enable-gc",
-                ],
+                vec!["-ttf", "--emit-text", "--disable-simd", "--disable-threads"],
             ) {
                 Ok(ref w) if Some(w) == last_wat.as_ref() => {
                     // We're stuck in a loop generating the same wat that

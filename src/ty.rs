@@ -718,24 +718,15 @@ impl HeapType {
                 Ok(HeapType::Abstract(ty.try_into()?))
             }
             wasmparser::HeapType::Concrete(unpacked) | wasmparser::HeapType::Exact(unpacked) => {
-                let type_id = resolve_unpacked_index(unpacked, ids, rec_group_start)?;
+                let type_id = match unpacked {
+                    wasmparser::UnpackedIndex::Module(idx) => ids.get_type(idx),
+                    wasmparser::UnpackedIndex::RecGroup(idx) => ids.get_type(rec_group_start + idx),
+                    #[allow(unreachable_patterns)]
+                    _ => bail!("unsupported type index variant"),
+                }?;
                 Ok(HeapType::Concrete(type_id))
             }
         }
-    }
-}
-
-/// Resolve a wasmparser `UnpackedIndex` to a walrus `TypeId`.
-fn resolve_unpacked_index(
-    unpacked: wasmparser::UnpackedIndex,
-    ids: &crate::parse::IndicesToIds,
-    rec_group_start: u32,
-) -> Result<TypeId> {
-    match unpacked {
-        wasmparser::UnpackedIndex::Module(idx) => ids.get_type(idx),
-        wasmparser::UnpackedIndex::RecGroup(idx) => ids.get_type(rec_group_start + idx),
-        #[allow(unreachable_patterns)]
-        _ => bail!("unsupported type index variant"),
     }
 }
 

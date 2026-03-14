@@ -1134,7 +1134,7 @@ impl Emit<'_, '_> {
             align >>= 1;
         }
         wasm_encoder::MemArg {
-            offset: offset as u64,
+            offset,
             align: align_exponent,
             memory_index,
         }

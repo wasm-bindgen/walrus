@@ -195,27 +195,8 @@ impl Used {
             while let Some(t) = stack.globals.pop() {
                 match &module.globals.get(t).kind {
                     GlobalKind::Import(_) => {}
-                    GlobalKind::Local(ConstExpr::Global(global)) => {
-                        stack.push_global(*global);
-                    }
-                    GlobalKind::Local(ConstExpr::RefFunc(func)) => {
-                        stack.push_func(*func);
-                    }
-                    GlobalKind::Local(ConstExpr::Value(_))
-                    | GlobalKind::Local(ConstExpr::RefNull(_)) => {}
-                    GlobalKind::Local(ConstExpr::Extended(ops)) => {
-                        // Mark globals and functions referenced in extended const expressions
-                        for op in ops {
-                            match op {
-                                crate::const_expr::ConstOp::GlobalGet(g) => {
-                                    stack.push_global(*g);
-                                }
-                                crate::const_expr::ConstOp::RefFunc(f) => {
-                                    stack.push_func(*f);
-                                }
-                                _ => {}
-                            }
-                        }
+                    GlobalKind::Local(expr) => {
+                        push_const_expr_refs(&mut stack, expr);
                     }
                 }
             }
@@ -235,9 +216,7 @@ impl Used {
                 let d = module.data.get(d);
                 if let DataKind::Active { memory, offset } = &d.kind {
                     stack.push_memory(*memory);
-                    if let ConstExpr::Global(g) = offset {
-                        stack.push_global(*g);
-                    }
+                    push_const_expr_refs(&mut stack, offset);
                 }
             }
 
@@ -252,22 +231,12 @@ impl Used {
                     // Check if it's a funcref type (nullable or not)
                     if ref_type == &RefType::FUNCREF {
                         for item in items {
-                            match item {
-                                ConstExpr::Global(g) => {
-                                    stack.push_global(*g);
-                                }
-                                ConstExpr::RefFunc(f) => {
-                                    stack.push_func(*f);
-                                }
-                                _ => {}
-                            }
+                            push_const_expr_refs(&mut stack, item);
                         }
                     }
                 }
                 if let ElementKind::Active { offset, table } = &e.kind {
-                    if let ConstExpr::Global(g) = offset {
-                        stack.push_global(*g);
-                    }
+                    push_const_expr_refs(&mut stack, offset);
                     stack.push_table(*table);
                 }
             }
@@ -325,5 +294,31 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
 
     fn visit_tag_id(&mut self, &tag: &TagId) {
         self.stack.push_tag(tag);
+    }
+}
+
+/// Push all globals and functions referenced by a `ConstExpr` onto the root set.
+fn push_const_expr_refs(stack: &mut Roots, expr: &ConstExpr) {
+    match expr {
+        ConstExpr::Global(g) => {
+            stack.push_global(*g);
+        }
+        ConstExpr::RefFunc(f) => {
+            stack.push_func(*f);
+        }
+        ConstExpr::Extended(ops) => {
+            for op in ops {
+                match op {
+                    crate::const_expr::ConstOp::GlobalGet(g) => {
+                        stack.push_global(*g);
+                    }
+                    crate::const_expr::ConstOp::RefFunc(f) => {
+                        stack.push_func(*f);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ConstExpr::Value(_) | ConstExpr::RefNull(_) => {}
     }
 }

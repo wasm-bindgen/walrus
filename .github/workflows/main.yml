@@ -61,16 +61,42 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Only pure-Rust fuzzers here. The watgen and wasm-opt-ttf targets
-        # spawn subprocesses (wasm-opt, wasm-interp) per iteration, making
-        # them too slow for cargo-fuzz (< 1000 runs in 300s). They are
-        # already covered by the fuzz_crate job via `cargo test -p walrus-fuzz-utils`.
+        # Pure-Rust fuzzers — no external tool dependencies, high throughput.
         test: [raw, gc-smith]
     steps:
     - uses: actions/checkout@v4
     - name: Install Rust
       run: rustup update nightly && rustup default nightly
     - run: cargo install cargo-fuzz
+    - name: Run fuzzer
+      run: |
+        cargo fuzz run ${{ matrix.test }} -- -max_total_time=300 -rss_limit_mb=4096 > fuzz.log 2>&1 || (tail -n 1000 fuzz.log && exit 1)
+
+  fuzz_slow:
+    name: Fuzz (subprocess)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # These fuzzers spawn wasm-opt / wasm-interp per iteration, so they
+        # are much slower (~1000 runs in 300s vs millions for the pure-Rust
+        # targets). They run in a separate job to avoid blocking the fast
+        # fuzzers.
+        test: [watgen, wasm-opt-ttf]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust
+      run: rustup update nightly && rustup default nightly
+    - run: cargo install cargo-fuzz
+    - name: Install wabt
+      run: |
+        set -e
+        curl -L https://github.com/WebAssembly/wabt/releases/download/1.0.35/wabt-1.0.35-ubuntu-20.04.tar.gz | tar xzf -
+        echo "`pwd`/wabt-1.0.35/bin" > $GITHUB_PATH
+    - name: Install binaryen
+      run: |
+        set -e
+        curl -L https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz | tar xzf -
+        echo "`pwd`/binaryen-version_117/bin" > $GITHUB_PATH
     - name: Run fuzzer
       run: |
         cargo fuzz run ${{ matrix.test }} -- -max_total_time=300 -rss_limit_mb=4096 > fuzz.log 2>&1 || (tail -n 1000 fuzz.log && exit 1)

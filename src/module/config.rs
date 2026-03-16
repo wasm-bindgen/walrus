@@ -177,15 +177,6 @@ impl ModuleConfig {
         // This is the phase 1 exception handling proposal that uses try/catch/delegate
         // Support this as long as browsers also support it
         features.insert(WasmFeatures::LEGACY_EXCEPTIONS);
-
-        // Enable the custom-descriptors proposal which introduces exact types
-        // (ref exact $t). Without this, wasmparser rejects modules containing
-        // exact heap type references. This is a pre-phase-4 proposal, so only
-        // enable it when unstable features are allowed.
-        if !self.only_stable_features {
-            features.insert(WasmFeatures::CUSTOM_DESCRIPTORS);
-        }
-
         features
     }
 

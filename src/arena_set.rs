@@ -73,7 +73,14 @@ impl<T: Clone + Eq + Hash> ArenaSet<T> {
     where
         T: Tombstone,
     {
-        self.already_in_arena.remove(&self.arena[id]);
+        // Only remove the dedup map entry if it actually points to this id.
+        // Items allocated with `alloc_unique` are not in the map, but may
+        // be structurally equal to a registered item; blindly removing by
+        // value would destroy the other item's dedup entry.
+        let val = &self.arena[id];
+        if self.already_in_arena.get(val) == Some(&id) {
+            self.already_in_arena.remove(val);
+        }
         self.arena.delete(id);
     }
 

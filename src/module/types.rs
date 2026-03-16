@@ -131,9 +131,6 @@ impl ModuleTypes {
 
     /// Delete a type and every other type in its rec group.
     ///
-    /// All types belonging to the same rec group as `ty` are removed from
-    /// the arena, and the rec group itself is removed.
-    ///
     /// It is up to the caller to ensure that no external references to the
     /// deleted types remain (e.g., function signatures, `call_indirect`
     /// instructions, etc.).

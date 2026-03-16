@@ -41,3 +41,4 @@ path = "fuzz_targets/raw.rs"
 [[bin]]
 name = "gc-smith"
 path = "fuzz_targets/gc-smith.rs"
+

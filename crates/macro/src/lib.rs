@@ -580,6 +580,22 @@ fn create_visit(variants: &[WalrusVariant]) -> impl quote::ToTokens {
                 // ...
             }
 
+            /// Visit `HeapType`.
+            ///
+            /// The default implementation extracts the `TypeId` from
+            /// `HeapType::Concrete` or `HeapType::Exact` and forwards it
+            /// to `visit_type_id`. Override this to handle heap types
+            /// directly (e.g., to distinguish concrete from exact).
+            #[inline]
+            fn visit_heap_type(&mut self, heap_type: &crate::HeapType) {
+                match heap_type {
+                    crate::HeapType::Concrete(id) | crate::HeapType::Exact(id) => {
+                        self.visit_type_id(id);
+                    }
+                    _ => {}
+                }
+            }
+
             #( #visitor_trait_methods )*
         }
 
@@ -674,6 +690,22 @@ fn create_visit(variants: &[WalrusVariant]) -> impl quote::ToTokens {
             #[inline]
             fn visit_value_mut(&mut self, value: &mut crate::ir::Value) {
                 // ...
+            }
+
+            /// Visit `HeapType` mutably.
+            ///
+            /// The default implementation extracts the `TypeId` from
+            /// `HeapType::Concrete` or `HeapType::Exact` and forwards it
+            /// to `visit_type_id_mut`. Override this to handle heap types
+            /// directly.
+            #[inline]
+            fn visit_heap_type_mut(&mut self, heap_type: &mut crate::HeapType) {
+                match heap_type {
+                    crate::HeapType::Concrete(id) | crate::HeapType::Exact(id) => {
+                        self.visit_type_id_mut(id);
+                    }
+                    _ => {}
+                }
             }
 
             #( #visitor_mut_trait_methods )*

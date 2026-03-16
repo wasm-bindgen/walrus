@@ -941,3 +941,119 @@ fn test_array_new_fixed_builder() {
 
     let _ = round_trip(&mut module);
 }
+
+// ---------------------------------------------------------------------------
+// Exact types
+// ---------------------------------------------------------------------------
+
+/// Build a struct type, use `HeapType::Exact` in a function parameter type,
+/// and verify it survives a round-trip.
+#[test]
+fn test_exact_ref_in_param() {
+    let mut config = ModuleConfig::new();
+    config.generate_producers_section(false);
+    let mut module = Module::with_config(config);
+
+    // (type $point (struct (field i32) (field i32)))
+    let point_ty = module.types.add_struct(vec![
+        FieldType {
+            element_type: StorageType::Val(ValType::I32),
+            mutable: false,
+        },
+        FieldType {
+            element_type: StorageType::Val(ValType::I32),
+            mutable: false,
+        },
+    ]);
+
+    let exact_point_ref = ValType::Ref(RefType {
+        nullable: true,
+        heap_type: HeapType::Exact(point_ty),
+    });
+
+    // (func (param (ref null exact $point)) (result i32))
+    let mut builder = FunctionBuilder::new(&mut module.types, &[exact_point_ref], &[ValType::I32]);
+    let p = module.locals.add(exact_point_ref);
+    builder.func_body().local_get(p).struct_get(point_ty, 0);
+    let fid = builder.finish(vec![p], &mut module.funcs);
+    module.exports.add("get_x_exact", fid);
+
+    let rt = round_trip(&mut module);
+
+    // Verify the exact type survived the round-trip.
+    let func_ty_id = rt.funcs.iter().next().unwrap().ty();
+    let func_ty = rt.types.get(func_ty_id);
+    let params = func_ty.params();
+    assert_eq!(params.len(), 1);
+    match params[0] {
+        ValType::Ref(rt) => {
+            assert!(rt.nullable);
+            assert!(
+                matches!(rt.heap_type, HeapType::Exact(_)),
+                "expected HeapType::Exact, got {:?}",
+                rt.heap_type,
+            );
+        }
+        _ => panic!("expected ref type param"),
+    }
+}
+
+/// Build a struct type, use `HeapType::Exact` in ref.test and ref.cast,
+/// and verify they survive a round-trip.
+#[test]
+fn test_exact_ref_test_and_cast() {
+    let mut config = ModuleConfig::new();
+    config.generate_producers_section(false);
+    let mut module = Module::with_config(config);
+
+    // (type $base (sub (struct (field i32))))
+    let base_ty = module.types.add_composite(
+        CompositeType::Struct(StructType {
+            fields: vec![FieldType {
+                element_type: StorageType::Val(ValType::I32),
+                mutable: false,
+            }]
+            .into_boxed_slice(),
+        }),
+        false,
+        None,
+    );
+
+    let base_ref = ValType::Ref(RefType {
+        nullable: true,
+        heap_type: HeapType::Concrete(base_ty),
+    });
+
+    // ref.test with exact type
+    {
+        let mut builder = FunctionBuilder::new(&mut module.types, &[base_ref], &[ValType::I32]);
+        let arg = module.locals.add(base_ref);
+        builder
+            .func_body()
+            .local_get(arg)
+            .ref_test(false, HeapType::Exact(base_ty));
+        let fid = builder.finish(vec![arg], &mut module.funcs);
+        module.exports.add("test_exact", fid);
+    }
+
+    // ref.cast with exact type
+    {
+        let exact_base_ref = ValType::Ref(RefType {
+            nullable: false,
+            heap_type: HeapType::Exact(base_ty),
+        });
+        let mut builder = FunctionBuilder::new(&mut module.types, &[base_ref], &[exact_base_ref]);
+        let arg = module.locals.add(base_ref);
+        builder
+            .func_body()
+            .local_get(arg)
+            .ref_cast(false, HeapType::Exact(base_ty));
+        let fid = builder.finish(vec![arg], &mut module.funcs);
+        module.exports.add("cast_exact", fid);
+    }
+
+    let rt = round_trip(&mut module);
+
+    // Verify we have two exported functions.
+    assert_eq!(rt.exports.iter().count(), 2);
+}

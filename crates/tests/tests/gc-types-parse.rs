@@ -1,8 +1,7 @@
 //! Tests for parsing GC type definitions (struct, array, rec groups, sub types).
 //!
 //! These tests verify that walrus can parse wasm modules containing GC type
-//! definitions into the correct internal representation. Full round-trip tests
-//! (parse -> emit -> parse) will be added in Phase 3 when emission is implemented.
+//! definitions into the correct internal representation.
 
 use walrus::{FieldType, HeapType, Module, RefType, StorageType, ValType};
 
@@ -650,4 +649,75 @@ fn parse_tree_with_inheritance() {
     let rec_groups = module.types.rec_groups();
     assert_eq!(rec_groups.len(), 1);
     assert_eq!(rec_groups[0].types.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Exact types
+// ---------------------------------------------------------------------------
+
+/// Build a module with exact types via the builder API, emit it, and parse
+/// it back. Verify that HeapType::Exact is preserved through the round-trip.
+#[test]
+fn parse_exact_ref_in_struct_field() {
+    use walrus::{CompositeType, FieldType, ModuleConfig, StorageType, StructType};
+
+    let mut config = ModuleConfig::new();
+    config.generate_producers_section(false);
+    let mut module = walrus::Module::with_config(config);
+
+    // (type $inner (struct (field i32)))
+    let inner_ty = module.types.add_struct(vec![FieldType {
+        element_type: StorageType::Val(ValType::I32),
+        mutable: false,
+    }]);
+
+    // (type $outer (struct (field (ref exact $inner))))
+    let exact_inner_ref = ValType::Ref(RefType {
+        nullable: false,
+        heap_type: HeapType::Exact(inner_ty),
+    });
+    let outer_ty = module.types.add_composite(
+        CompositeType::Struct(StructType {
+            fields: vec![FieldType {
+                element_type: StorageType::Val(exact_inner_ref),
+                mutable: false,
+            }]
+            .into_boxed_slice(),
+        }),
+        true,
+        None,
+    );
+
+    // Suppress the unused variable warning — we used outer_ty to ensure the
+    // type was created, but TypeIds are not stable across parse cycles.
+    let _ = outer_ty;
+
+    // Emit and parse back.
+    let wasm = module.emit_wasm();
+    let parsed = Module::from_buffer(&wasm).expect("should parse module with exact types");
+
+    // Find the struct type that has a single ref field (the outer type).
+    let outer = parsed
+        .types
+        .iter()
+        .find(|ty| {
+            ty.as_struct().is_some_and(|st| {
+                st.fields.len() == 1
+                    && matches!(st.fields[0].element_type, StorageType::Val(ValType::Ref(_)))
+            })
+        })
+        .expect("should find outer struct type");
+
+    let st = outer.as_struct().unwrap();
+    match st.fields[0].element_type {
+        StorageType::Val(ValType::Ref(rt)) => {
+            assert!(!rt.nullable);
+            assert!(
+                matches!(rt.heap_type, HeapType::Exact(_)),
+                "expected HeapType::Exact, got {:?}",
+                rt.heap_type,
+            );
+        }
+        _ => panic!("expected ref type field"),
+    }
 }

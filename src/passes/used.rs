@@ -1,3 +1,4 @@
+use crate::const_expr::ConstOp;
 use crate::ir::*;
 use crate::map::IdHashSet;
 use crate::ty::HeapType;
@@ -84,6 +85,46 @@ impl Roots {
             self.elements.push(element);
         }
         self
+    }
+
+    fn push_const_expr(&mut self, expr: &ConstExpr) {
+        match expr {
+            ConstExpr::Global(g) => {
+                self.push_global(*g);
+            }
+            ConstExpr::RefFunc(f) => {
+                self.push_func(*f);
+            }
+            ConstExpr::RefNull(ref_type) => {
+                mark_ref_type_used(&mut self.used, ref_type);
+            }
+            ConstExpr::Value(_) => {}
+            ConstExpr::Extended(ops) => {
+                for op in ops {
+                    match op {
+                        ConstOp::GlobalGet(g) => {
+                            self.push_global(*g);
+                        }
+                        ConstOp::RefFunc(f) => {
+                            self.push_func(*f);
+                        }
+                        ConstOp::StructNew(ty)
+                        | ConstOp::StructNewDefault(ty)
+                        | ConstOp::ArrayNew(ty)
+                        | ConstOp::ArrayNewDefault(ty) => {
+                            self.used.types.insert(*ty);
+                        }
+                        ConstOp::ArrayNewFixed { ty, .. } => {
+                            self.used.types.insert(*ty);
+                        }
+                        ConstOp::RefNull(ref_type) => {
+                            mark_ref_type_used(&mut self.used, ref_type);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -201,18 +242,7 @@ impl Used {
                 mark_ref_type_used(&mut stack.used, &table.element_ty);
                 // Process the table's init expression for function/type refs.
                 if let Some(init) = &table.init {
-                    match init {
-                        ConstExpr::RefFunc(f) => {
-                            stack.push_func(*f);
-                        }
-                        ConstExpr::Global(g) => {
-                            stack.push_global(*g);
-                        }
-                        ConstExpr::RefNull(ref_type) => {
-                            mark_ref_type_used(&mut stack.used, ref_type);
-                        }
-                        _ => {}
-                    }
+                    stack.push_const_expr(init);
                 }
                 for elem in table.elem_segments.iter() {
                     stack.push_element(*elem);
@@ -224,41 +254,8 @@ impl Used {
                 mark_val_type_used(&mut stack.used, &global.ty);
                 match &global.kind {
                     GlobalKind::Import(_) => {}
-                    GlobalKind::Local(ConstExpr::Global(global)) => {
-                        stack.push_global(*global);
-                    }
-                    GlobalKind::Local(ConstExpr::RefFunc(func)) => {
-                        stack.push_func(*func);
-                    }
-                    GlobalKind::Local(ConstExpr::RefNull(ref_type)) => {
-                        mark_ref_type_used(&mut stack.used, ref_type);
-                    }
-                    GlobalKind::Local(ConstExpr::Value(_)) => {}
-                    GlobalKind::Local(ConstExpr::Extended(ops)) => {
-                        // Mark globals, functions, and types referenced in extended const expressions
-                        for op in ops {
-                            match op {
-                                crate::const_expr::ConstOp::GlobalGet(g) => {
-                                    stack.push_global(*g);
-                                }
-                                crate::const_expr::ConstOp::RefFunc(f) => {
-                                    stack.push_func(*f);
-                                }
-                                crate::const_expr::ConstOp::StructNew(ty)
-                                | crate::const_expr::ConstOp::StructNewDefault(ty)
-                                | crate::const_expr::ConstOp::ArrayNew(ty)
-                                | crate::const_expr::ConstOp::ArrayNewDefault(ty) => {
-                                    stack.used.types.insert(*ty);
-                                }
-                                crate::const_expr::ConstOp::ArrayNewFixed { ty, .. } => {
-                                    stack.used.types.insert(*ty);
-                                }
-                                crate::const_expr::ConstOp::RefNull(ref_type) => {
-                                    mark_ref_type_used(&mut stack.used, ref_type);
-                                }
-                                _ => {}
-                            }
-                        }
+                    GlobalKind::Local(init) => {
+                        stack.push_const_expr(init);
                     }
                 }
             }
@@ -278,9 +275,7 @@ impl Used {
                 let d = module.data.get(d);
                 if let DataKind::Active { memory, offset } = &d.kind {
                     stack.push_memory(*memory);
-                    if let ConstExpr::Global(g) = offset {
-                        stack.push_global(*g);
-                    }
+                    stack.push_const_expr(offset);
                 }
             }
 
@@ -296,24 +291,11 @@ impl Used {
                     mark_ref_type_used(&mut stack.used, ref_type);
                     // Process all items regardless of element type.
                     for item in items {
-                        match item {
-                            ConstExpr::Global(g) => {
-                                stack.push_global(*g);
-                            }
-                            ConstExpr::RefFunc(f) => {
-                                stack.push_func(*f);
-                            }
-                            ConstExpr::RefNull(ref_type) => {
-                                mark_ref_type_used(&mut stack.used, ref_type);
-                            }
-                            _ => {}
-                        }
+                        stack.push_const_expr(item);
                     }
                 }
                 if let ElementKind::Active { offset, table } = &e.kind {
-                    if let ConstExpr::Global(g) = offset {
-                        stack.push_global(*g);
-                    }
+                    stack.push_const_expr(offset);
                     stack.push_table(*table);
                 }
             }
@@ -412,10 +394,8 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
         self.stack.push_tag(tag);
     }
 
-    // HeapType/RefType fields on several instructions are marked
-    // #[walrus(skip_visit)] so HeapType::Concrete(TypeId) references are
-    // invisible to the auto-generated visitor. Override per-instruction
-    // callbacks to manually mark those types as used.
+    // RefType/ValType fields on Select and RefNull are still
+    // #[walrus(skip_visit)] so we handle them manually here.
 
     fn visit_select(&mut self, instr: &Select) {
         if let Some(ty) = &instr.ty {
@@ -426,36 +406,13 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
     fn visit_ref_null(&mut self, instr: &RefNull) {
         mark_ref_type_used(&mut self.stack.used, &instr.ty);
     }
-
-    fn visit_ref_test(&mut self, instr: &RefTest) {
-        mark_heap_type_used(&mut self.stack.used, instr.heap_type);
-    }
-
-    fn visit_ref_cast(&mut self, instr: &RefCast) {
-        mark_heap_type_used(&mut self.stack.used, instr.heap_type);
-    }
-
-    fn visit_br_on_cast(&mut self, instr: &BrOnCast) {
-        mark_heap_type_used(&mut self.stack.used, instr.from_heap_type);
-        mark_heap_type_used(&mut self.stack.used, instr.to_heap_type);
-    }
-
-    fn visit_br_on_cast_fail(&mut self, instr: &BrOnCastFail) {
-        mark_heap_type_used(&mut self.stack.used, instr.from_heap_type);
-        mark_heap_type_used(&mut self.stack.used, instr.to_heap_type);
-    }
-}
-
-/// If `heap_type` is `HeapType::Concrete(type_id)`, mark that type as used.
-fn mark_heap_type_used(used: &mut Used, heap_type: HeapType) {
-    if let HeapType::Concrete(type_id) = heap_type {
-        used.types.insert(type_id);
-    }
 }
 
 /// If the `RefType`'s heap type is concrete, mark that type as used.
 fn mark_ref_type_used(used: &mut Used, ref_type: &RefType) {
-    mark_heap_type_used(used, ref_type.heap_type);
+    if let HeapType::Concrete(type_id) | HeapType::Exact(type_id) = ref_type.heap_type {
+        used.types.insert(type_id);
+    }
 }
 
 /// If the `ValType` is a ref type with a concrete heap type, mark it as used.

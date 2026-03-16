@@ -614,7 +614,6 @@ pub enum Instr {
         #[walrus(skip_visit)]
         nullable: bool,
         /// The heap type to test against
-        #[walrus(skip_visit)]
         heap_type: HeapType,
     },
 
@@ -627,7 +626,6 @@ pub enum Instr {
         #[walrus(skip_visit)]
         nullable: bool,
         /// The heap type to cast to
-        #[walrus(skip_visit)]
         heap_type: HeapType,
     },
 
@@ -642,13 +640,11 @@ pub enum Instr {
         #[walrus(skip_visit)]
         from_nullable: bool,
         /// Input heap type
-        #[walrus(skip_visit)]
         from_heap_type: HeapType,
         /// Whether target type is nullable
         #[walrus(skip_visit)]
         to_nullable: bool,
         /// Target heap type
-        #[walrus(skip_visit)]
         to_heap_type: HeapType,
     },
 
@@ -663,13 +659,11 @@ pub enum Instr {
         #[walrus(skip_visit)]
         from_nullable: bool,
         /// Input heap type
-        #[walrus(skip_visit)]
         from_heap_type: HeapType,
         /// Whether target type is nullable
         #[walrus(skip_visit)]
         to_nullable: bool,
         /// Target heap type
-        #[walrus(skip_visit)]
         to_heap_type: HeapType,
     },
 
@@ -1810,9 +1804,7 @@ impl<'instr> Visit<'instr> for InstrSeq {
                 visitor.visit_type_id(ty);
             }
             InstrSeqType::Simple(Some(ValType::Ref(ref_type))) => {
-                if let crate::ty::HeapType::Concrete(type_id) = &ref_type.heap_type {
-                    visitor.visit_type_id(type_id);
-                }
+                visitor.visit_heap_type(&ref_type.heap_type);
             }
             InstrSeqType::Simple(_) => {}
         }
@@ -1829,9 +1821,7 @@ impl VisitMut for InstrSeq {
                 visitor.visit_type_id_mut(ty);
             }
             InstrSeqType::Simple(Some(ValType::Ref(ref_type))) => {
-                if let crate::ty::HeapType::Concrete(ref mut type_id) = &mut ref_type.heap_type {
-                    visitor.visit_type_id_mut(type_id);
-                }
+                visitor.visit_heap_type_mut(&mut ref_type.heap_type);
             }
             InstrSeqType::Simple(_) => {}
         }

@@ -424,6 +424,7 @@ impl Ord for Type {
             .cmp(&rhs.comp)
             .then_with(|| self.is_final.cmp(&rhs.is_final))
             .then_with(|| self.supertype.cmp(&rhs.supertype))
+            .then_with(|| self.is_for_function_entry.cmp(&rhs.is_for_function_entry))
     }
 }
 
@@ -617,7 +618,7 @@ impl Type {
 fn collect_val_type_refs(val_types: &[ValType], out: &mut Vec<TypeId>) {
     for vt in val_types {
         if let ValType::Ref(rt) = vt {
-            if let HeapType::Concrete(id) = rt.heap_type {
+            if let HeapType::Concrete(id) | HeapType::Exact(id) = rt.heap_type {
                 out.push(id);
             }
         }
@@ -627,7 +628,7 @@ fn collect_val_type_refs(val_types: &[ValType], out: &mut Vec<TypeId>) {
 /// Collect `TypeId` references from a storage type.
 fn collect_storage_type_refs(st: &StorageType, out: &mut Vec<TypeId>) {
     if let StorageType::Val(ValType::Ref(rt)) = st {
-        if let HeapType::Concrete(id) = rt.heap_type {
+        if let HeapType::Concrete(id) | HeapType::Exact(id) = rt.heap_type {
             out.push(id);
         }
     }
@@ -667,7 +668,13 @@ pub enum HeapType {
     /// Abstract heap type (abstract types like func, extern, any, etc.)
     Abstract(AbstractHeapType),
     /// Concrete (indexed) heap type, referencing a defined type by its id.
+    ///
+    /// `(ref $t)` — matches the type and all its subtypes.
     Concrete(TypeId),
+    /// Exact heap type, referencing a defined type by its id.
+    ///
+    /// `(ref exact $t)` — matches exactly the named type, excluding subtypes.
+    Exact(TypeId),
 }
 
 impl HeapType {
@@ -683,6 +690,7 @@ impl HeapType {
                 ty: ab_heap_type.into(),
             },
             HeapType::Concrete(id) => wasm_encoder::HeapType::Concrete(indices.get_type_index(id)),
+            HeapType::Exact(id) => wasm_encoder::HeapType::Exact(indices.get_type_index(id)),
         }
     }
 }
@@ -696,7 +704,7 @@ impl TryFrom<wasmparser::HeapType> for HeapType {
                 Ok(HeapType::Abstract(ty.try_into()?))
             }
             wasmparser::HeapType::Concrete(_) | wasmparser::HeapType::Exact(_) => {
-                bail!("concrete (indexed) heap types require IndicesToIds for resolution; use HeapType::from_wasmparser")
+                bail!("concrete/exact (indexed) heap types require IndicesToIds for resolution; use HeapType::from_wasmparser")
             }
         }
     }
@@ -717,16 +725,29 @@ impl HeapType {
             wasmparser::HeapType::Abstract { shared: _, ty } => {
                 Ok(HeapType::Abstract(ty.try_into()?))
             }
-            wasmparser::HeapType::Concrete(unpacked) | wasmparser::HeapType::Exact(unpacked) => {
-                let type_id = match unpacked {
-                    wasmparser::UnpackedIndex::Module(idx) => ids.get_type(idx),
-                    wasmparser::UnpackedIndex::RecGroup(idx) => ids.get_type(rec_group_start + idx),
-                    #[allow(unreachable_patterns)]
-                    _ => bail!("unsupported type index variant"),
-                }?;
+            wasmparser::HeapType::Concrete(unpacked) => {
+                let type_id = resolve_heap_type_index(unpacked, ids, rec_group_start)?;
                 Ok(HeapType::Concrete(type_id))
             }
+            wasmparser::HeapType::Exact(unpacked) => {
+                let type_id = resolve_heap_type_index(unpacked, ids, rec_group_start)?;
+                Ok(HeapType::Exact(type_id))
+            }
         }
+    }
+}
+
+/// Resolve a wasmparser `UnpackedIndex` to a walrus `TypeId`.
+fn resolve_heap_type_index(
+    unpacked: wasmparser::UnpackedIndex,
+    ids: &crate::parse::IndicesToIds,
+    rec_group_start: u32,
+) -> Result<TypeId> {
+    match unpacked {
+        wasmparser::UnpackedIndex::Module(idx) => ids.get_type(idx),
+        wasmparser::UnpackedIndex::RecGroup(idx) => ids.get_type(rec_group_start + idx),
+        #[allow(unreachable_patterns)]
+        _ => bail!("unsupported type index variant"),
     }
 }
 
@@ -752,6 +773,7 @@ impl fmt::Display for HeapType {
                 }
             ),
             HeapType::Concrete(id) => write!(f, "{}", id.index()),
+            HeapType::Exact(id) => write!(f, "exact {}", id.index()),
         }
     }
 }
@@ -981,6 +1003,7 @@ impl fmt::Display for RefType {
                 HeapType::Abstract(AbstractHeapType::NoFunc) => write!(f, "nullfuncref"),
                 HeapType::Abstract(AbstractHeapType::NoExn) => write!(f, "nullexnref"),
                 HeapType::Concrete(id) => write!(f, "(ref null {})", id.index()),
+                HeapType::Exact(id) => write!(f, "(ref null exact {})", id.index()),
             }
         } else {
             write!(f, "(ref {})", self.heap_type)

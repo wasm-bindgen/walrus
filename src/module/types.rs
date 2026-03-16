@@ -9,6 +9,7 @@ use crate::ty::{
     ArrayType, CompositeType, FieldType, FunctionType, RecGroup, StructType, Type, TypeId, ValType,
 };
 use anyhow::bail;
+use std::collections::HashMap;
 
 /// The set of de-duplicated types within a module.
 #[derive(Debug, Default)]
@@ -18,7 +19,12 @@ pub struct ModuleTypes {
     ///
     /// Every type belongs to exactly one rec group. Types created without an
     /// explicit rec group (e.g., via `add()`) get their own singleton group.
+    ///
+    /// Entries are never removed from this vec; groups that become empty
+    /// through deletion are left in place and skipped during emission.
     rec_groups: Vec<RecGroup>,
+    /// Maps each live `TypeId` to its index in `rec_groups`.
+    rec_group_index: HashMap<TypeId, usize>,
 }
 
 impl ModuleTypes {
@@ -69,13 +75,82 @@ impl ModuleTypes {
         self.arena.iter().map(|(_, f)| f)
     }
 
-    /// Removes a type from this module.
+    /// Removes a type from this module and from its rec group.
     ///
     /// It is up to you to ensure that any potential references to the deleted
     /// type are also removed, eg `call_indirect` expressions, function types,
-    /// etc.
+    /// other types in the same rec group, etc.
     pub fn delete(&mut self, ty: TypeId) {
         self.arena.remove(ty);
+        if let Some(&rg_idx) = self.rec_group_index.get(&ty) {
+            self.rec_group_index.remove(&ty);
+            self.rec_groups[rg_idx].types.retain(|&id| id != ty);
+        }
+    }
+
+    /// Attempt to delete a single type from its rec group.
+    ///
+    /// Returns `true` if the type was successfully deleted, or `false` if it
+    /// could not be deleted because another type in the same rec group
+    /// references it. Self-references (the type referencing itself) are
+    /// permitted and do not prevent deletion.
+    ///
+    /// It is up to the caller to ensure that no references to the deleted
+    /// type exist outside of its rec group (e.g., function signatures,
+    /// `call_indirect` instructions, etc.).
+    pub fn try_delete(&mut self, ty: TypeId) -> bool {
+        let rg_idx = match self.rec_group_index.get(&ty) {
+            Some(&idx) => idx,
+            None => {
+                // Not in any rec group; just remove from the arena.
+                self.arena.remove(ty);
+                return true;
+            }
+        };
+
+        // Check whether any other type in the rec group references this type.
+        let mut refs = Vec::new();
+        for &member_id in &self.rec_groups[rg_idx].types {
+            if member_id == ty {
+                continue;
+            }
+            refs.clear();
+            self.arena[member_id].referenced_types(&mut refs);
+            if refs.contains(&ty) {
+                return false;
+            }
+        }
+
+        // Safe to delete.
+        self.arena.remove(ty);
+        self.rec_group_index.remove(&ty);
+        self.rec_groups[rg_idx].types.retain(|&id| id != ty);
+
+        true
+    }
+
+    /// Delete a type and every other type in its rec group.
+    ///
+    /// All types belonging to the same rec group as `ty` are removed from
+    /// the arena, and the rec group itself is removed.
+    ///
+    /// It is up to the caller to ensure that no external references to the
+    /// deleted types remain (e.g., function signatures, `call_indirect`
+    /// instructions, etc.).
+    pub fn delete_entire_group(&mut self, ty: TypeId) {
+        let rg_idx = match self.rec_group_index.get(&ty) {
+            Some(&idx) => idx,
+            None => {
+                self.arena.remove(ty);
+                return;
+            }
+        };
+
+        for &member_id in &self.rec_groups[rg_idx].types {
+            self.arena.remove(member_id);
+            self.rec_group_index.remove(&member_id);
+        }
+        self.rec_groups[rg_idx].types.clear();
     }
 
     /// Add a new type to this module, and return its `Id`
@@ -89,7 +164,7 @@ impl ModuleTypes {
         // Create a singleton rec group if this is a genuinely new type
         // (not deduplicated to an existing one that already has a group).
         if id == next_id {
-            self.rec_groups.push(RecGroup {
+            self.push_rec_group(RecGroup {
                 types: vec![id],
                 is_explicit: false,
             });
@@ -231,7 +306,7 @@ impl ModuleTypes {
         let ty = Type::new_composite(next_id, comp, is_final, supertype);
         let id = self.arena.insert(ty);
         if id == next_id {
-            self.rec_groups.push(RecGroup {
+            self.push_rec_group(RecGroup {
                 types: vec![id],
                 is_explicit: false,
             });
@@ -326,7 +401,7 @@ impl ModuleTypes {
         }
 
         // Register the explicit rec group.
-        self.rec_groups.push(RecGroup {
+        self.push_rec_group(RecGroup {
             types: type_ids.clone(),
             is_explicit: true,
         });
@@ -341,7 +416,7 @@ impl ModuleTypes {
             results.to_vec().into_boxed_slice(),
         ));
         if id == next_id {
-            self.rec_groups.push(RecGroup {
+            self.push_rec_group(RecGroup {
                 types: vec![id],
                 is_explicit: false,
             });
@@ -378,14 +453,29 @@ impl ModuleTypes {
         })
     }
 
+    /// Push a new rec group, updating the type-to-group index.
+    fn push_rec_group(&mut self, rg: RecGroup) {
+        let idx = self.rec_groups.len();
+        for &ty_id in &rg.types {
+            self.rec_group_index.insert(ty_id, idx);
+        }
+        self.rec_groups.push(rg);
+    }
+
     /// Get the rec groups in this module, in definition order.
+    ///
+    /// Groups that have been emptied by type deletion are still present in
+    /// the returned slice; callers should skip groups with an empty `types`
+    /// vec if they are not relevant.
     pub fn rec_groups(&self) -> &[RecGroup] {
         &self.rec_groups
     }
 
     /// Find the rec group that contains the given type.
     pub fn rec_group_for_type(&self, id: TypeId) -> Option<&RecGroup> {
-        self.rec_groups.iter().find(|rg| rg.types.contains(&id))
+        self.rec_group_index
+            .get(&id)
+            .map(|&idx| &self.rec_groups[idx])
     }
 }
 
@@ -410,7 +500,7 @@ impl Module {
             match &*sub_types {
                 // Empty explicit rec group — valid per spec, just record it.
                 [] => {
-                    self.types.rec_groups.push(RecGroup {
+                    self.types.push_rec_group(RecGroup {
                         types: vec![],
                         is_explicit: true,
                     });
@@ -441,7 +531,7 @@ impl Module {
                         self.types
                             .arena
                             .replace_and_register(placeholder_id, real_type);
-                        self.types.rec_groups.push(RecGroup {
+                        self.types.push_rec_group(RecGroup {
                             types: vec![placeholder_id],
                             is_explicit: false,
                         });
@@ -472,7 +562,7 @@ impl Module {
                     }
 
                     let group_len = type_ids.len() as u32;
-                    self.types.rec_groups.push(RecGroup {
+                    self.types.push_rec_group(RecGroup {
                         types: type_ids,
                         is_explicit: true,
                     });
@@ -557,20 +647,23 @@ impl Emit for ModuleTypes {
         let mut any_emitted = false;
 
         for rec_group in &self.rec_groups {
-            // Skip rec groups where any member type has been deleted (e.g.,
-            // by the GC pass removing unused types).
+            // Skip empty rec groups (e.g., all members were deleted).
+            if rec_group.types.is_empty() {
+                continue;
+            }
+
+            // Skip rec groups where any member type has been deleted
+            // (defensive — the deletion methods maintain the types vec,
+            // but external code may have removed types from the arena).
             if rec_group.types.iter().any(|id| !self.arena.contains(*id)) {
                 continue;
             }
 
             // Skip rec groups that only contain entry types (internal-only).
-            // Note: `.all()` on an empty iterator returns true, so guard
-            // against empty rec groups (which are valid and must be emitted).
-            if !rec_group.types.is_empty()
-                && rec_group
-                    .types
-                    .iter()
-                    .all(|id| self.arena[*id].is_for_function_entry())
+            if rec_group
+                .types
+                .iter()
+                .all(|id| self.arena[*id].is_for_function_entry())
             {
                 continue;
             }

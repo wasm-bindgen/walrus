@@ -948,7 +948,10 @@ fn test_array_new_fixed_builder() {
 
 /// Build a struct type, use `HeapType::Exact` in a function parameter type,
 /// and verify it survives a round-trip.
+///
+/// Requires the custom-descriptors proposal (not yet enabled by default).
 #[test]
+#[ignore]
 fn test_exact_ref_in_param() {
     let mut config = ModuleConfig::new();
     config.generate_producers_section(false);
@@ -1000,7 +1003,10 @@ fn test_exact_ref_in_param() {
 
 /// Build a struct type, use `HeapType::Exact` in ref.test and ref.cast,
 /// and verify they survive a round-trip.
+///
+/// Requires the custom-descriptors proposal (not yet enabled by default).
 #[test]
+#[ignore]
 fn test_exact_ref_test_and_cast() {
     let mut config = ModuleConfig::new();
     config.generate_producers_section(false);

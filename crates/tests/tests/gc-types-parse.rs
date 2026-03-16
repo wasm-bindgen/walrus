@@ -657,7 +657,10 @@ fn parse_tree_with_inheritance() {
 
 /// Build a module with exact types via the builder API, emit it, and parse
 /// it back. Verify that HeapType::Exact is preserved through the round-trip.
+///
+/// Requires the custom-descriptors proposal (not yet enabled by default).
 #[test]
+#[ignore]
 fn parse_exact_ref_in_struct_field() {
     use walrus::{CompositeType, FieldType, ModuleConfig, StorageType, StructType};
 

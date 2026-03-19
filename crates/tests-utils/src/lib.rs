@@ -1,9 +1,12 @@
 use anyhow::{bail, Context};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Once;
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
 
@@ -22,7 +25,14 @@ fn require_wasm_interp() {
     require_tool("wasm-interp", "https://github.com/WebAssembly/wabt");
 }
 
-/// Run `wasm-interp` on the given wat file.
+/// The maximum time we allow `wasm-interp` to run before killing it.
+///
+/// Generated wasm modules can contain infinite loops; without this bound the
+/// fuzzer hangs indefinitely waiting for the child process to return, which
+/// causes libFuzzer to fire its own per-unit timeout and abort the whole run.
+const WASM_INTERP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `wasm-interp` on the given wasm file.
 pub fn wasm_interp(path: &Path) -> Result<String> {
     static CHECK: Once = Once::new();
     CHECK.call_once(require_wasm_interp);
@@ -34,17 +44,46 @@ pub fn wasm_interp(path: &Path) -> Result<String> {
     // `wasm-interp`'s `--dummy-import-func`.
     cmd.arg("--dummy-import-func");
     cmd.arg("--enable-all");
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     println!("running: {:?}", cmd);
-    let output = cmd.output().context("could notrun wasm-interp")?;
-    if !output.status.success() {
+
+    let mut child = cmd.spawn().context("could not spawn wasm-interp")?;
+
+    // Enforce a wall-clock timeout so that wasm modules containing infinite
+    // loops do not block the fuzzer indefinitely.
+    let status = child
+        .wait_timeout(WASM_INTERP_TIMEOUT)
+        .context("could not wait for wasm-interp")?;
+
+    let Some(status) = status else {
+        // Timeout elapsed — kill the child and report the timeout.
+        child
+            .kill()
+            .context("could not kill timed-out wasm-interp")?;
+        child.wait().ok(); // reap the zombie
+        bail!("wasm-interp timed out after {:?}", WASM_INTERP_TIMEOUT);
+    };
+
+    // Collect stdout/stderr now that the process has exited.
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_string(&mut stdout).ok();
+    }
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_string(&mut stderr).ok();
+    }
+
+    if !status.success() {
         bail!(
             "wasm-interp exited with status {:?}\n\nstderr = '''\n{}\n'''",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
+            status,
+            stderr
         );
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(stdout)
 }
 
 fn require_wasm_opt() {

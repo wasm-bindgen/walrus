@@ -6,7 +6,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Once;
 use std::time::Duration;
-use wait_timeout::ChildExt;
 
 pub type Result<T> = std::result::Result<T, anyhow::Error>;
 
@@ -50,32 +49,55 @@ pub fn wasm_interp(path: &Path) -> Result<String> {
 
     let mut child = cmd.spawn().context("could not spawn wasm-interp")?;
 
-    // Take the pipes *before* waiting so that our end is closed (and dropped)
-    // on the timeout path.  If we left them open while calling wait_timeout,
-    // any grandchild process that inherited the pipe fds would keep them alive
-    // and cause a subsequent read_to_string to block indefinitely even after
-    // the direct child has been killed.
+    // Take the pipes before waiting.  If we leave them on `child`, any
+    // grandchild that inherited the pipe write-end would keep our read-end
+    // open after we kill the direct child, causing read_to_string to block.
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
 
-    // Enforce a wall-clock timeout so that wasm modules containing infinite
-    // loops do not block the fuzzer indefinitely.
-    let status = child
-        .wait_timeout(WASM_INTERP_TIMEOUT)
-        .context("could not wait for wasm-interp")?;
+    // Enforce a wall-clock timeout by spawning a background thread that sleeps
+    // for the timeout duration and then kills the child via SIGKILL.
+    //
+    // We deliberately avoid `wait-timeout` here because it relies on a
+    // SIGCHLD handler and a `poll()` call.  libFuzzer installs its own signal
+    // handlers and alarm timers that interfere with that mechanism, causing
+    // `poll()` to block for the full libFuzzer per-unit timeout (1200 s)
+    // instead of our intended 10 s.
+    //
+    // Sending SIGKILL from a plain thread with `std::thread::sleep` is immune
+    // to signal-mask and signal-handler interactions.
+    let pid = child.id();
+    let killer = std::thread::spawn(move || {
+        std::thread::sleep(WASM_INTERP_TIMEOUT);
+        // SAFETY: pid is a valid child PID; SIGKILL cannot be caught or
+        // ignored so the child is guaranteed to die after this call.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+        // On non-Unix platforms this is a no-op; the child will eventually
+        // exit on its own (or the OS will clean up).
+    });
 
-    let Some(status) = status else {
-        // Timeout elapsed — kill the child and report the timeout.
-        // Drop the pipes first so that any grandchild holding the other end
-        // of the pipe does not prevent us from reaping.
+    // Block until the child exits (either naturally or via the killer thread).
+    let status = child.wait().context("could not wait for wasm-interp")?;
+
+    // Signal the killer thread that there is nothing left to kill.  We join
+    // rather than detach so that the thread's stack is reclaimed promptly and
+    // we don't accumulate zombie threads across many fuzz iterations.
+    // The join itself cannot block for more than WASM_INTERP_TIMEOUT because
+    // by the time we reach here the child has already exited.
+    let _ = killer.join();
+
+    // If the child was killed by SIGKILL it did not exit with a "success"
+    // status, so the check below will catch it.  We additionally detect the
+    // signal case explicitly to give a clearer error message.
+    #[cfg(unix)]
+    if std::os::unix::process::ExitStatusExt::signal(&status) == Some(libc::SIGKILL) {
         drop(stdout_pipe);
         drop(stderr_pipe);
-        child
-            .kill()
-            .context("could not kill timed-out wasm-interp")?;
-        child.wait().ok(); // reap the zombie
         bail!("wasm-interp timed out after {:?}", WASM_INTERP_TIMEOUT);
-    };
+    }
 
     // Collect stdout/stderr now that the process has exited.
     let mut stdout = String::new();

@@ -50,6 +50,14 @@ pub fn wasm_interp(path: &Path) -> Result<String> {
 
     let mut child = cmd.spawn().context("could not spawn wasm-interp")?;
 
+    // Take the pipes *before* waiting so that our end is closed (and dropped)
+    // on the timeout path.  If we left them open while calling wait_timeout,
+    // any grandchild process that inherited the pipe fds would keep them alive
+    // and cause a subsequent read_to_string to block indefinitely even after
+    // the direct child has been killed.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+
     // Enforce a wall-clock timeout so that wasm modules containing infinite
     // loops do not block the fuzzer indefinitely.
     let status = child
@@ -58,6 +66,10 @@ pub fn wasm_interp(path: &Path) -> Result<String> {
 
     let Some(status) = status else {
         // Timeout elapsed — kill the child and report the timeout.
+        // Drop the pipes first so that any grandchild holding the other end
+        // of the pipe does not prevent us from reaping.
+        drop(stdout_pipe);
+        drop(stderr_pipe);
         child
             .kill()
             .context("could not kill timed-out wasm-interp")?;
@@ -68,10 +80,10 @@ pub fn wasm_interp(path: &Path) -> Result<String> {
     // Collect stdout/stderr now that the process has exited.
     let mut stdout = String::new();
     let mut stderr = String::new();
-    if let Some(mut out) = child.stdout.take() {
+    if let Some(mut out) = stdout_pipe.take() {
         out.read_to_string(&mut stdout).ok();
     }
-    if let Some(mut err) = child.stderr.take() {
+    if let Some(mut err) = stderr_pipe.take() {
         err.read_to_string(&mut stderr).ok();
     }
 

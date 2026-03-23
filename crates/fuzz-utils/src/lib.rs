@@ -53,11 +53,6 @@ impl rand::RngCore for BufRng<'_> {
             *b = self.next_byte();
         }
     }
-
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> std::result::Result<(), rand::Error> {
-        self.fill_bytes(dest);
-        Ok(())
-    }
 }
 
 /// `Ok(T)` or a `Err(anyhow::Error)`
@@ -374,7 +369,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op(&mut self, stack: &mut Vec<ValType>) {
-        let arity = self.rng.gen_range(0..cmp::min(3, stack.len() + 1));
+        let arity = self.rng.random_range(0..cmp::min(3, stack.len() + 1));
         match arity {
             0 => self.op_0(stack),
             1 => self.op_1(stack.pop().unwrap(), stack),
@@ -384,9 +379,9 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op_0(&mut self, stack: &mut Vec<ValType>) {
-        match self.rng.gen_range(0..2) {
+        match self.rng.random_range(0..2) {
             0 => {
-                let value = self.rng.gen::<i32>().to_string();
+                let value = self.rng.random::<i32>().to_string();
                 self.instr_imm("i32.const", Some(value));
                 stack.push(ValType::I32);
             }
@@ -398,7 +393,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op_1(&mut self, _operand: ValType, stack: &mut Vec<ValType>) {
-        match self.rng.gen_range(0..2) {
+        match self.rng.random_range(0..2) {
             0 => {
                 self.instr("drop");
             }
@@ -411,7 +406,7 @@ impl<R: Rng> WatGen<R> {
     }
 
     fn op_2(&mut self, _a: ValType, _b: ValType, stack: &mut Vec<ValType>) {
-        match self.rng.gen_range(0..2) {
+        match self.rng.random_range(0..2) {
             0 => {
                 self.instr("i32.add");
                 stack.push(ValType::I32);
@@ -436,7 +431,7 @@ impl TestCaseGenerator for WasmOptTtf {
         let mut last_wat = None;
 
         loop {
-            let input: Vec<u8> = (0..fuel).map(|_| rng.gen()).collect();
+            let input: Vec<u8> = (0..fuel).map(|_| rng.random()).collect();
 
             let input_tmp = tempfile::NamedTempFile::new().expect("should create temp file OK");
             fs::write(input_tmp.path(), input).expect("should write to temp file OK");
@@ -535,7 +530,7 @@ mod tests {
     #[test]
     fn watgen_fuzz() {
         let mut config = Config::<WatGen<SmallRng>, SmallRng>::new(SmallRng::seed_from_u64(
-            rand::thread_rng().gen(),
+            rand::rng().random(),
         ));
         if let Some(t) = get_timeout() {
             config.timeout = t;
@@ -549,7 +544,7 @@ mod tests {
     #[test]
     fn wasm_opt_ttf_fuzz() {
         let mut config =
-            Config::<WasmOptTtf, SmallRng>::new(SmallRng::seed_from_u64(rand::thread_rng().gen()));
+            Config::<WasmOptTtf, SmallRng>::new(SmallRng::seed_from_u64(rand::rng().random()));
         if let Some(t) = get_timeout() {
             config.timeout = t;
         }

@@ -95,9 +95,11 @@ impl ModuleTypes {
     /// references it. Self-references (the type referencing itself) are
     /// permitted and do not prevent deletion.
     ///
-    /// It is up to the caller to ensure that no references to the deleted
-    /// type exist outside of its rec group (e.g., function signatures,
-    /// `call_indirect` instructions, etc.).
+    /// **This method only checks for references within the same rec group.**
+    /// It is up to the caller to ensure that no references to the deleted type
+    /// exist outside of its rec group — for example in function signatures,
+    /// `call_indirect` instructions, struct/array fields in other types, global
+    /// types, table element types, or local variable types.
     pub fn try_delete(&mut self, ty: TypeId) -> bool {
         let rg_idx = match self.rec_group_index.get(&ty) {
             Some(&idx) => idx,

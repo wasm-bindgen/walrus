@@ -674,6 +674,10 @@ pub enum HeapType {
     /// Exact heap type, referencing a defined type by its id.
     ///
     /// `(ref exact $t)` — matches exactly the named type, excluding subtypes.
+    ///
+    /// This corresponds to the custom-descriptors proposal, which is not yet
+    /// part of the standard GC proposal and is not enabled by default.
+    #[doc(hidden)]
     Exact(TypeId),
 }
 

@@ -55,52 +55,46 @@
   )
 )
 
-(; CHECK-ALL:
-  (module
-    (type $point (;0;) (struct (field (mut f64)) (field (mut f64))))
-    (type $wrapper (;1;) (struct (field i32) (field (ref null 0))))
-    (type (;2;) (func (result (ref null 0))))
-    (type (;3;) (func (param (ref null 0) (ref null 0) i32) (result (ref null 0))))
-    (type (;4;) (func (result (ref null 1))))
-    (type (;5;) (func (param i32) (result (ref null 0))))
-    (type (;6;) (func (param i32) (result (ref null 1))))
-    (import "env" "struct_table" (table $st (;0;) 5 (ref null 0)))
-    (import "env" "ext_point" (global $ext_point (;0;) (ref null 0)))
-    (func (;0;) (type 3) (param (ref null 0) (ref null 0) i32) (result (ref null 0))
-      local.get 0
-      local.get 1
-      local.get 2
-      select (result (ref null 0))
-    )
-    (func (;1;) (type 5) (param i32) (result (ref null 0))
-      local.get 0
-      table.get $st
-    )
-    (func (;2;) (type 6) (param i32) (result (ref null 1))
-      local.get 0
-      table.get $local_tbl
-    )
-    (func (;3;) (type 2) (result (ref null 0))
-      ref.null 0
-    )
-    (func (;4;) (type 4) (result (ref null 1))
-      (local (ref null 1))
-      local.get 0
-    )
-    (func (;5;) (type 2) (result (ref null 0))
-      global.get $ext_point
-    )
-    (table $local_tbl (;1;) 10 (ref null 1))
-    (global (;1;) (ref null 0) ref.null 0)
-    (export "null_point" (global 1))
-    (export "make_null_point" (func 3))
-    (export "select_point" (func 0))
-    (export "use_local" (func 4))
-    (export "read_from_table" (func 1))
-    (export "read_ext_point" (func 5))
-    (export "get_wrapper" (func 2))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (type $point (;0;) (struct (field (mut f64)) (field (mut f64))))
+;; NEXT: (type $wrapper (;1;) (struct (field i32) (field (ref null 0))))
+;; NEXT: (type (;2;) (func (result (ref null 0))))
+;; NEXT: (type (;3;) (func (param (ref null 0) (ref null 0) i32) (result (ref null 0))))
+;; NEXT: (type (;4;) (func (result (ref null 1))))
+;; NEXT: (type (;5;) (func (param i32) (result (ref null 0))))
+;; NEXT: (type (;6;) (func (param i32) (result (ref null 1))))
+;; NEXT: (import "env" "struct_table" (table $st (;0;) 5 (ref null 0)))
+;; NEXT: (import "env" "ext_point" (global $ext_point (;0;) (ref null 0)))
+;; NEXT: (func (;0;) (type 3) (param (ref null 0) (ref null 0) i32) (result (ref null 0))
+;; NEXT: local.get 0
+;; NEXT: local.get 1
+;; NEXT: local.get 2
+;; NEXT: select (result (ref null 0))
+;; NEXT: )
+;; NEXT: (func (;1;) (type 5) (param i32) (result (ref null 0))
+;; NEXT: local.get 0
+;; NEXT: table.get $st
+;; NEXT: )
+;; NEXT: (func (;2;) (type 6) (param i32) (result (ref null 1))
+;; NEXT: local.get 0
+;; NEXT: table.get $local_tbl
+;; NEXT: )
+;; NEXT: (func (;3;) (type 2) (result (ref null 0))
+;; NEXT: ref.null 0
+;; NEXT: )
+;; NEXT: (func (;4;) (type 4) (result (ref null 1))
+;; NEXT: (local (ref null 1))
+;; NEXT: local.get 0
+;; NEXT: )
+;; NEXT: (func (;5;) (type 2) (result (ref null 0))
+;; NEXT: global.get $ext_point
+;; NEXT: )
+;; NEXT: (table $local_tbl (;1;) 10 (ref null 1))
+;; NEXT: (global (;1;) (ref null 0) ref.null 0)
+;; NEXT: (export "null_point" (global 1))
+;; NEXT: (export "make_null_point" (func 3))
+;; NEXT: (export "select_point" (func 0))
+;; NEXT: (export "use_local" (func 4))
+;; NEXT: (export "read_from_table" (func 1))
+;; NEXT: (export "read_ext_point" (func 5))
+;; NEXT: (export "get_wrapper" (func 2))

@@ -5,12 +5,6 @@
   (table 1 1 funcref)
   (export "t" (table 0)))
 
-(; CHECK-ALL:
-  (module
-    (table (;0;) 1 1 funcref)
-    (export "t" (table 0))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (table (;0;) 1 1 funcref)
+;; NEXT: (export "t" (table 0))

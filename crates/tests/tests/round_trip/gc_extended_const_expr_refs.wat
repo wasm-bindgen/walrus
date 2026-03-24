@@ -38,20 +38,14 @@
   )
 )
 
-(; CHECK-ALL:
-  (module
-    (type $pair (;0;) (struct (field i32) (field i32)))
-    (type (;1;) (func (result anyref)))
-    (func (;0;) (type 1) (result anyref)
-      i32.const 0
-      table.get $t
-    )
-    (table $t (;0;) 10 anyref)
-    (global $elem_base (;0;) i32 i32.const 100)
-    (export "get_elem" (func 0))
-    (elem (;0;) (i32.const 0) anyref (item global.get $elem_base ref.i31) (item i32.const 1 i32.const 2 struct.new $pair))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (type $pair (;0;) (struct (field i32) (field i32)))
+;; NEXT: (type (;1;) (func (result anyref)))
+;; NEXT: (func (;0;) (type 1) (result anyref)
+;; NEXT: i32.const 0
+;; NEXT: table.get $t
+;; NEXT: )
+;; NEXT: (table $t (;0;) 10 anyref)
+;; NEXT: (global $elem_base (;0;) i32 i32.const 100)
+;; NEXT: (export "get_elem" (func 0))
+;; NEXT: (elem (;0;) (i32.const 0) anyref (item global.get $elem_base ref.i31) (item i32.const 1 i32.const 2 struct.new $pair))

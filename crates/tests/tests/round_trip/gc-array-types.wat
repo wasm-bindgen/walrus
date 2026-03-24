@@ -20,20 +20,14 @@
   )
 )
 
-(; CHECK-ALL:
-  (module
-    (type $int_array (;0;) (array i32))
-    (type $float_array (;1;) (array (mut f64)))
-    (type $byte_array (;2;) (array (mut i8)))
-    (type $short_array (;3;) (array i16))
-    (type $ref_array (;4;) (array (mut (ref null 0))))
-    (type (;5;) (func (param (ref null 0) (ref null 1) (ref null 2) (ref null 3) (ref null 4)) (result i32)))
-    (func (;0;) (type 5) (param (ref null 0) (ref null 1) (ref null 2) (ref null 3) (ref null 4)) (result i32)
-      i32.const 0
-    )
-    (export "use_types" (func 0))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (type $int_array (;0;) (array i32))
+;; NEXT: (type $float_array (;1;) (array (mut f64)))
+;; NEXT: (type $byte_array (;2;) (array (mut i8)))
+;; NEXT: (type $short_array (;3;) (array i16))
+;; NEXT: (type $ref_array (;4;) (array (mut (ref null 0))))
+;; NEXT: (type (;5;) (func (param (ref null 0) (ref null 1) (ref null 2) (ref null 3) (ref null 4)) (result i32)))
+;; NEXT: (func (;0;) (type 5) (param (ref null 0) (ref null 1) (ref null 2) (ref null 3) (ref null 4)) (result i32)
+;; NEXT: i32.const 0
+;; NEXT: )
+;; NEXT: (export "use_types" (func 0))

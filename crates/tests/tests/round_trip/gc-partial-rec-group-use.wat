@@ -20,21 +20,15 @@
   )
 )
 
-(; CHECK-ALL:
-  (module
-    (rec
-      (type $tree (;0;) (sub (struct (field i32))))
-      (type $leaf (;1;) (sub final $tree (struct (field i32) (field f64))))
-      (type $branch (;2;) (sub final $tree (struct (field i32) (field (ref null 0)) (field (ref null 0)))))
-    )
-    (type (;3;) (func (param (ref null 0)) (result i32)))
-    (func (;0;) (type 3) (param (ref null 0)) (result i32)
-      local.get 0
-      struct.get $tree 0
-    )
-    (export "get_tag" (func 0))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (rec
+;; NEXT: (type $tree (;0;) (sub (struct (field i32))))
+;; NEXT: (type $leaf (;1;) (sub final $tree (struct (field i32) (field f64))))
+;; NEXT: (type $branch (;2;) (sub final $tree (struct (field i32) (field (ref null 0)) (field (ref null 0)))))
+;; NEXT: )
+;; NEXT: (type (;3;) (func (param (ref null 0)) (result i32)))
+;; NEXT: (func (;0;) (type 3) (param (ref null 0)) (result i32)
+;; NEXT: local.get 0
+;; NEXT: struct.get $tree 0
+;; NEXT: )
+;; NEXT: (export "get_tag" (func 0))

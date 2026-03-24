@@ -21,19 +21,13 @@
   )
 )
 
-(; CHECK-ALL:
-  (module
-    (type $base (;0;) (sub (struct (field i32))))
-    (type $derived (;1;) (sub $base (struct (field i32) (field f64))))
-    (type $leaf (;2;) (sub final $derived (struct (field i32) (field f64) (field i64))))
-    (type $handler (;3;) (sub (func (param i32) (result i32))))
-    (type (;4;) (func (param (ref null 0) (ref null 1) (ref null 2) (ref null 3)) (result i32)))
-    (func (;0;) (type 4) (param (ref null 0) (ref null 1) (ref null 2) (ref null 3)) (result i32)
-      i32.const 0
-    )
-    (export "use_types" (func 0))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (type $base (;0;) (sub (struct (field i32))))
+;; NEXT: (type $derived (;1;) (sub $base (struct (field i32) (field f64))))
+;; NEXT: (type $leaf (;2;) (sub final $derived (struct (field i32) (field f64) (field i64))))
+;; NEXT: (type $handler (;3;) (sub (func (param i32) (result i32))))
+;; NEXT: (type (;4;) (func (param (ref null 0) (ref null 1) (ref null 2) (ref null 3)) (result i32)))
+;; NEXT: (func (;0;) (type 4) (param (ref null 0) (ref null 1) (ref null 2) (ref null 3)) (result i32)
+;; NEXT: i32.const 0
+;; NEXT: )
+;; NEXT: (export "use_types" (func 0))

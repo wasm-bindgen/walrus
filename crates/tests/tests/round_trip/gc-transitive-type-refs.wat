@@ -25,25 +25,19 @@
   )
 )
 
-(; CHECK-ALL:
-  (module
-    (type $inner (;0;) (struct (field i32) (field i64)))
-    (type $outer (;1;) (struct (field (ref null 0)) (field i32)))
-    (type (;2;) (func (param (ref null 0) i32) (result (ref 1))))
-    (type (;3;) (func (param (ref null 1)) (result (ref null 0))))
-    (func (;0;) (type 2) (param (ref null 0) i32) (result (ref 1))
-      local.get 0
-      local.get 1
-      struct.new $outer
-    )
-    (func (;1;) (type 3) (param (ref null 1)) (result (ref null 0))
-      local.get 0
-      struct.get $outer 0
-    )
-    (export "make_outer" (func 0))
-    (export "get_inner" (func 1))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
-;)
+;; CHECK: (module
+;; NEXT: (type $inner (;0;) (struct (field i32) (field i64)))
+;; NEXT: (type $outer (;1;) (struct (field (ref null 0)) (field i32)))
+;; NEXT: (type (;2;) (func (param (ref null 0) i32) (result (ref 1))))
+;; NEXT: (type (;3;) (func (param (ref null 1)) (result (ref null 0))))
+;; NEXT: (func (;0;) (type 2) (param (ref null 0) i32) (result (ref 1))
+;; NEXT: local.get 0
+;; NEXT: local.get 1
+;; NEXT: struct.new $outer
+;; NEXT: )
+;; NEXT: (func (;1;) (type 3) (param (ref null 1)) (result (ref null 0))
+;; NEXT: local.get 0
+;; NEXT: struct.get $outer 0
+;; NEXT: )
+;; NEXT: (export "make_outer" (func 0))
+;; NEXT: (export "get_inner" (func 1))

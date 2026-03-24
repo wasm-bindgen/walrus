@@ -878,6 +878,30 @@ pub enum Instr {
         elem: ElementId,
     },
 
+    /// `i64.add128` - 128-bit addition
+    ///
+    /// Pops four i64 values (lo1, hi1, lo2, hi2), computes (lo1:hi1) + (lo2:hi2)
+    /// as a 128-bit addition, and pushes the low and high 64-bit halves of the result.
+    I64Add128 {},
+
+    /// `i64.sub128` - 128-bit subtraction
+    ///
+    /// Pops four i64 values (lo1, hi1, lo2, hi2), computes (lo1:hi1) - (lo2:hi2)
+    /// as a 128-bit subtraction, and pushes the low and high 64-bit halves of the result.
+    I64Sub128 {},
+
+    /// `i64.mul_wide_s` - signed widening multiplication
+    ///
+    /// Pops two i64 values, sign-extends them to 128 bits, multiplies them,
+    /// and pushes the low and high 64-bit halves of the 128-bit result.
+    I64MulWideS {},
+
+    /// `i64.mul_wide_u` - unsigned widening multiplication
+    ///
+    /// Pops two i64 values, zero-extends them to 128 bits, multiplies them,
+    /// and pushes the low and high 64-bit halves of the 128-bit result.
+    I64MulWideU {},
+
     /// `v128.bitselect`
     V128Bitselect {},
 
@@ -1773,7 +1797,11 @@ impl Instr {
             | Instr::ArrayFill(..)
             | Instr::ArrayCopy(..)
             | Instr::ArrayInitData(..)
-            | Instr::ArrayInitElem(..) => false,
+            | Instr::ArrayInitElem(..)
+            | Instr::I64Add128(..)
+            | Instr::I64Sub128(..)
+            | Instr::I64MulWideS(..)
+            | Instr::I64MulWideU(..) => false,
         }
     }
 }

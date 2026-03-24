@@ -177,6 +177,13 @@ impl ModuleConfig {
         // This is the phase 1 exception handling proposal that uses try/catch/delegate
         // Support this as long as browsers also support it
         features.insert(WasmFeatures::LEGACY_EXCEPTIONS);
+
+        // Enable wide arithmetic proposal (i64.add128, i64.sub128, i64.mul_wide_s, i64.mul_wide_u)
+        // This is a pre-Phase 4 proposal, so only enable when unstable features are allowed.
+        if !self.only_stable_features {
+            features.insert(WasmFeatures::WIDE_ARITHMETIC);
+        }
+
         features
     }
 

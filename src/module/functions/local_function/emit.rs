@@ -1157,6 +1157,12 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                 array_type_index: self.indices.get_type_index(e.ty),
                 array_elem_index: self.indices.get_element_index(e.elem),
             },
+
+            // Wide Arithmetic Proposal
+            I64Add128(_) => Instruction::I64Add128,
+            I64Sub128(_) => Instruction::I64Sub128,
+            I64MulWideS(_) => Instruction::I64MulWideS,
+            I64MulWideU(_) => Instruction::I64MulWideU,
         });
     }
 }

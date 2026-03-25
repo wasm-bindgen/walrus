@@ -22,6 +22,10 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (result i32)))
+    (export "a" (func $a))
+    (export "b" (func $b))
+    (export "c" (func $c))
+    (export "d" (func $d))
     (func $d (;0;) (type 0) (result i32)
       i32.const 0
       i32.const 1
@@ -46,10 +50,6 @@
     (func $a (;3;) (type 0) (result i32)
       i32.const 0
     )
-    (export "a" (func $a))
-    (export "b" (func $b))
-    (export "c" (func $c))
-    (export "d" (func $d))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

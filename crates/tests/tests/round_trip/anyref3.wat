@@ -12,15 +12,15 @@
   (module
     (type (;0;) (func))
     (type (;1;) (func (param i32) (result externref)))
+    (table (;0;) 1 funcref)
+    (table (;1;) 1 externref)
+    (export "a" (func 0))
     (func (;0;) (type 1) (param i32) (result externref)
       local.get 0
       call_indirect (type 0)
       local.get 0
       table.get 1
     )
-    (table (;0;) 1 funcref)
-    (table (;1;) 1 externref)
-    (export "a" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

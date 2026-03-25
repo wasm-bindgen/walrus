@@ -10,12 +10,12 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func))
+    (export "foo" (func $foo))
     (func $foo (;0;) (type 0)
       (local i32 i32)
       local.get 0
       local.set 1
     )
-    (export "foo" (func $foo))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

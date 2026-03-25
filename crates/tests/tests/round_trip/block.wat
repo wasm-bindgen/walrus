@@ -18,6 +18,8 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (result i32)))
+    (export "foo" (func 1))
+    (export "f" (func $f))
     (func $f (;0;) (type 0) (result i32)
       i32.const 0
       drop
@@ -32,8 +34,6 @@
         i32.const 0
       end
     )
-    (export "foo" (func 1))
-    (export "f" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

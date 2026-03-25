@@ -24,6 +24,7 @@
     (type (;1;) (func (param i64 i64) (result i64 i64 i64)))
     (type (;2;) (func (param i64) (result i64)))
     (type (;3;) (func (param i64 i64) (result i64)))
+    (export "fac-ssa" (func 0))
     (func (;0;) (type 2) (param i64) (result i64)
       i64.const 1
       local.get 0
@@ -51,7 +52,6 @@
       local.get 0
       local.get 0
     )
-    (export "fac-ssa" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

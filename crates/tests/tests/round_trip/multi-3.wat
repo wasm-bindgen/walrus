@@ -15,6 +15,7 @@
   (module
     (type (;0;) (func (param i32 i64 i64) (result i64 i64)))
     (type (;1;) (func (param i64 i64) (result i64 i64)))
+    (export "multiLoop" (func 0))
     (func (;0;) (type 0) (param i32 i64 i64) (result i64 i64)
       local.get 2
       local.get 1
@@ -28,7 +29,6 @@
         i64.const 0
       end
     )
-    (export "multiLoop" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

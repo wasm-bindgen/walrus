@@ -7,12 +7,12 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (param i32) (result externref)))
+    (table (;0;) 1 externref)
+    (export "a" (func 0))
     (func (;0;) (type 0) (param i32) (result externref)
       local.get 0
       table.get 0
     )
-    (table (;0;) 1 externref)
-    (export "a" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

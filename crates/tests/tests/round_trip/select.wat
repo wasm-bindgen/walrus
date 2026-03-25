@@ -10,13 +10,13 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (param i32) (result i32)))
+    (export "do_select" (func $do_select))
     (func $do_select (;0;) (type 0) (param i32) (result i32)
       i32.const 2
       i32.const 1
       local.get 0
       select
     )
-    (export "do_select" (func $do_select))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

@@ -17,11 +17,17 @@
   )
 )
 
-;; CHECK: (module
-;; NEXT: (type $used (;0;) (struct (field i32)))
-;; NEXT: (type (;1;) (func (param i32) (result (ref 0))))
-;; NEXT: (func (;0;) (type 1) (param i32) (result (ref 0))
-;; NEXT: local.get 0
-;; NEXT: struct.new $used
-;; NEXT: )
-;; NEXT: (export "make" (func 0))
+(; CHECK-ALL:
+  (module
+    (type $used (;0;) (struct (field i32)))
+    (type (;1;) (func (param i32) (result (ref $used))))
+    (export "make" (func 0))
+    (func (;0;) (type 1) (param i32) (result (ref $used))
+      local.get 0
+      struct.new $used
+    )
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
+;)

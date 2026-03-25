@@ -9,12 +9,12 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (result i32)))
+    (export "f" (func $f))
     (func $f (;0;) (type 0) (result i32)
       loop ;; label = @1
       end
       i32.const 1
     )
-    (export "f" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

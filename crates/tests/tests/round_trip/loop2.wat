@@ -10,15 +10,15 @@
   (module
     (type (;0;) (func))
     (type (;1;) (func (param i32)))
+    (export "as-loop-last" (func 0))
     (func (;0;) (type 1) (param i32)
       loop ;; label = @1
         call $dummy
         local.get 0
-        br_if 1 (;@0;)
+        br_if 1
       end
     )
     (func $dummy (;1;) (type 0))
-    (export "as-loop-last" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

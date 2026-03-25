@@ -12,6 +12,7 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (result i32)))
+    (export "count_to_ten" (func $f))
     (func $f (;0;) (type 0) (result i32)
       (local i32)
       i32.const 9
@@ -27,7 +28,6 @@
       end
       i32.const 10
     )
-    (export "count_to_ten" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

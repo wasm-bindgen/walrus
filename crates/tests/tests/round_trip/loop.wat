@@ -8,11 +8,11 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func))
+    (export "inf_loop" (func $f))
     (func $f (;0;) (type 0)
       loop ;; label = @1
       end
     )
-    (export "inf_loop" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

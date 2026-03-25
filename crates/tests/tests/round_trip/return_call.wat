@@ -9,6 +9,7 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (result i32)))
+    (export "f" (func $f))
     (func $g (;0;) (type 0) (result i32)
       i32.const 42
       return
@@ -16,7 +17,6 @@
     (func $f (;1;) (type 0) (result i32)
       return_call $g
     )
-    (export "f" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

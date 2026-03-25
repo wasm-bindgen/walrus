@@ -19,6 +19,7 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (param i32) (result i32)))
+    (export "f" (func $f))
     (func $f (;0;) (type 0) (param i32) (result i32)
       block ;; label = @1
         block ;; label = @2
@@ -34,7 +35,6 @@
       end
       i32.const 100
     )
-    (export "f" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

@@ -9,10 +9,10 @@
   (module
     (type (;0;) (func (result i32)))
     (import "env" "f" (func (;0;) (type 0)))
+    (export "g" (func $g))
     (func $g (;1;) (type 0) (result i32)
       call 0
     )
-    (export "g" (func $g))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

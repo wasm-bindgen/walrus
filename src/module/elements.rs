@@ -171,6 +171,9 @@ impl Module {
                             ConstExpr::Value(Value::I64(_)) => {}
                             ConstExpr::Global(global)
                                 if self.globals.get(global).ty == ValType::I64 => {}
+                            // Extended const expressions are already validated
+                            // by wasmparser to produce the correct type.
+                            ConstExpr::Extended(_) => {}
                             _ => bail!(
                                 "element {} is active for 64-bit table but has non-i64 offset",
                                 i
@@ -181,6 +184,9 @@ impl Module {
                             ConstExpr::Value(Value::I32(_)) => {}
                             ConstExpr::Global(global)
                                 if self.globals.get(global).ty == ValType::I32 => {}
+                            // Extended const expressions are already validated
+                            // by wasmparser to produce the correct type.
+                            ConstExpr::Extended(_) => {}
                             _ => bail!(
                                 "element {} is active for 32-bit table but has non-i32 offset",
                                 i

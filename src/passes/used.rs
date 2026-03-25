@@ -254,8 +254,8 @@ impl Used {
                 mark_val_type_used(&mut stack.used, &global.ty);
                 match &global.kind {
                     GlobalKind::Import(_) => {}
-                    GlobalKind::Local(init) => {
-                        stack.push_const_expr(init);
+                    GlobalKind::Local(expr) => {
+                        stack.push_const_expr(expr);
                     }
                 }
             }

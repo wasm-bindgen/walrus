@@ -11,10 +11,10 @@
 
 (; CHECK-ALL:
   (module
-    (type (;0;) (func (result i32)))
-    (type (;1;) (func (param i32) (result i32)))
-    (import "env" "blackbox" (func $blackbox (;0;) (type 1)))
-    (func (;1;) (type 0) (result i32)
+    (type (;0;) (func (param i32) (result i32)))
+    (type (;1;) (func (result i32)))
+    (import "env" "blackbox" (func $blackbox (;0;) (type 0)))
+    (func (;1;) (type 1) (result i32)
       i32.const 1
       call $blackbox
       i32.const 2
@@ -25,4 +25,8 @@
       i32.add
     )
     (export "$f" (func 1))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

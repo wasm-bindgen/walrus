@@ -298,8 +298,27 @@ impl DotNode for Table {
 impl DotNode for Type {
     fn fields(&self, fields: &mut impl FieldAggregator) {
         fields.add_field(&[&format!("<b>Type {:?}</b>", self.id())]);
-        fields.add_field(&["params", &format!("{:?}", self.params())]);
-        fields.add_field(&["results", &format!("{:?}", self.results())]);
+        match self.kind() {
+            crate::CompositeType::Function(_) => {
+                fields.add_field(&["kind", "function"]);
+                fields.add_field(&["params", &format!("{:?}", self.params())]);
+                fields.add_field(&["results", &format!("{:?}", self.results())]);
+            }
+            crate::CompositeType::Struct(s) => {
+                fields.add_field(&["kind", "struct"]);
+                fields.add_field(&["fields", &format!("{:?}", s.fields)]);
+            }
+            crate::CompositeType::Array(a) => {
+                fields.add_field(&["kind", "array"]);
+                fields.add_field(&["element", &format!("{:?}", a.field)]);
+            }
+        }
+        if !self.is_final {
+            fields.add_field(&["final", "false"]);
+        }
+        if let Some(sup) = self.supertype {
+            fields.add_field(&["supertype", &format!("{:?}", sup)]);
+        }
     }
 
     fn edges(&self, _edges: &mut impl EdgeAggregator) {}

@@ -15,4 +15,8 @@
       i32.add
     )
     (export "inc" (func $inc))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

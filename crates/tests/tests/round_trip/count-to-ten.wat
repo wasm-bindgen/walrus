@@ -28,4 +28,8 @@
       i32.const 10
     )
     (export "count_to_ten" (func $f))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

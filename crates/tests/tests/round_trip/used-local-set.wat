@@ -16,4 +16,8 @@
     )
     (global (;0;) i32 i32.const 0)
     (export "foo" (func $foo))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

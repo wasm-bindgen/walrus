@@ -12,4 +12,8 @@
       drop
     )
     (export "f" (func $f))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

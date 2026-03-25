@@ -7,4 +7,8 @@
   (module
     (import "" "" (table (;0;) 1 funcref))
     (export "b" (table 0))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

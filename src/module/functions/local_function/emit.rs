@@ -781,7 +781,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             }
 
             Select(e) => match e.ty {
-                Some(ty) => Instruction::TypedSelect(ty.to_wasmencoder_type()),
+                Some(ty) => Instruction::TypedSelect(ty.to_wasmencoder_type(self.indices)),
                 None => Instruction::Select,
             },
 
@@ -965,7 +965,9 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             TableGrow(e) => Instruction::TableGrow(self.indices.get_table_index(e.table)),
             TableSize(e) => Instruction::TableSize(self.indices.get_table_index(e.table)),
             TableFill(e) => Instruction::TableFill(self.indices.get_table_index(e.table)),
-            RefNull(e) => Instruction::RefNull(e.ty.heap_type.to_wasmencoder_heap_type()),
+            RefNull(e) => {
+                Instruction::RefNull(e.ty.heap_type.to_wasmencoder_heap_type(self.indices))
+            }
             RefIsNull(_) => Instruction::RefIsNull,
             RefFunc(e) => Instruction::RefFunc(self.indices.get_func_index(e.func)),
             RefAsNonNull(_) => Instruction::RefAsNonNull,
@@ -1057,7 +1059,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             I31GetS(_) => Instruction::I31GetS,
             I31GetU(_) => Instruction::I31GetU,
             RefTest(e) => {
-                let heap_type = e.heap_type.to_wasmencoder_heap_type();
+                let heap_type = e.heap_type.to_wasmencoder_heap_type(self.indices);
                 if e.nullable {
                     Instruction::RefTestNullable(heap_type)
                 } else {
@@ -1065,7 +1067,7 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                 }
             }
             RefCast(e) => {
-                let heap_type = e.heap_type.to_wasmencoder_heap_type();
+                let heap_type = e.heap_type.to_wasmencoder_heap_type(self.indices);
                 if e.nullable {
                     Instruction::RefCastNullable(heap_type)
                 } else {
@@ -1078,11 +1080,11 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     relative_depth,
                     from_ref_type: wasm_encoder::RefType {
                         nullable: e.from_nullable,
-                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                     to_ref_type: wasm_encoder::RefType {
                         nullable: e.to_nullable,
-                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                 }
             }
@@ -1092,16 +1094,69 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                     relative_depth,
                     from_ref_type: wasm_encoder::RefType {
                         nullable: e.from_nullable,
-                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.from_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                     to_ref_type: wasm_encoder::RefType {
                         nullable: e.to_nullable,
-                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(),
+                        heap_type: e.to_heap_type.to_wasmencoder_heap_type(self.indices),
                     },
                 }
             }
             AnyConvertExtern(_) => Instruction::AnyConvertExtern,
             ExternConvertAny(_) => Instruction::ExternConvertAny,
+
+            // GC struct/array instructions
+            RefEq(_) => Instruction::RefEq,
+            StructNew(e) => Instruction::StructNew(self.indices.get_type_index(e.ty)),
+            StructNewDefault(e) => Instruction::StructNewDefault(self.indices.get_type_index(e.ty)),
+            StructGet(e) => Instruction::StructGet {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            StructGetS(e) => Instruction::StructGetS {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            StructGetU(e) => Instruction::StructGetU {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            StructSet(e) => Instruction::StructSet {
+                struct_type_index: self.indices.get_type_index(e.ty),
+                field_index: e.field,
+            },
+            ArrayNew(e) => Instruction::ArrayNew(self.indices.get_type_index(e.ty)),
+            ArrayNewDefault(e) => Instruction::ArrayNewDefault(self.indices.get_type_index(e.ty)),
+            ArrayNewFixed(e) => Instruction::ArrayNewFixed {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_size: e.len,
+            },
+            ArrayNewData(e) => Instruction::ArrayNewData {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_data_index: self.indices.get_data_index(e.data),
+            },
+            ArrayNewElem(e) => Instruction::ArrayNewElem {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_elem_index: self.indices.get_element_index(e.elem),
+            },
+            ArrayGet(e) => Instruction::ArrayGet(self.indices.get_type_index(e.ty)),
+            ArrayGetS(e) => Instruction::ArrayGetS(self.indices.get_type_index(e.ty)),
+            ArrayGetU(e) => Instruction::ArrayGetU(self.indices.get_type_index(e.ty)),
+            ArraySet(e) => Instruction::ArraySet(self.indices.get_type_index(e.ty)),
+            ArrayLen(_) => Instruction::ArrayLen,
+            ArrayFill(e) => Instruction::ArrayFill(self.indices.get_type_index(e.ty)),
+            ArrayCopy(e) => Instruction::ArrayCopy {
+                array_type_index_dst: self.indices.get_type_index(e.dst_ty),
+                array_type_index_src: self.indices.get_type_index(e.src_ty),
+            },
+            ArrayInitData(e) => Instruction::ArrayInitData {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_data_index: self.indices.get_data_index(e.data),
+            },
+            ArrayInitElem(e) => Instruction::ArrayInitElem {
+                array_type_index: self.indices.get_type_index(e.ty),
+                array_elem_index: self.indices.get_element_index(e.elem),
+            },
         });
     }
 }
@@ -1117,7 +1172,7 @@ impl Emit<'_, '_> {
         match ty {
             InstrSeqType::Simple(None) => wasm_encoder::BlockType::Empty,
             InstrSeqType::Simple(Some(ty)) => {
-                wasm_encoder::BlockType::Result(ty.to_wasmencoder_type())
+                wasm_encoder::BlockType::Result(ty.to_wasmencoder_type(self.indices))
             }
             InstrSeqType::MultiValue(ty) => {
                 wasm_encoder::BlockType::FunctionType(self.indices.get_type_index(ty))

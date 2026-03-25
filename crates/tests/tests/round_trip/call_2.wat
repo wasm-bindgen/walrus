@@ -17,4 +17,8 @@
       call 0
     )
     (export "g" (func $g))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

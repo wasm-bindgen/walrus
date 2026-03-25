@@ -34,8 +34,4 @@
     (func (;0;) (type 4) (param (ref null $tree) (ref null $list) (ref null $self_ref) (ref null $simple)) (result i32)
       i32.const 0
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

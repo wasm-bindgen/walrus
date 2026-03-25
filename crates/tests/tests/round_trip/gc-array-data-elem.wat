@@ -88,8 +88,4 @@
       i32.const 42
     )
     (data $bytes (;0;) "\01\02\03\04\05\06\07\08")
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

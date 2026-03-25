@@ -11,8 +11,4 @@
     (func $f (;0;) (type 0) (result i32)
       i32.const 42
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

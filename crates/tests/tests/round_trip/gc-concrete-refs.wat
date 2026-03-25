@@ -99,8 +99,4 @@
     (func (;5;) (type 2) (result (ref null $point))
       global.get $ext_point
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

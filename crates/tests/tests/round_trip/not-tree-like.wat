@@ -25,8 +25,4 @@
       call $blackbox
       i32.add
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

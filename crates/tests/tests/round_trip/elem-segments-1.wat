@@ -12,8 +12,4 @@
     (export "foo" (table 0))
     (elem (;0;) (i32.const 1) func 0)
     (func (;0;) (type 0))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

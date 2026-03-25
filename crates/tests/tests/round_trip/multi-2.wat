@@ -16,8 +16,4 @@
         return
       end
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

@@ -65,8 +65,4 @@
       i32.add
       drop
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

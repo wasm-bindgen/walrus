@@ -13,8 +13,4 @@
     (func $g (;1;) (type 0) (result i32)
       call 0
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

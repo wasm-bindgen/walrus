@@ -14,8 +14,4 @@
         br 0 (;@1;)
       end
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

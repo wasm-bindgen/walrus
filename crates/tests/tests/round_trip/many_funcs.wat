@@ -50,8 +50,4 @@
     (func $a (;3;) (type 0) (result i32)
       i32.const 0
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

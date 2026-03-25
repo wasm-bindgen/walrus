@@ -17,8 +17,4 @@
       local.get 0
       select
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

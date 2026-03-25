@@ -51,8 +51,4 @@
       i32.const 2
       throw $e-i32-i32
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

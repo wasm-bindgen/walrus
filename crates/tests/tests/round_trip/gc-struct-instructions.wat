@@ -128,8 +128,4 @@
     (func (;9;) (type 3) (result (ref $point))
       struct.new_default $point
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

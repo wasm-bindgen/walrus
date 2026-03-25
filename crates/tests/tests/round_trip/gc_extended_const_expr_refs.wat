@@ -50,8 +50,4 @@
       i32.const 0
       table.get $t
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

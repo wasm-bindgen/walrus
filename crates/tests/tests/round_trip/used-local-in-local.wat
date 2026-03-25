@@ -16,8 +16,4 @@
       local.get 0
       local.set 1
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

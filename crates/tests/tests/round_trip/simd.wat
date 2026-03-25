@@ -1230,8 +1230,4 @@
     (func $v128.const (;124;) (type 0) (result v128)
       v128.const i32x4 0x00000001 0x00000002 0x00000003 0x00000004
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

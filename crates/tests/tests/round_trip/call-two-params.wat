@@ -20,8 +20,4 @@
       f32.const 0x1.5p+5 (;=42;)
       call $print_i32_f32
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

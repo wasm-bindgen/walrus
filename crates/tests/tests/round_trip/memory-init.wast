@@ -11,8 +11,4 @@
     (memory (;0;) 1)
     (export "x" (memory 0))
     (data (;0;) (global.get 0) "")
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

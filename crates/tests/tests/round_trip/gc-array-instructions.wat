@@ -173,8 +173,4 @@
       local.get 0
       array.len
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

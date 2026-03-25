@@ -255,7 +255,7 @@ impl Used {
                 match &global.kind {
                     GlobalKind::Import(_) => {}
                     GlobalKind::Local(expr) => {
-                        push_const_expr_refs(&mut stack, expr);
+                        stack.push_const_expr(expr);
                     }
                 }
             }
@@ -275,7 +275,7 @@ impl Used {
                 let d = module.data.get(d);
                 if let DataKind::Active { memory, offset } = &d.kind {
                     stack.push_memory(*memory);
-                    push_const_expr_refs(&mut stack, offset);
+                    stack.push_const_expr(offset);
                 }
             }
 
@@ -419,31 +419,5 @@ fn mark_ref_type_used(used: &mut Used, ref_type: &RefType) {
 fn mark_val_type_used(used: &mut Used, val_type: &crate::ValType) {
     if let crate::ValType::Ref(ref_type) = val_type {
         mark_ref_type_used(used, ref_type);
-    }
-}
-
-/// Push all globals and functions referenced by a `ConstExpr` onto the root set.
-fn push_const_expr_refs(stack: &mut Roots, expr: &ConstExpr) {
-    match expr {
-        ConstExpr::Global(g) => {
-            stack.push_global(*g);
-        }
-        ConstExpr::RefFunc(f) => {
-            stack.push_func(*f);
-        }
-        ConstExpr::Extended(ops) => {
-            for op in ops {
-                match op {
-                    crate::const_expr::ConstOp::GlobalGet(g) => {
-                        stack.push_global(*g);
-                    }
-                    crate::const_expr::ConstOp::RefFunc(f) => {
-                        stack.push_func(*f);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        ConstExpr::Value(_) | ConstExpr::RefNull(_) => {}
     }
 }

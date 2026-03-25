@@ -293,6 +293,8 @@ impl Used {
                     for item in items {
                         stack.push_const_expr(item);
                     }
+                }
+                if let ElementKind::Active { offset, table } = &e.kind {
                     stack.push_const_expr(offset);
                     stack.push_table(*table);
                 }

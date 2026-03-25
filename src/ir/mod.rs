@@ -880,14 +880,16 @@ pub enum Instr {
 
     /// `i64.add128` - 128-bit addition
     ///
-    /// Pops four i64 values (lo1, hi1, lo2, hi2), computes (lo1:hi1) + (lo2:hi2)
-    /// as a 128-bit addition, and pushes the low and high 64-bit halves of the result.
+    /// Pops four i64 values (lhs_lo, lhs_hi, rhs_lo, rhs_hi), computes
+    /// (lhs_lo:lhs_hi) + (rhs_lo:rhs_hi) as a 128-bit addition, and pushes
+    /// the result as (result_lo, result_hi).
     I64Add128 {},
 
     /// `i64.sub128` - 128-bit subtraction
     ///
-    /// Pops four i64 values (lo1, hi1, lo2, hi2), computes (lo1:hi1) - (lo2:hi2)
-    /// as a 128-bit subtraction, and pushes the low and high 64-bit halves of the result.
+    /// Pops four i64 values (lhs_lo, lhs_hi, rhs_lo, rhs_hi), computes
+    /// (lhs_lo:lhs_hi) - (rhs_lo:rhs_hi) as a 128-bit subtraction, and pushes
+    /// the result as (result_lo, result_hi).
     I64Sub128 {},
 
     /// `i64.mul_wide_s` - signed widening multiplication

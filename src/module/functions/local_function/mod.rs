@@ -1287,6 +1287,20 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.alloc_instr(ArrayInitElem { ty, elem }, loc);
         }
 
+        // Wide Arithmetic Proposal
+        Operator::I64Add128 => {
+            ctx.alloc_instr(I64Add128 {}, loc);
+        }
+        Operator::I64Sub128 => {
+            ctx.alloc_instr(I64Sub128 {}, loc);
+        }
+        Operator::I64MulWideS => {
+            ctx.alloc_instr(I64MulWideS {}, loc);
+        }
+        Operator::I64MulWideU => {
+            ctx.alloc_instr(I64MulWideU {}, loc);
+        }
+
         Operator::I8x16Swizzle => {
             ctx.alloc_instr(I8x16Swizzle {}, loc);
         }
@@ -1921,10 +1935,6 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             cont_type_index: _,
             tag_index: _,
         }
-        | Operator::I64Add128
-        | Operator::I64Sub128
-        | Operator::I64MulWideS
-        | Operator::I64MulWideU
         | _ => {
             unimplemented!("unsupported operator: {:?}", inst)
         }

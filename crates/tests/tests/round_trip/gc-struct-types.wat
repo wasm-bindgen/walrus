@@ -17,13 +17,19 @@
   )
 )
 
-;; CHECK: (module
-;; NEXT: (type $point (;0;) (struct (field f64) (field f64)))
-;; NEXT: (type $mutable_pair (;1;) (struct (field (mut i32)) (field (mut i64))))
-;; NEXT: (type $packed (;2;) (struct (field i8) (field i16) (field i32)))
-;; NEXT: (type $with_ref (;3;) (struct (field (ref null 0)) (field i32)))
-;; NEXT: (type (;4;) (func (param (ref null 0) (ref null 1) (ref null 2) (ref null 3)) (result i32)))
-;; NEXT: (func (;0;) (type 4) (param (ref null 0) (ref null 1) (ref null 2) (ref null 3)) (result i32)
-;; NEXT: i32.const 0
-;; NEXT: )
-;; NEXT: (export "use_types" (func 0))
+(; CHECK-ALL:
+  (module
+    (type $point (;0;) (struct (field f64) (field f64)))
+    (type $mutable_pair (;1;) (struct (field (mut i32)) (field (mut i64))))
+    (type $packed (;2;) (struct (field i8) (field i16) (field i32)))
+    (type $with_ref (;3;) (struct (field (ref null $point)) (field i32)))
+    (type (;4;) (func (param (ref null $point) (ref null $mutable_pair) (ref null $packed) (ref null $with_ref)) (result i32)))
+    (export "use_types" (func 0))
+    (func (;0;) (type 4) (param (ref null $point) (ref null $mutable_pair) (ref null $packed) (ref null $with_ref)) (result i32)
+      i32.const 0
+    )
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
+;)

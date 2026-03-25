@@ -18,11 +18,17 @@
 
   (export "f" (func $f)))
 
-;; CHECK: (module
-;; NEXT: (type (;0;) (func (result i32)))
-;; NEXT: (func $f (;0;) (type 0) (result i32)
-;; NEXT: global.get $globalA
-;; NEXT: )
-;; NEXT: (global $globalB (;0;) i32 i32.const 42)
-;; NEXT: (global $globalA (;1;) i32 global.get $globalB)
-;; NEXT: (export "f" (func $f))
+(; CHECK-ALL:
+  (module
+    (type (;0;) (func (result i32)))
+    (global $globalB (;0;) i32 i32.const 42)
+    (global $globalA (;1;) i32 global.get $globalB)
+    (export "f" (func $f))
+    (func $f (;0;) (type 0) (result i32)
+      global.get $globalA
+    )
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
+;)

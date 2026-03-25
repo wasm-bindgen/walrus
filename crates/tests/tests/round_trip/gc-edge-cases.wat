@@ -93,73 +93,79 @@
   )
 )
 
-;; CHECK: (module
-;; NEXT: (type $empty (;0;) (struct))
-;; NEXT: (type $a (;1;) (sub (struct (field i32))))
-;; NEXT: (type $b (;2;) (sub $a (struct (field i32) (field i64))))
-;; NEXT: (type $c (;3;) (sub $b (struct (field i32) (field i64) (field f32))))
-;; NEXT: (type $d (;4;) (sub final $c (struct (field i32) (field i64) (field f32) (field f64))))
-;; NEXT: (rec
-;; NEXT: (type $node1 (;5;) (struct (field (ref null 6)) (field (ref null 8))))
-;; NEXT: (type $node2 (;6;) (struct (field (ref null 7)) (field (ref null 5))))
-;; NEXT: (type $node3 (;7;) (struct (field (ref null 8)) (field (ref null 6))))
-;; NEXT: (type $node4 (;8;) (struct (field (ref null 5)) (field (ref null 7))))
-;; NEXT: )
-;; NEXT: (type $kitchen_sink (;9;) (struct (field (mut i8)) (field (mut i16)) (field (mut i32)) (field (mut i64)) (field (mut f32)) (field (mut f64)) (field (mut funcref)) (field (mut externref)) (field (mut anyref))))
-;; NEXT: (type $node_array (;10;) (array (mut (ref null 5))))
-;; NEXT: (type (;11;) (func (result (ref 0))))
-;; NEXT: (type (;12;) (func (param i32 i64 f32 f64) (result (ref 4))))
-;; NEXT: (type (;13;) (func (param (ref null 1)) (result i32)))
-;; NEXT: (type (;14;) (func (param (ref null 6) (ref null 8)) (result (ref 5))))
-;; NEXT: (type (;15;) (func (param i32) (result (ref 10))))
-;; NEXT: (type (;16;) (func (result i32)))
-;; NEXT: (type (;17;) (func (param i32 i32) (result i32)))
-;; NEXT: (func (;0;) (type 16) (result i32)
-;; NEXT: i32.const 42
-;; NEXT: i32.const 1000
-;; NEXT: i32.const 0
-;; NEXT: i64.const 0
-;; NEXT: f32.const 0x0p+0 (;=0;)
-;; NEXT: f64.const 0x0p+0 (;=0;)
-;; NEXT: ref.null func
-;; NEXT: ref.null extern
-;; NEXT: ref.null any
-;; NEXT: struct.new $kitchen_sink
-;; NEXT: struct.get_u $kitchen_sink 0
-;; NEXT: )
-;; NEXT: (func (;1;) (type 12) (param i32 i64 f32 f64) (result (ref 4))
-;; NEXT: local.get 0
-;; NEXT: local.get 1
-;; NEXT: local.get 2
-;; NEXT: local.get 3
-;; NEXT: struct.new $d
-;; NEXT: )
-;; NEXT: (func (;2;) (type 14) (param (ref null 6) (ref null 8)) (result (ref 5))
-;; NEXT: local.get 0
-;; NEXT: local.get 1
-;; NEXT: struct.new $node1
-;; NEXT: )
-;; NEXT: (func (;3;) (type 15) (param i32) (result (ref 10))
-;; NEXT: ref.null 5
-;; NEXT: local.get 0
-;; NEXT: array.new $node_array
-;; NEXT: )
-;; NEXT: (func (;4;) (type 17) (param i32 i32) (result i32)
-;; NEXT: local.get 0
-;; NEXT: local.get 1
-;; NEXT: i32.add
-;; NEXT: )
-;; NEXT: (func (;5;) (type 13) (param (ref null 1)) (result i32)
-;; NEXT: local.get 0
-;; NEXT: struct.get $a 0
-;; NEXT: )
-;; NEXT: (func (;6;) (type 11) (result (ref 0))
-;; NEXT: struct.new $empty
-;; NEXT: )
-;; NEXT: (export "make_empty" (func 6))
-;; NEXT: (export "make_d" (func 1))
-;; NEXT: (export "get_a_field" (func 5))
-;; NEXT: (export "make_node1" (func 2))
-;; NEXT: (export "make_node_array" (func 3))
-;; NEXT: (export "kitchen_sink_packed" (func 0))
-;; NEXT: (export "regular_func" (func 4))
+(; CHECK-ALL:
+  (module
+    (type $empty (;0;) (struct))
+    (type $a (;1;) (sub (struct (field i32))))
+    (type $b (;2;) (sub $a (struct (field i32) (field i64))))
+    (type $c (;3;) (sub $b (struct (field i32) (field i64) (field f32))))
+    (type $d (;4;) (sub final $c (struct (field i32) (field i64) (field f32) (field f64))))
+    (rec
+      (type $node1 (;5;) (struct (field (ref null $node2)) (field (ref null $node4))))
+      (type $node2 (;6;) (struct (field (ref null $node3)) (field (ref null $node1))))
+      (type $node3 (;7;) (struct (field (ref null $node4)) (field (ref null $node2))))
+      (type $node4 (;8;) (struct (field (ref null $node1)) (field (ref null $node3))))
+    )
+    (type $kitchen_sink (;9;) (struct (field (mut i8)) (field (mut i16)) (field (mut i32)) (field (mut i64)) (field (mut f32)) (field (mut f64)) (field (mut funcref)) (field (mut externref)) (field (mut anyref))))
+    (type $node_array (;10;) (array (mut (ref null $node1))))
+    (type (;11;) (func (result (ref $empty))))
+    (type (;12;) (func (param i32 i64 f32 f64) (result (ref $d))))
+    (type (;13;) (func (param (ref null $a)) (result i32)))
+    (type (;14;) (func (param (ref null $node2) (ref null $node4)) (result (ref $node1))))
+    (type (;15;) (func (param i32) (result (ref $node_array))))
+    (type (;16;) (func (result i32)))
+    (type (;17;) (func (param i32 i32) (result i32)))
+    (export "make_empty" (func 6))
+    (export "make_d" (func 1))
+    (export "get_a_field" (func 5))
+    (export "make_node1" (func 2))
+    (export "make_node_array" (func 3))
+    (export "kitchen_sink_packed" (func 0))
+    (export "regular_func" (func 4))
+    (func (;0;) (type 16) (result i32)
+      i32.const 42
+      i32.const 1000
+      i32.const 0
+      i64.const 0
+      f32.const 0x0p+0 (;=0;)
+      f64.const 0x0p+0 (;=0;)
+      ref.null func
+      ref.null extern
+      ref.null any
+      struct.new $kitchen_sink
+      struct.get_u $kitchen_sink 0
+    )
+    (func (;1;) (type 12) (param i32 i64 f32 f64) (result (ref $d))
+      local.get 0
+      local.get 1
+      local.get 2
+      local.get 3
+      struct.new $d
+    )
+    (func (;2;) (type 14) (param (ref null $node2) (ref null $node4)) (result (ref $node1))
+      local.get 0
+      local.get 1
+      struct.new $node1
+    )
+    (func (;3;) (type 15) (param i32) (result (ref $node_array))
+      ref.null $node1
+      local.get 0
+      array.new $node_array
+    )
+    (func (;4;) (type 17) (param i32 i32) (result i32)
+      local.get 0
+      local.get 1
+      i32.add
+    )
+    (func (;5;) (type 13) (param (ref null $a)) (result i32)
+      local.get 0
+      struct.get $a 0
+    )
+    (func (;6;) (type 11) (result (ref $empty))
+      struct.new $empty
+    )
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
+;)

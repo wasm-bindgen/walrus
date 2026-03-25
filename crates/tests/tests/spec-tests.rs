@@ -35,7 +35,7 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
         Some("relaxed-simd") => &[],
         Some("tail-call") => &[],
         Some("threads") => return Ok(()),
-        Some("wide-arithmetic") => return Ok(()),
+        Some("wide-arithmetic") => &[],
         Some(other) => bail!("unknown wasm proposal: {}", other),
     };
 

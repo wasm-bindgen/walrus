@@ -7,11 +7,11 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (result i32)))
+    (memory (;0;) 0)
+    (export "get" (func 0))
     (func (;0;) (type 0) (result i32)
       memory.size
     )
-    (memory (;0;) 0)
-    (export "get" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

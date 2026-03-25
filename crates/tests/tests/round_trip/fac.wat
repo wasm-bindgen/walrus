@@ -31,6 +31,7 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func (param i32) (result i32)))
+    (export "fac" (func $fac))
     (func $fac (;0;) (type 0) (param i32) (result i32)
       (local i32)
       block ;; label = @1
@@ -52,7 +53,6 @@
       end
       local.get 1
     )
-    (export "fac" (func $fac))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

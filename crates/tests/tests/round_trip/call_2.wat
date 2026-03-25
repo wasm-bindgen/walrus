@@ -12,11 +12,11 @@
   (module
     (type (;0;) (func (param i32) (result i32)))
     (import "env" "f" (func (;0;) (type 0)))
+    (export "g" (func $g))
     (func $g (;1;) (type 0) (param i32) (result i32)
       local.get 0
       call 0
     )
-    (export "g" (func $g))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

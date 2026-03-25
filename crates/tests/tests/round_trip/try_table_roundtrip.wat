@@ -24,6 +24,8 @@
     (type (;0;) (func (param i32 i32)))
     (type (;1;) (func))
     (type (;2;) (func (result i32 i32)))
+    (tag $e-i32-i32 (;0;) (type 0) (param i32 i32))
+    (export "test-throw-1-2" (func 0))
     (func (;0;) (type 1)
       block (type 2) (result i32 i32) ;; label = @1
         try_table (catch $e-i32-i32 0 (;@1;)) ;; label = @2
@@ -49,8 +51,6 @@
       i32.const 2
       throw $e-i32-i32
     )
-    (tag $e-i32-i32 (;0;) (type 0) (param i32 i32))
-    (export "test-throw-1-2" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

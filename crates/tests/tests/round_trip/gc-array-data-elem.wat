@@ -46,44 +46,50 @@
   )
 )
 
-;; CHECK: (module
-;; NEXT: (type $byte_array (;0;) (array (mut i8)))
-;; NEXT: (type $funcref_array (;1;) (array (mut funcref)))
-;; NEXT: (type (;2;) (func (result i32)))
-;; NEXT: (type (;3;) (func (result (ref 0))))
-;; NEXT: (type (;4;) (func (result (ref 1))))
-;; NEXT: (type (;5;) (func (param (ref null 0))))
-;; NEXT: (type (;6;) (func (param (ref null 1))))
-;; NEXT: (func (;0;) (type 5) (param (ref null 0))
-;; NEXT: local.get 0
-;; NEXT: i32.const 0
-;; NEXT: i32.const 2
-;; NEXT: i32.const 4
-;; NEXT: array.init_data $byte_array $bytes
-;; NEXT: )
-;; NEXT: (func (;1;) (type 6) (param (ref null 1))
-;; NEXT: local.get 0
-;; NEXT: i32.const 0
-;; NEXT: i32.const 0
-;; NEXT: i32.const 1
-;; NEXT: array.init_elem $funcref_array $funcs
-;; NEXT: )
-;; NEXT: (func (;2;) (type 3) (result (ref 0))
-;; NEXT: i32.const 0
-;; NEXT: i32.const 4
-;; NEXT: array.new_data $byte_array $bytes
-;; NEXT: )
-;; NEXT: (func (;3;) (type 4) (result (ref 1))
-;; NEXT: i32.const 0
-;; NEXT: i32.const 2
-;; NEXT: array.new_elem $funcref_array $funcs
-;; NEXT: )
-;; NEXT: (func $helper (;4;) (type 2) (result i32)
-;; NEXT: i32.const 42
-;; NEXT: )
-;; NEXT: (export "new_from_data" (func 2))
-;; NEXT: (export "new_from_elem" (func 3))
-;; NEXT: (export "init_from_data" (func 0))
-;; NEXT: (export "init_from_elem" (func 1))
-;; NEXT: (elem $funcs (;0;) func $helper $helper)
-;; NEXT: (data $bytes (;0;) "\01\02\03\04\05\06\07\08")
+(; CHECK-ALL:
+  (module
+    (type $byte_array (;0;) (array (mut i8)))
+    (type $funcref_array (;1;) (array (mut funcref)))
+    (type (;2;) (func (result i32)))
+    (type (;3;) (func (result (ref $byte_array))))
+    (type (;4;) (func (result (ref $funcref_array))))
+    (type (;5;) (func (param (ref null $byte_array))))
+    (type (;6;) (func (param (ref null $funcref_array))))
+    (export "new_from_data" (func 2))
+    (export "new_from_elem" (func 3))
+    (export "init_from_data" (func 0))
+    (export "init_from_elem" (func 1))
+    (elem $funcs (;0;) func $helper $helper)
+    (func (;0;) (type 5) (param (ref null $byte_array))
+      local.get 0
+      i32.const 0
+      i32.const 2
+      i32.const 4
+      array.init_data $byte_array $bytes
+    )
+    (func (;1;) (type 6) (param (ref null $funcref_array))
+      local.get 0
+      i32.const 0
+      i32.const 0
+      i32.const 1
+      array.init_elem $funcref_array $funcs
+    )
+    (func (;2;) (type 3) (result (ref $byte_array))
+      i32.const 0
+      i32.const 4
+      array.new_data $byte_array $bytes
+    )
+    (func (;3;) (type 4) (result (ref $funcref_array))
+      i32.const 0
+      i32.const 2
+      array.new_elem $funcref_array $funcs
+    )
+    (func $helper (;4;) (type 2) (result i32)
+      i32.const 42
+    )
+    (data $bytes (;0;) "\01\02\03\04\05\06\07\08")
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
+;)

@@ -7,11 +7,11 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func))
+    (export "f" (func $f))
     (func $f (;0;) (type 0)
       i32.const 42
       drop
     )
-    (export "f" (func $f))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

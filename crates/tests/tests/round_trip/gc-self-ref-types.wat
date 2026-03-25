@@ -36,37 +36,43 @@
   )
 )
 
-;; CHECK: (module
-;; NEXT: (type $node (;0;) (struct (field i32) (field (mut (ref null 0)))))
-;; NEXT: (type (;1;) (func (param i32) (result (ref 0))))
-;; NEXT: (type (;2;) (func (param (ref null 0)) (result i32)))
-;; NEXT: (type (;3;) (func (param (ref null 0)) (result (ref null 0))))
-;; NEXT: (type (;4;) (func (param (ref null 0) (ref null 0))))
-;; NEXT: (type (;5;) (func (result (ref null 0))))
-;; NEXT: (func (;0;) (type 1) (param i32) (result (ref 0))
-;; NEXT: local.get 0
-;; NEXT: ref.null 0
-;; NEXT: struct.new $node
-;; NEXT: )
-;; NEXT: (func (;1;) (type 4) (param (ref null 0) (ref null 0))
-;; NEXT: local.get 0
-;; NEXT: local.get 1
-;; NEXT: struct.set $node 1
-;; NEXT: )
-;; NEXT: (func (;2;) (type 2) (param (ref null 0)) (result i32)
-;; NEXT: local.get 0
-;; NEXT: struct.get $node 0
-;; NEXT: )
-;; NEXT: (func (;3;) (type 3) (param (ref null 0)) (result (ref null 0))
-;; NEXT: local.get 0
-;; NEXT: struct.get $node 1
-;; NEXT: )
-;; NEXT: (func (;4;) (type 5) (result (ref null 0))
-;; NEXT: (local (ref null 0))
-;; NEXT: local.get 0
-;; NEXT: )
-;; NEXT: (export "singleton" (func 0))
-;; NEXT: (export "get_val" (func 2))
-;; NEXT: (export "get_next" (func 3))
-;; NEXT: (export "set_next" (func 1))
-;; NEXT: (export "make_null" (func 4))
+(; CHECK-ALL:
+  (module
+    (type $node (;0;) (struct (field i32) (field (mut (ref null $node)))))
+    (type (;1;) (func (param i32) (result (ref $node))))
+    (type (;2;) (func (param (ref null $node)) (result i32)))
+    (type (;3;) (func (param (ref null $node)) (result (ref null $node))))
+    (type (;4;) (func (param (ref null $node) (ref null $node))))
+    (type (;5;) (func (result (ref null $node))))
+    (export "singleton" (func 0))
+    (export "get_val" (func 2))
+    (export "get_next" (func 3))
+    (export "set_next" (func 1))
+    (export "make_null" (func 4))
+    (func (;0;) (type 1) (param i32) (result (ref $node))
+      local.get 0
+      ref.null $node
+      struct.new $node
+    )
+    (func (;1;) (type 4) (param (ref null $node) (ref null $node))
+      local.get 0
+      local.get 1
+      struct.set $node 1
+    )
+    (func (;2;) (type 2) (param (ref null $node)) (result i32)
+      local.get 0
+      struct.get $node 0
+    )
+    (func (;3;) (type 3) (param (ref null $node)) (result (ref null $node))
+      local.get 0
+      struct.get $node 1
+    )
+    (func (;4;) (type 5) (result (ref null $node))
+      (local (ref null $node))
+      local.get 0
+    )
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
+;)

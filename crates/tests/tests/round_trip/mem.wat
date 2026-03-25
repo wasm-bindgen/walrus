@@ -12,6 +12,8 @@
 (; CHECK-ALL:
   (module
     (type (;0;) (func))
+    (memory (;0;) 0)
+    (export "f" (func 0))
     (func (;0;) (type 0)
       i32.const 1
       i32.load
@@ -20,8 +22,6 @@
       f32.const 0x1.8p+1 (;=3;)
       f32.store
     )
-    (memory (;0;) 0)
-    (export "f" (func 0))
     (@producers
       (processed-by "walrus" "0.25.2")
     )

@@ -105,8 +105,4 @@
       local.get 0
       ref.cast (ref null $derived)
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

@@ -22,8 +22,4 @@
       f32.const 0x1.8p+1 (;=3;)
       f32.store
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

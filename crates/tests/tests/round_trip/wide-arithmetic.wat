@@ -81,8 +81,4 @@
       local.get 1
       i64.mul_wide_u
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

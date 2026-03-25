@@ -307,8 +307,4 @@
     (func (;22;) (type 6) (result eqref)
       ref.null eq
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

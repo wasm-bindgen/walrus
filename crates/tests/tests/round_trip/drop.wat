@@ -12,8 +12,4 @@
       i32.const 42
       drop
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

@@ -7,8 +7,4 @@
     (type (;0;) (func))
     (start 0)
     (func (;0;) (type 0))
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

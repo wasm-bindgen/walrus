@@ -28,8 +28,4 @@
     (func (;0;) (type 4) (param (ref null $point) (ref null $mutable_pair) (ref null $packed) (ref null $with_ref)) (result i32)
       i32.const 0
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

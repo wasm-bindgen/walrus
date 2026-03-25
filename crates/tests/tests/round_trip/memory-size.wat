@@ -12,8 +12,4 @@
     (func (;0;) (type 0) (result i32)
       memory.size
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

@@ -45,8 +45,4 @@
       local.get 1
       ref.eq
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

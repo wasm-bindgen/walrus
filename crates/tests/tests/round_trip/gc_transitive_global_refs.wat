@@ -27,8 +27,4 @@
     (func $f (;0;) (type 0) (result i32)
       global.get $globalA
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

@@ -39,8 +39,4 @@
       drop
       global.get $errorValue
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

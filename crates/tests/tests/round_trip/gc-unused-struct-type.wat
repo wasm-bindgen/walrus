@@ -26,8 +26,4 @@
       local.get 0
       struct.new $used_struct
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

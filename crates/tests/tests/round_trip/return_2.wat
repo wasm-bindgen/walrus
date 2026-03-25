@@ -12,8 +12,4 @@
       i32.const 1
       return
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

@@ -164,8 +164,4 @@
     (func (;6;) (type 11) (result (ref $empty))
       struct.new $empty
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

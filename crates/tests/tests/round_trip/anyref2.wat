@@ -13,8 +13,4 @@
       local.get 0
       table.get 0
     )
-    (@producers
-      (processed-by "walrus" "0.25.2")
-    )
-  )
 ;)

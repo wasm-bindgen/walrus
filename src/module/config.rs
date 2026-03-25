@@ -177,7 +177,6 @@ impl ModuleConfig {
         // This is the phase 1 exception handling proposal that uses try/catch/delegate
         // Support this as long as browsers also support it
         features.insert(WasmFeatures::LEGACY_EXCEPTIONS);
-
         features
     }
 

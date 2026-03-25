@@ -21,4 +21,8 @@
       end
     )
     (export "if_else" (func $if_else))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

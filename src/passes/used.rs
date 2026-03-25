@@ -1,5 +1,7 @@
+use crate::const_expr::ConstOp;
 use crate::ir::*;
 use crate::map::IdHashSet;
+use crate::ty::HeapType;
 use crate::{ConstExpr, Data, DataId, DataKind, Element, ExportItem, Function};
 use crate::{ElementId, ElementItems, ElementKind, Module, RefType, Tag, TagId, Type, TypeId};
 use crate::{FunctionId, FunctionKind, Global, GlobalId};
@@ -83,6 +85,46 @@ impl Roots {
             self.elements.push(element);
         }
         self
+    }
+
+    fn push_const_expr(&mut self, expr: &ConstExpr) {
+        match expr {
+            ConstExpr::Global(g) => {
+                self.push_global(*g);
+            }
+            ConstExpr::RefFunc(f) => {
+                self.push_func(*f);
+            }
+            ConstExpr::RefNull(ref_type) => {
+                mark_ref_type_used(&mut self.used, ref_type);
+            }
+            ConstExpr::Value(_) => {}
+            ConstExpr::Extended(ops) => {
+                for op in ops {
+                    match op {
+                        ConstOp::GlobalGet(g) => {
+                            self.push_global(*g);
+                        }
+                        ConstOp::RefFunc(f) => {
+                            self.push_func(*f);
+                        }
+                        ConstOp::StructNew(ty)
+                        | ConstOp::StructNewDefault(ty)
+                        | ConstOp::ArrayNew(ty)
+                        | ConstOp::ArrayNewDefault(ty) => {
+                            self.used.types.insert(*ty);
+                        }
+                        ConstOp::ArrayNewFixed { ty, .. } => {
+                            self.used.types.insert(*ty);
+                        }
+                        ConstOp::RefNull(ref_type) => {
+                            mark_ref_type_used(&mut self.used, ref_type);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -178,8 +220,17 @@ impl Used {
 
                 match &func.kind {
                     FunctionKind::Local(func) => {
-                        let mut visitor = UsedVisitor { stack: &mut stack };
+                        let mut visitor = UsedVisitor {
+                            stack: &mut stack,
+                            local_ids: Vec::new(),
+                        };
                         dfs_in_order(&mut visitor, func, func.entry_block());
+                        // Mark types referenced by used locals (non-arg locals
+                        // may have concrete ref types that need to survive GC).
+                        for local_id in visitor.local_ids {
+                            let ty = module.locals.get(local_id).ty();
+                            mark_val_type_used(&mut stack.used, &ty);
+                        }
                     }
                     FunctionKind::Import(_) => {}
                     FunctionKind::Uninitialized(_) => unreachable!(),
@@ -187,35 +238,24 @@ impl Used {
             }
 
             while let Some(t) = stack.tables.pop() {
-                for elem in module.tables.get(t).elem_segments.iter() {
+                let table = module.tables.get(t);
+                mark_ref_type_used(&mut stack.used, &table.element_ty);
+                // Process the table's init expression for function/type refs.
+                if let Some(init) = &table.init {
+                    stack.push_const_expr(init);
+                }
+                for elem in table.elem_segments.iter() {
                     stack.push_element(*elem);
                 }
             }
 
             while let Some(t) = stack.globals.pop() {
-                match &module.globals.get(t).kind {
+                let global = module.globals.get(t);
+                mark_val_type_used(&mut stack.used, &global.ty);
+                match &global.kind {
                     GlobalKind::Import(_) => {}
-                    GlobalKind::Local(ConstExpr::Global(global)) => {
-                        stack.push_global(*global);
-                    }
-                    GlobalKind::Local(ConstExpr::RefFunc(func)) => {
-                        stack.push_func(*func);
-                    }
-                    GlobalKind::Local(ConstExpr::Value(_))
-                    | GlobalKind::Local(ConstExpr::RefNull(_)) => {}
-                    GlobalKind::Local(ConstExpr::Extended(ops)) => {
-                        // Mark globals and functions referenced in extended const expressions
-                        for op in ops {
-                            match op {
-                                crate::const_expr::ConstOp::GlobalGet(g) => {
-                                    stack.push_global(*g);
-                                }
-                                crate::const_expr::ConstOp::RefFunc(f) => {
-                                    stack.push_func(*f);
-                                }
-                                _ => {}
-                            }
-                        }
+                    GlobalKind::Local(init) => {
+                        stack.push_const_expr(init);
                     }
                 }
             }
@@ -235,9 +275,7 @@ impl Used {
                 let d = module.data.get(d);
                 if let DataKind::Active { memory, offset } = &d.kind {
                     stack.push_memory(*memory);
-                    if let ConstExpr::Global(g) = offset {
-                        stack.push_global(*g);
-                    }
+                    stack.push_const_expr(offset);
                 }
             }
 
@@ -249,26 +287,50 @@ impl Used {
                     });
                 }
                 if let ElementItems::Expressions(ref_type, items) = &e.items {
-                    // Check if it's a funcref type (nullable or not)
-                    if ref_type == &RefType::FUNCREF {
-                        for item in items {
-                            match item {
-                                ConstExpr::Global(g) => {
-                                    stack.push_global(*g);
-                                }
-                                ConstExpr::RefFunc(f) => {
-                                    stack.push_func(*f);
-                                }
-                                _ => {}
-                            }
-                        }
+                    // Mark the element segment's declared type as used.
+                    mark_ref_type_used(&mut stack.used, ref_type);
+                    // Process all items regardless of element type.
+                    for item in items {
+                        stack.push_const_expr(item);
                     }
                 }
                 if let ElementKind::Active { offset, table } = &e.kind {
-                    if let ConstExpr::Global(g) = offset {
-                        stack.push_global(*g);
-                    }
+                    stack.push_const_expr(offset);
                     stack.push_table(*table);
+                }
+            }
+        }
+
+        // Transitively mark all types referenced by used types. GC types
+        // (structs, arrays) and function types with ref-typed parameters can
+        // reference other types via HeapType::Concrete(TypeId). Without this
+        // transitive closure, the GC pass would delete types that are still
+        // needed during emission.
+        //
+        // Additionally, rec groups are atomic: if any member is used, all
+        // members must survive. We expand each newly-used type to include
+        // its entire rec group.
+        {
+            let mut type_stack: Vec<TypeId> = stack.used.types.iter().copied().collect();
+            let mut refs = Vec::new();
+            while let Some(type_id) = type_stack.pop() {
+                // Expand rec group: if this type belongs to a rec group,
+                // mark all sibling types in the group as used too.
+                if let Some(rg) = module.types.rec_group_for_type(type_id) {
+                    for &sibling in &rg.types {
+                        if stack.used.types.insert(sibling) {
+                            type_stack.push(sibling);
+                        }
+                    }
+                }
+
+                let ty = module.types.get(type_id);
+                refs.clear();
+                ty.referenced_types(&mut refs);
+                for &ref_id in &refs {
+                    if stack.used.types.insert(ref_id) {
+                        type_stack.push(ref_id);
+                    }
                 }
             }
         }
@@ -292,6 +354,7 @@ impl Used {
 
 struct UsedVisitor<'a> {
     stack: &'a mut Roots,
+    local_ids: Vec<LocalId>,
 }
 
 impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
@@ -315,6 +378,10 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
         self.stack.used.types.insert(t);
     }
 
+    fn visit_local_id(&mut self, &id: &LocalId) {
+        self.local_ids.push(id);
+    }
+
     fn visit_data_id(&mut self, &d: &DataId) {
         self.stack.push_data(d);
     }
@@ -325,5 +392,32 @@ impl<'expr> Visitor<'expr> for UsedVisitor<'_> {
 
     fn visit_tag_id(&mut self, &tag: &TagId) {
         self.stack.push_tag(tag);
+    }
+
+    // RefType/ValType fields on Select and RefNull are still
+    // #[walrus(skip_visit)] so we handle them manually here.
+
+    fn visit_select(&mut self, instr: &Select) {
+        if let Some(ty) = &instr.ty {
+            mark_val_type_used(&mut self.stack.used, ty);
+        }
+    }
+
+    fn visit_ref_null(&mut self, instr: &RefNull) {
+        mark_ref_type_used(&mut self.stack.used, &instr.ty);
+    }
+}
+
+/// If the `RefType`'s heap type is concrete, mark that type as used.
+fn mark_ref_type_used(used: &mut Used, ref_type: &RefType) {
+    if let HeapType::Concrete(type_id) | HeapType::Exact(type_id) = ref_type.heap_type {
+        used.types.insert(type_id);
+    }
+}
+
+/// If the `ValType` is a ref type with a concrete heap type, mark it as used.
+fn mark_val_type_used(used: &mut Used, val_type: &crate::ValType) {
+    if let crate::ValType::Ref(ref_type) = val_type {
+        mark_ref_type_used(used, ref_type);
     }
 }

@@ -66,6 +66,14 @@ define_push_get!(push_data, get_data, DataId, data);
 define_push_get!(push_tag, get_tag, TagId, tags);
 
 impl IndicesToIds {
+    /// Update the TypeId at a given wasm type index.
+    ///
+    /// Used when singleton type deduplication remaps a pre-allocated
+    /// placeholder to an existing canonical type.
+    pub(crate) fn remap_type(&mut self, index: u32, id: TypeId) {
+        self.types[index as usize] = id;
+    }
+
     /// Pushes a new local ID to map it to the next index internally
     pub(crate) fn push_local(&mut self, function: FunctionId, id: LocalId) -> u32 {
         let list = self.locals.entry(function).or_default();

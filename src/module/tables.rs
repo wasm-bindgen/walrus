@@ -1,7 +1,5 @@
 //! Tables within a wasm module.
 
-use std::convert::TryInto;
-
 use crate::emit::{Emit, EmitContext};
 use crate::map::IdHashSet;
 use crate::parse::IndicesToIds;
@@ -184,7 +182,7 @@ impl Module {
                 t.ty.table64,
                 t.ty.initial,
                 t.ty.maximum,
-                t.ty.element_type.try_into()?,
+                RefType::from_wasmparser(t.ty.element_type, ids, 0)?,
                 init,
             );
             ids.push_table(id);
@@ -212,7 +210,7 @@ impl Emit for ModuleTables {
                 table64: table.table64,
                 minimum: table.initial,
                 maximum: table.maximum,
-                element_type: table.element_ty.to_wasmencoder_ref_type(),
+                element_type: table.element_ty.to_wasmencoder_ref_type(cx.indices),
                 shared: false,
             };
 

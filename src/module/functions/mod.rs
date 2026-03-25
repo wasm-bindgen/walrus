@@ -385,7 +385,7 @@ impl Module {
                 let pos = locals_reader.original_position();
                 let (count, ty) = locals_reader.read()?;
                 validator.define_locals(pos, count, ty)?;
-                let ty = ValType::parse(&ty)?;
+                let ty = ValType::from_wasmparser(&ty, indices, 0)?;
                 for _ in 0..count {
                     let local_id = self.locals.add(ty);
                     let idx = indices.push_local(id, local_id);
@@ -620,7 +620,8 @@ impl Emit for ModuleFunctions {
                 let mut wasm = Vec::new();
                 let mut map = if generate_map { Some(Vec::new()) } else { None };
 
-                let (locals_types, used_locals, local_indices) = func.emit_locals(cx.module);
+                let (locals_types, used_locals, local_indices) =
+                    func.emit_locals(cx.module, cx.indices);
                 let mut wasm_function = wasm_encoder::Function::new(locals_types);
                 func.emit_instructions(
                     cx.indices,

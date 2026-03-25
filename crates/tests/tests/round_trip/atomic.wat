@@ -65,4 +65,8 @@
     )
     (memory (;0;) 1 1 shared)
     (export "atomics" (func 0))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

@@ -47,4 +47,8 @@
     (data (;0;) "A")
     (data (;1;) (i32.const 0) "b")
     (data (;2;) "C")
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

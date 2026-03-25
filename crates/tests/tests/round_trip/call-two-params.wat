@@ -11,13 +11,17 @@
 
 (; CHECK-ALL:
   (module
-    (type (;0;) (func))
-    (type (;1;) (func (param i32 f32)))
-    (import "spectest" "print_i32_f32" (func $print_i32_f32 (;0;) (type 1)))
-    (func (;1;) (type 0)
+    (type (;0;) (func (param i32 f32)))
+    (type (;1;) (func))
+    (import "spectest" "print_i32_f32" (func $print_i32_f32 (;0;) (type 0)))
+    (func (;1;) (type 1)
       i32.const 1
       f32.const 0x1.5p+5 (;=42;)
       call $print_i32_f32
     )
     (export "print32" (func 1))
+    (@producers
+      (processed-by "walrus" "0.25.2")
+    )
+  )
 ;)

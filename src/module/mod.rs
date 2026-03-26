@@ -408,11 +408,14 @@ impl Module {
         }
 
         // 4. Find undeclared functions and synthesize a Declared element segment.
-        let undeclared: Vec<_> = ref_funcs
+        let mut undeclared: Vec<_> = ref_funcs
             .iter()
             .copied()
             .filter(|f| !declared.contains(f))
             .collect();
+        // Sort to ensure we emit the Declared element segment deterministically,
+        // regardless of IdHashSet iteration order.
+        undeclared.sort_unstable();
         if !undeclared.is_empty() {
             log::debug!(
                 "synthesizing Declared element segment for {} undeclared ref.func references",

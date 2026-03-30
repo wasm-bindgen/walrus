@@ -40,14 +40,15 @@
 
 (; CHECK-ALL:
   (module
-    (type $pair (;0;) (struct (field i32) (field i32)))
-    (type (;1;) (func (result anyref)))
+    (type (;0;) (func (result anyref)))
+    (type $pair (;1;) (struct (field i32) (field i32)))
     (table $t (;0;) 10 anyref)
     (global $elem_base (;0;) i32 i32.const 100)
     (export "get_elem" (func 0))
     (elem (;0;) (table $t) (i32.const 0) anyref (item global.get $elem_base ref.i31) (item i32.const 1 i32.const 2 struct.new $pair))
-    (func (;0;) (type 1) (result anyref)
+    (func (;0;) (type 0) (result anyref)
       i32.const 0
       table.get $t
     )
+  )
 ;)

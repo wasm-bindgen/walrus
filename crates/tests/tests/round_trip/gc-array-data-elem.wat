@@ -48,9 +48,9 @@
 
 (; CHECK-ALL:
   (module
-    (type $byte_array (;0;) (array (mut i8)))
+    (type (;0;) (func (result i32)))
     (type $funcref_array (;1;) (array (mut funcref)))
-    (type (;2;) (func (result i32)))
+    (type $byte_array (;2;) (array (mut i8)))
     (type (;3;) (func (result (ref $byte_array))))
     (type (;4;) (func (result (ref $funcref_array))))
     (type (;5;) (func (param (ref null $byte_array))))
@@ -84,8 +84,9 @@
       i32.const 2
       array.new_elem $funcref_array $funcs
     )
-    (func $helper (;4;) (type 2) (result i32)
+    (func $helper (;4;) (type 0) (result i32)
       i32.const 42
     )
     (data $bytes (;0;) "\01\02\03\04\05\06\07\08")
+  )
 ;)

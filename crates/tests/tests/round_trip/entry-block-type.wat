@@ -14,4 +14,5 @@
       local.get 1
       local.get 0
     )
+  )
 ;)

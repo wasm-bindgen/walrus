@@ -99,4 +99,5 @@
     (func (;5;) (type 2) (result (ref null $point))
       global.get $ext_point
     )
+  )
 ;)

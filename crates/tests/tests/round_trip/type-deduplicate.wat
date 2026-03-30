@@ -15,4 +15,5 @@
     (export "b" (func 1))
     (func $f (;0;) (type 0))
     (func (;1;) (type 0))
+  )
 ;)

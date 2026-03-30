@@ -7,4 +7,5 @@
     (type (;0;) (func))
     (start 0)
     (func (;0;) (type 0))
+  )
 ;)

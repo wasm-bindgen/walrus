@@ -71,4 +71,5 @@
       (local (ref null $node))
       local.get 0
     )
+  )
 ;)

@@ -12,4 +12,5 @@
     (func (;0;) (type 0) (result i32)
       memory.size
     )
+  )
 ;)

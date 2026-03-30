@@ -14,4 +14,5 @@
       data.drop 0
     )
     (data (;0;) (i32.const 0) "")
+  )
 ;)

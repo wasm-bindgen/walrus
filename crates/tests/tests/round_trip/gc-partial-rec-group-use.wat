@@ -33,4 +33,5 @@
       local.get 0
       struct.get $tree 0
     )
+  )
 ;)

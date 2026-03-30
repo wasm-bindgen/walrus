@@ -24,4 +24,5 @@
       call_indirect (type 0)
     )
     (func (;1;) (type 0))
+  )
 ;)

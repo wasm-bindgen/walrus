@@ -7,4 +7,5 @@
   (module
     (import "" "" (table (;0;) 1 funcref))
     (export "b" (table 0))
+  )
 ;)

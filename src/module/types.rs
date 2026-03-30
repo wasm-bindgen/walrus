@@ -645,51 +645,92 @@ impl Emit for ModuleTypes {
         let mut wasm_type_section = wasm_encoder::TypeSection::new();
         let mut any_emitted = false;
 
-        for rec_group in &self.rec_groups {
-            // Skip empty rec groups (e.g., all members were deleted).
-            if rec_group.types.is_empty() {
+        // Build the set of all TypeIds so we can detect cross-group references.
+        let all_type_ids: std::collections::HashSet<TypeId> =
+            self.arena.iter().map(|(id, _)| id).collect();
+
+        // Determine which rec groups are "free" — implicit singletons whose
+        // single type has no references to types in *other* groups (no
+        // supertypes, no concrete heap type references outside the group).
+        // Free groups can be reordered among themselves for a canonical
+        // (deterministic) output without violating any topological constraints.
+        // Non-free groups (explicit, multi-type, or cross-referencing) are
+        // emitted in their original definition order.
+        //
+        // We interleave the two sets: non-free groups act as "anchors" that
+        // divide the free groups into runs. Within each run the free groups are
+        // sorted by the canonical `Type::Ord` ordering of their single member.
+
+        // Partition into runs separated by non-free anchors.
+        // Each element of `runs` is (anchor: Option<&RecGroup>, free_groups: Vec<&RecGroup>).
+        // The free_groups in a run are all the free groups that appear *before*
+        // the anchor in definition order.
+        let mut runs: Vec<(Option<&RecGroup>, Vec<&RecGroup>)> = Vec::new();
+        let mut current_free: Vec<&RecGroup> = Vec::new();
+
+        for rg in &self.rec_groups {
+            // Skip empty groups (types fully deleted).
+            if rg.types.is_empty() {
                 continue;
             }
 
-            // Skip rec groups where any member type has been deleted
-            // (defensive — the deletion methods maintain the types vec,
-            // but external code may have removed types from the arena).
-            if rec_group.types.iter().any(|id| !self.arena.contains(*id)) {
-                continue;
-            }
+            let is_free = !rg.is_explicit && rg.types.len() == 1 && {
+                let ty = &self.arena[rg.types[0]];
+                let mut refs = Vec::new();
+                ty.referenced_types(&mut refs);
+                // Free if all referenced TypeIds belong to this same group
+                // (i.e., self-references only — common for linked-list nodes).
+                refs.iter()
+                    .all(|r| rg.types.contains(r) || !all_type_ids.contains(r))
+            };
 
-            // Skip rec groups that only contain entry types (internal-only).
-            if rec_group
-                .types
-                .iter()
-                .all(|id| self.arena[*id].is_for_function_entry())
-            {
-                continue;
-            }
-
-            // Register all types in this group for index assignment before
-            // building SubTypes, so that forward references within the group
-            // resolve correctly.
-            for &type_id in &rec_group.types {
-                cx.indices.push_type(type_id);
-            }
-
-            // Build wasm-encoder SubTypes.
-            let sub_types: Vec<wasm_encoder::SubType> = rec_group
-                .types
-                .iter()
-                .map(|&id| walrus_type_to_encoder_subtype(&self.arena[id], cx.indices))
-                .collect();
-
-            // Emit: use rec() for explicit or multi-type groups, subtype() for
-            // implicit singletons.
-            if rec_group.is_explicit || sub_types.len() > 1 {
-                wasm_type_section.ty().rec(sub_types);
+            if is_free {
+                current_free.push(rg);
             } else {
-                debug_assert_eq!(sub_types.len(), 1);
-                wasm_type_section.ty().subtype(&sub_types[0]);
+                runs.push((Some(rg), std::mem::take(&mut current_free)));
             }
-            any_emitted = true;
+        }
+        // Trailing free groups after the last anchor.
+        runs.push((None, current_free));
+
+        for (anchor, mut free_groups) in runs {
+            // Sort the free groups canonically.
+            free_groups.sort_by(|a, b| {
+                let ta = &self.arena[a.types[0]];
+                let tb = &self.arena[b.types[0]];
+                ta.cmp(tb)
+            });
+
+            // Emit free groups first, then the anchor.
+            let anchor_slice: Vec<&RecGroup> = anchor.into_iter().collect();
+            for rg in free_groups.iter().chain(anchor_slice.iter()).copied() {
+                // Skip groups that only contain entry types (internal-only).
+                if rg
+                    .types
+                    .iter()
+                    .all(|id| self.arena[*id].is_for_function_entry())
+                {
+                    continue;
+                }
+
+                for &type_id in &rg.types {
+                    cx.indices.push_type(type_id);
+                }
+
+                let sub_types: Vec<wasm_encoder::SubType> = rg
+                    .types
+                    .iter()
+                    .map(|&id| walrus_type_to_encoder_subtype(&self.arena[id], cx.indices))
+                    .collect();
+
+                if rg.is_explicit || sub_types.len() > 1 {
+                    wasm_type_section.ty().rec(sub_types);
+                } else {
+                    debug_assert_eq!(sub_types.len(), 1);
+                    wasm_type_section.ty().subtype(&sub_types[0]);
+                }
+                any_emitted = true;
+            }
         }
 
         if any_emitted {

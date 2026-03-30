@@ -17,4 +17,5 @@
     (func $f (;1;) (type 0) (result i32)
       return_call $g
     )
+  )
 ;)

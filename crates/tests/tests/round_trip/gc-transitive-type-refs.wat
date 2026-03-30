@@ -42,4 +42,5 @@
       local.get 0
       struct.get $outer 0
     )
+  )
 ;)

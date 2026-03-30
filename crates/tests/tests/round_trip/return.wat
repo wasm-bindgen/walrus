@@ -11,4 +11,5 @@
       i32.const 1
       return
     )
+  )
 ;)

@@ -12,4 +12,5 @@
     (func $f (;0;) (type 0) (result i32)
       unreachable
     )
+  )
 ;)

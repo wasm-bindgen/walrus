@@ -14,4 +14,5 @@
       local.get 0
       i32.add
     )
+  )
 ;)

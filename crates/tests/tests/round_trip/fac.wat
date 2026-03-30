@@ -53,4 +53,5 @@
       end
       local.get 1
     )
+  )
 ;)

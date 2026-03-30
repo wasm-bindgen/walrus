@@ -10,4 +10,5 @@
       local.get 0
       local.get 0
     )
+  )
 ;)

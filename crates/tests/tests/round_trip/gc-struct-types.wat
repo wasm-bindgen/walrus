@@ -19,8 +19,8 @@
 
 (; CHECK-ALL:
   (module
-    (type $point (;0;) (struct (field f64) (field f64)))
-    (type $mutable_pair (;1;) (struct (field (mut i32)) (field (mut i64))))
+    (type $mutable_pair (;0;) (struct (field (mut i32)) (field (mut i64))))
+    (type $point (;1;) (struct (field f64) (field f64)))
     (type $packed (;2;) (struct (field i8) (field i16) (field i32)))
     (type $with_ref (;3;) (struct (field (ref null $point)) (field i32)))
     (type (;4;) (func (param (ref null $point) (ref null $mutable_pair) (ref null $packed) (ref null $with_ref)) (result i32)))
@@ -28,4 +28,5 @@
     (func (;0;) (type 4) (param (ref null $point) (ref null $mutable_pair) (ref null $packed) (ref null $with_ref)) (result i32)
       i32.const 0
     )
+  )
 ;)

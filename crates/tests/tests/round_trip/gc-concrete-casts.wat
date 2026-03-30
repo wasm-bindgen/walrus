@@ -105,4 +105,5 @@
       local.get 0
       ref.cast (ref null $derived)
     )
+  )
 ;)

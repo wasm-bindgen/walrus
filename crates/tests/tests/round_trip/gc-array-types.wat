@@ -32,4 +32,5 @@
     (func (;0;) (type 5) (param (ref null $int_array) (ref null $float_array) (ref null $byte_array) (ref null $short_array) (ref null $ref_array)) (result i32)
       i32.const 0
     )
+  )
 ;)

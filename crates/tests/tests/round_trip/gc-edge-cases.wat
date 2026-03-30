@@ -164,4 +164,5 @@
     (func (;6;) (type 11) (result (ref $empty))
       struct.new $empty
     )
+  )
 ;)

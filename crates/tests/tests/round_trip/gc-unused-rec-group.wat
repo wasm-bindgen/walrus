@@ -26,4 +26,5 @@
       local.get 0
       struct.new $used
     )
+  )
 ;)

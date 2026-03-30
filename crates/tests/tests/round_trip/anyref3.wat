@@ -21,4 +21,5 @@
       local.get 0
       table.get 1
     )
+  )
 ;)

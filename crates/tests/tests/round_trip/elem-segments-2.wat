@@ -14,4 +14,5 @@
     (elem (;0;) (i32.const 1) func 0)
     (elem (;1;) (i32.const 2) func 0)
     (func (;0;) (type 0))
+  )
 ;)

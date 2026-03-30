@@ -17,4 +17,5 @@
       local.get 0
       select
     )
+  )
 ;)

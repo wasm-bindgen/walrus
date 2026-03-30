@@ -128,4 +128,5 @@
     (func (;9;) (type 3) (result (ref $point))
       struct.new_default $point
     )
+  )
 ;)

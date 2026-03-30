@@ -25,12 +25,12 @@
 
 (; CHECK-ALL:
   (module
-    (type (;0;) (func (param i32)))
-    (type (;1;) (func (result i32)))
-    (tag $myTag (;0;) (type 0) (param i32))
+    (type (;0;) (func (result i32)))
+    (type (;1;) (func (param i32)))
+    (tag $myTag (;0;) (type 1) (param i32))
     (global $errorValue (;0;) (mut i32) i32.const 99)
     (export "f" (func $f))
-    (func $f (;0;) (type 1) (result i32)
+    (func $f (;0;) (type 0) (result i32)
       block (result i32) ;; label = @1
         try_table (result i32) (catch $myTag 0 (;@1;)) ;; label = @2
           i32.const 42
@@ -39,4 +39,5 @@
       drop
       global.get $errorValue
     )
+  )
 ;)

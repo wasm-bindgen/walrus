@@ -13,4 +13,5 @@
       local.get 0
       call 0
     )
+  )
 ;)

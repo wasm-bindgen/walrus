@@ -11,4 +11,5 @@
     (memory (;0;) 1)
     (export "x" (memory 0))
     (data (;0;) (global.get 0) "")
+  )
 ;)

@@ -19,4 +19,5 @@
       end
     )
     (func $dummy (;1;) (type 0))
+  )
 ;)

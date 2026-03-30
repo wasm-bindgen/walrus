@@ -173,4 +173,5 @@
       local.get 0
       array.len
     )
+  )
 ;)

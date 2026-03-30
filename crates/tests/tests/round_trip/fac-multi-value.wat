@@ -20,15 +20,15 @@
 
 (; CHECK-ALL:
   (module
-    (type (;0;) (func (param i64) (result i64 i64)))
-    (type (;1;) (func (param i64 i64) (result i64 i64 i64)))
-    (type (;2;) (func (param i64) (result i64)))
-    (type (;3;) (func (param i64 i64) (result i64)))
+    (type (;0;) (func (param i64) (result i64)))
+    (type (;1;) (func (param i64) (result i64 i64)))
+    (type (;2;) (func (param i64 i64) (result i64)))
+    (type (;3;) (func (param i64 i64) (result i64 i64 i64)))
     (export "fac-ssa" (func 0))
-    (func (;0;) (type 2) (param i64) (result i64)
+    (func (;0;) (type 0) (param i64) (result i64)
       i64.const 1
       local.get 0
-      loop (type 3) (param i64 i64) (result i64) ;; label = @1
+      loop (type 2) (param i64 i64) (result i64) ;; label = @1
         call $pick1
         call $pick1
         i64.mul
@@ -43,13 +43,14 @@
         return
       end
     )
-    (func $pick1 (;1;) (type 1) (param i64 i64) (result i64 i64 i64)
+    (func $pick1 (;1;) (type 3) (param i64 i64) (result i64 i64 i64)
       local.get 0
       local.get 1
       local.get 0
     )
-    (func $pick0 (;2;) (type 0) (param i64) (result i64 i64)
+    (func $pick0 (;2;) (type 1) (param i64) (result i64 i64)
       local.get 0
       local.get 0
     )
+  )
 ;)

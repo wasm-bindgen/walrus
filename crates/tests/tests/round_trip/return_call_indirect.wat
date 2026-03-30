@@ -15,4 +15,5 @@
       local.get 0
       return_call_indirect (type 0)
     )
+  )
 ;)

@@ -13,4 +13,5 @@
     (func $g (;1;) (type 0) (result i32)
       call 0
     )
+  )
 ;)

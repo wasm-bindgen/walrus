@@ -32,4 +32,5 @@
     (func (;0;) (type 4) (param (ref null $base) (ref null $derived) (ref null $leaf) (ref null $handler)) (result i32)
       i32.const 0
     )
+  )
 ;)

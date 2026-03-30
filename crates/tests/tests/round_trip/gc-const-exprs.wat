@@ -70,4 +70,5 @@
       local.get 0
       struct.get $point 0
     )
+  )
 ;)

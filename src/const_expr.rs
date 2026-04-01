@@ -85,13 +85,13 @@ impl ConstExpr {
     /// global; return `None` for imported globals whose value is not known at
     /// compile time.  The method returns `None` whenever the expression cannot
     /// be fully reduced (unknown global, non-numeric opcode, etc.).
-    pub fn evaluate<F>(&self, resolve_global: &F) -> Option<Value>
+    pub fn evaluate_scalar<F>(&self, resolve_global: &F) -> Option<Value>
     where
         F: Fn(GlobalId) -> Option<ConstExpr>,
     {
         match self {
             ConstExpr::Value(v) => Some(*v),
-            ConstExpr::Global(g) => resolve_global(*g)?.evaluate(resolve_global),
+            ConstExpr::Global(g) => resolve_global(*g)?.evaluate_scalar(resolve_global),
             ConstExpr::Extended(ops) => {
                 let mut stack: Vec<Value> = Vec::new();
                 for op in ops {
@@ -102,7 +102,7 @@ impl ConstExpr {
                         ConstOp::F64Const(n) => stack.push(Value::F64(*n)),
                         ConstOp::V128Const(n) => stack.push(Value::V128(*n)),
                         ConstOp::GlobalGet(g) => {
-                            stack.push(resolve_global(*g)?.evaluate(resolve_global)?);
+                            stack.push(resolve_global(*g)?.evaluate_scalar(resolve_global)?);
                         }
                         ConstOp::I32Add => {
                             let (Value::I32(b), Value::I32(a)) = (stack.pop()?, stack.pop()?)

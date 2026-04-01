@@ -204,7 +204,7 @@ impl Module {
             let seg = self.elements.get(seg_id);
 
             let offset = match &seg.kind {
-                ElementKind::Active { offset, .. } => match offset.evaluate(&resolve) {
+                ElementKind::Active { offset, .. } => match offset.evaluate_scalar(&resolve) {
                     Some(Value::I32(n)) => n as u32,
                     _ => continue,
                 },

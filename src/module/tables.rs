@@ -1,14 +1,10 @@
 //! Tables within a wasm module.
 
 use crate::emit::{Emit, EmitContext};
-use crate::ir::Value;
 use crate::map::IdHashSet;
-use crate::module::globals::GlobalKind;
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
-use crate::{
-    ConstExpr, Element, ElementItems, ElementKind, FunctionId, ImportId, Module, RefType, Result,
-};
+use crate::{ConstExpr, Element, ImportId, Module, RefType, Result};
 use anyhow::bail;
 
 /// The id of a table.
@@ -169,72 +165,6 @@ impl ModuleTables {
 }
 
 impl Module {
-    /// Look up a function by its index in the module's main function table.
-    ///
-    /// This handles element segments whose offsets are expressed as:
-    ///
-    /// - `ConstExpr::Value(Value::I32(n))` — a plain literal (the common case
-    ///   produced by lld for small modules).
-    /// - `ConstExpr::Global(g)` — a `global.get` referencing an immutable
-    ///   local i32 global (e.g. `__table_base`, produced by lld for large
-    ///   position-independent modules with rustc 1.94+).
-    ///
-    /// Segments with `ConstExpr::Extended` offsets (e.g.
-    /// `global.get $__table_base + i32.const K`) require expression
-    /// evaluation and are skipped; `idx` will not be found via those segments.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the module has no function table, if there is more
-    /// than one function table, or if `idx` is not found in any element
-    /// segment.
-    pub fn get_function_table_entry(&self, idx: u32) -> Result<FunctionId> {
-        let table_id = self
-            .tables
-            .main_function_table()?
-            .ok_or_else(|| anyhow::anyhow!("no function table found in module"))?;
-        let table = self.tables.get(table_id);
-
-        let resolve = |g| match &self.globals.get(g).kind {
-            GlobalKind::Local(expr) => Some(expr.clone()),
-            GlobalKind::Import(_) => None,
-        };
-
-        for &seg_id in &table.elem_segments {
-            let seg = self.elements.get(seg_id);
-
-            let offset = match &seg.kind {
-                ElementKind::Active { offset, .. } => match offset.evaluate_scalar(&resolve) {
-                    Some(Value::I32(n)) => n as u32,
-                    _ => continue,
-                },
-                _ => continue,
-            };
-
-            let local_idx = match idx.checked_sub(offset) {
-                Some(i) => i as usize,
-                None => continue,
-            };
-
-            let found = match &seg.items {
-                ElementItems::Functions(funcs) => funcs.get(local_idx).copied(),
-                ElementItems::Expressions(_, exprs) => exprs.get(local_idx).and_then(|e| {
-                    if let ConstExpr::RefFunc(f) = e {
-                        Some(*f)
-                    } else {
-                        None
-                    }
-                }),
-            };
-
-            if let Some(f) = found {
-                return Ok(f);
-            }
-        }
-
-        bail!("failed to find `{}` in function table", idx)
-    }
-
     /// Construct a new, empty set of tables for a module.
     pub(crate) fn parse_tables(
         &mut self,

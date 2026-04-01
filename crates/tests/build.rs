@@ -10,11 +10,7 @@ fn is_known_failing(name: &str) -> bool {
         "tests_spec_tests_legacy_rethrow_wast"
         | "tests_spec_tests_legacy_throw_wast"
         | "tests_spec_tests_legacy_try_catch_wast"
-        | "tests_spec_tests_legacy_try_delegate_wast"
-        // 64-bit memory/table offsets not yet supported in walrus.
-        | "tests_spec_tests_data_wast"  // active data with non-i32 offset (memory64)
-        | "tests_spec_tests_elem_wast"  // active elem with non-i32 offset (table64)
-        => true,
+        | "tests_spec_tests_legacy_try_delegate_wast" => true,
 
         _ => false,
     }

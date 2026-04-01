@@ -23,20 +23,22 @@ fn run(wast: &Path) -> Result<(), anyhow::Error> {
         .nth(1)
         .map(|s| s.to_str().unwrap());
 
+    // The custom/ directory contains annotation syntax tests that wasm-tools
+    // json-from-wast does not yet support.
+    let in_custom_dir = wast.iter().any(|p| p == "custom");
+    if in_custom_dir {
+        return Ok(());
+    }
+
     let extra_args: &[&str] = match proposal {
         None => &[],
-        Some("annotations") => return Ok(()),
+        // The threads proposal testsuite has stale assert_invalid cases for
+        // multiple tables that predate the reference-types proposal.
+        Some("threads") => return Ok(()),
+        // custom-descriptors and custom-page-sizes are not yet supported
         Some("custom-descriptors") => return Ok(()),
         Some("custom-page-sizes") => return Ok(()),
-        Some("exception-handling") => &[],
-        Some("extended-const") => &[],
-        Some("function-references") => &[],
-        Some("gc") => return Ok(()),
-        Some("relaxed-simd") => &[],
-        Some("tail-call") => &[],
-        Some("threads") => return Ok(()),
-        Some("wide-arithmetic") => &[],
-        Some(other) => bail!("unknown wasm proposal: {}", other),
+        Some(_) => &[],
     };
 
     let tempdir = TempDir::new()?;

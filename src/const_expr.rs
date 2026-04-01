@@ -79,6 +79,86 @@ pub enum ConstOp {
 }
 
 impl ConstExpr {
+    /// Attempt to statically evaluate this expression to a [`Value`].
+    ///
+    /// `resolve_global` is called to obtain the initialiser `ConstExpr` for a
+    /// global; return `None` for imported globals whose value is not known at
+    /// compile time.  The method returns `None` whenever the expression cannot
+    /// be fully reduced (unknown global, non-numeric opcode, etc.).
+    pub fn evaluate<F>(&self, resolve_global: &F) -> Option<Value>
+    where
+        F: Fn(GlobalId) -> Option<ConstExpr>,
+    {
+        match self {
+            ConstExpr::Value(v) => Some(*v),
+            ConstExpr::Global(g) => resolve_global(*g)?.evaluate(resolve_global),
+            ConstExpr::Extended(ops) => {
+                let mut stack: Vec<Value> = Vec::new();
+                for op in ops {
+                    match op {
+                        ConstOp::I32Const(n) => stack.push(Value::I32(*n)),
+                        ConstOp::I64Const(n) => stack.push(Value::I64(*n)),
+                        ConstOp::F32Const(n) => stack.push(Value::F32(*n)),
+                        ConstOp::F64Const(n) => stack.push(Value::F64(*n)),
+                        ConstOp::V128Const(n) => stack.push(Value::V128(*n)),
+                        ConstOp::GlobalGet(g) => {
+                            stack.push(resolve_global(*g)?.evaluate(resolve_global)?);
+                        }
+                        ConstOp::I32Add => {
+                            let (Value::I32(b), Value::I32(a)) = (stack.pop()?, stack.pop()?)
+                            else {
+                                return None;
+                            };
+                            stack.push(Value::I32(a.wrapping_add(b)));
+                        }
+                        ConstOp::I32Sub => {
+                            let (Value::I32(b), Value::I32(a)) = (stack.pop()?, stack.pop()?)
+                            else {
+                                return None;
+                            };
+                            stack.push(Value::I32(a.wrapping_sub(b)));
+                        }
+                        ConstOp::I32Mul => {
+                            let (Value::I32(b), Value::I32(a)) = (stack.pop()?, stack.pop()?)
+                            else {
+                                return None;
+                            };
+                            stack.push(Value::I32(a.wrapping_mul(b)));
+                        }
+                        ConstOp::I64Add => {
+                            let (Value::I64(b), Value::I64(a)) = (stack.pop()?, stack.pop()?)
+                            else {
+                                return None;
+                            };
+                            stack.push(Value::I64(a.wrapping_add(b)));
+                        }
+                        ConstOp::I64Sub => {
+                            let (Value::I64(b), Value::I64(a)) = (stack.pop()?, stack.pop()?)
+                            else {
+                                return None;
+                            };
+                            stack.push(Value::I64(a.wrapping_sub(b)));
+                        }
+                        ConstOp::I64Mul => {
+                            let (Value::I64(b), Value::I64(a)) = (stack.pop()?, stack.pop()?)
+                            else {
+                                return None;
+                            };
+                            stack.push(Value::I64(a.wrapping_mul(b)));
+                        }
+                        _ => return None,
+                    }
+                }
+                if stack.len() == 1 {
+                    stack.pop()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn eval(init: &wasmparser::ConstExpr, ids: &IndicesToIds) -> Result<ConstExpr> {
         use wasmparser::Operator::*;
         let mut reader = init.get_operators_reader();

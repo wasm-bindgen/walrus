@@ -195,35 +195,22 @@ impl Module {
             .ok_or_else(|| anyhow::anyhow!("no function table found in module"))?;
         let table = self.tables.get(table_id);
 
+        let resolve = |g| match &self.globals.get(g).kind {
+            GlobalKind::Local(expr) => Some(expr.clone()),
+            GlobalKind::Import(_) => None,
+        };
+
         for &seg_id in &table.elem_segments {
             let seg = self.elements.get(seg_id);
 
-            let offset: u32 = match &seg.kind {
-                ElementKind::Active {
-                    offset: ConstExpr::Value(Value::I32(n)),
-                    ..
-                } => *n as u32,
-
-                // rustc 1.94+ / lld emits `global.get $__table_base` as the
-                // segment offset for large, position-independent function
-                // tables.  Resolve the global's own initialiser if it is a
-                // statically-known i32 literal.
-                ElementKind::Active {
-                    offset: ConstExpr::Global(g),
-                    ..
-                } => match &self.globals.get(*g).kind {
-                    GlobalKind::Local(ConstExpr::Value(Value::I32(n))) => *n as u32,
-                    // Imported globals (e.g. the real __table_base) have no
-                    // static value — skip this segment.
+            let offset = match &seg.kind {
+                ElementKind::Active { offset, .. } => match offset.evaluate(&resolve) {
+                    Some(Value::I32(n)) => n as u32,
                     _ => continue,
                 },
-
-                // Extended const exprs (GlobalGet + I32Add etc.) would
-                // require a mini-evaluator; skip for now.
                 _ => continue,
             };
 
-            // Guard: if idx < offset this segment does not contain idx.
             let local_idx = match idx.checked_sub(offset) {
                 Some(i) => i as usize,
                 None => continue,

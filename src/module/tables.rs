@@ -234,9 +234,7 @@ impl Module {
 
         bail!("failed to find `{}` in function table", idx)
     }
-}
 
-impl Module {
     /// Construct a new, empty set of tables for a module.
     pub(crate) fn parse_tables(
         &mut self,

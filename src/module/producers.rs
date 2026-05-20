@@ -10,17 +10,17 @@ use crate::module::Module;
 /// Representation of the wasm custom section `producers`
 #[derive(Debug, Default)]
 pub struct ModuleProducers {
-    fields: Vec<Field>,
+    fields: Vec<ProducerField>,
 }
 
 #[derive(Debug)]
-struct Field {
+pub struct ProducerField {
     name: String,
-    values: Vec<Value>,
+    values: Vec<ProducerValue>,
 }
 
 #[derive(Debug)]
-struct Value {
+pub struct ProducerValue {
     name: String,
     version: String,
 }
@@ -41,8 +41,13 @@ impl ModuleProducers {
         self.field("sdk", sdk, version);
     }
 
+    /// Returns the [`ProducerField`]s of this producers section
+    pub fn fields(&self) -> &[ProducerField] {
+        &self.fields
+    }
+
     fn field(&mut self, field_name: &str, name: &str, version: &str) {
-        let new_value = Value {
+        let new_value = ProducerValue {
             name: name.to_string(),
             version: version.to_string(),
         };
@@ -60,7 +65,7 @@ impl ModuleProducers {
             field.values.push(new_value);
             return;
         }
-        self.fields.push(Field {
+        self.fields.push(ProducerField {
             name: field_name.to_string(),
             values: vec![new_value],
         })
@@ -69,6 +74,30 @@ impl ModuleProducers {
     /// Clear the producers section of all keys/values
     pub fn clear(&mut self) {
         self.fields.truncate(0);
+    }
+}
+
+impl ProducerField {
+    /// Returns the name of this [`ProducerField`]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the [`ProducerValue`]s of this [`ProducerField`]
+    pub fn values(&self) -> &[ProducerValue] {
+        &self.values
+    }
+}
+
+impl ProducerValue {
+    /// Returns the name of this [`ProducerValue`]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the version of this [`ProducerValue`]
+    pub fn version(&self) -> &str {
+        &self.version
     }
 }
 
@@ -85,13 +114,13 @@ impl Module {
             let mut values = Vec::new();
             for value in field.values {
                 let value = value?;
-                values.push(Value {
+                values.push(ProducerValue {
                     name: value.name.to_string(),
                     version: value.version.to_string(),
                 });
             }
             let name = field.name.to_string();
-            self.producers.fields.push(Field { name, values });
+            self.producers.fields.push(ProducerField { name, values });
         }
 
         Ok(())

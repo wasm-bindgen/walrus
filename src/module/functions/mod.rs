@@ -379,6 +379,9 @@ impl Module {
             let results = type_.results().to_vec();
             self.types.add_entry_ty(&results);
 
+            // Likewise for legacy `catch` handler block types.
+            self.register_legacy_catch_block_types(&body, indices)?;
+
             // Next up comes all the locals of the function.
             let mut locals_reader = body.get_locals_reader()?;
             for _ in 0..locals_reader.get_count() {
@@ -426,6 +429,65 @@ impl Module {
             self.funcs.arena[id].kind = FunctionKind::Local(func);
         }
 
+        Ok(())
+    }
+
+    /// Pre-register the implicit `[tag params] -> [try results]` `Type` of
+    /// every non-`Simple` legacy `catch` / `catch_all` handler in `body`.
+    ///
+    /// Legacy `catch` handler signatures are implicit in the encoding and
+    /// so never in `ModuleTypes`. The IR builder runs in parallel over
+    /// `&Module` and cannot register them itself, so — like `add_entry_ty`
+    /// for the function entry block — they're pre-registered here.
+    fn register_legacy_catch_block_types(
+        &mut self,
+        body: &wasmparser::FunctionBody,
+        indices: &IndicesToIds,
+    ) -> Result<()> {
+        use wasmparser::{BlockType, Operator};
+
+        // One entry per open structured frame; `Some` holds a `try`'s
+        // result types. A `catch` pairs with the innermost `try`, i.e.
+        // the top frame.
+        let mut frames: Vec<Option<Vec<ValType>>> = Vec::new();
+        for op in body.get_operators_reader()? {
+            match op? {
+                Operator::Block { .. }
+                | Operator::Loop { .. }
+                | Operator::If { .. }
+                | Operator::TryTable { .. } => frames.push(None),
+                Operator::Try { blockty } => frames.push(Some(match blockty {
+                    BlockType::Empty => Vec::new(),
+                    BlockType::Type(t) => ValType::from_wasmparser_type(t, indices)?.into_vec(),
+                    BlockType::FuncType(i) => self.types.results(indices.get_type(i)?).to_vec(),
+                })),
+                // `end` closes any frame; `delegate` closes a `try` frame.
+                Operator::End | Operator::Delegate { .. } => {
+                    frames.pop();
+                }
+                Operator::Catch { tag_index } => {
+                    if let Some(Some(results)) = frames.last() {
+                        let results = results.clone();
+                        let tag_ty = self.tags.get(indices.get_tag(tag_index)?).ty();
+                        let params = self.types.params(tag_ty).to_vec();
+                        // `Simple` handlers (0 params, <=1 result) need no `Type`.
+                        if !matches!((params.len(), results.len()), (0, 0) | (0, 1)) {
+                            self.types.add(&params, &results);
+                        }
+                    }
+                }
+                Operator::CatchAll => {
+                    if let Some(Some(results)) = frames.last() {
+                        // Handler is `[] -> results`; multi-value iff >1 result.
+                        if results.len() > 1 {
+                            let results = results.clone();
+                            self.types.add(&[], &results);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 

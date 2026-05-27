@@ -254,12 +254,15 @@ impl Emit for ModuleElements {
             ) {
                 match kind {
                     ElementKind::Active { table, offset } => {
-                        // When the table index is 0, set this to `None` to tell `wasm-encoder` to use
-                        // the backwards-compatible MVP encoding.
-                        let table_index =
-                            Some(cx.indices.get_table_index(*table)).filter(|&index| index != 0);
+                        // Use the MVP encoding (implicit table 0) only when the
+                        // table is index 0 and not a table64, since MVP requires
+                        // an i32 offset.
+                        let table_index = cx.indices.get_table_index(*table);
+                        let is_table64 = cx.module.tables.get(*table).table64;
+                        let encoded_table_index =
+                            Some(table_index).filter(|&idx| idx != 0 || is_table64);
                         wasm_element_section.active(
-                            table_index,
+                            encoded_table_index,
                             &offset.to_wasmencoder_type(cx),
                             els,
                         );

@@ -16,6 +16,7 @@ serde_json = { version = "1.0.40", features = ['preserve_order'] }
 tempfile = "3.1.0"
 walrus = { path = "../.." }
 walrus-tests-utils = { path = "../tests-utils" }
+wasmparser = "0.245.1"
 wasmprinter = "0.245"
 wat = "1.0.85"
 

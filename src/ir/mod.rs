@@ -23,7 +23,8 @@ pub type LocalId = Id<Local>;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Local {
     id: LocalId,
-    ty: ValType,
+    /// The type of this local
+    pub ty: ValType,
     /// A human-readable name for this local, often useful when debugging
     pub name: Option<String>,
 }

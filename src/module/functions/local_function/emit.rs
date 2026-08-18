@@ -349,6 +349,11 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
                 Instruction::MemoryFill(idx)
             }
 
+            MemoryDiscard(e) => {
+                let idx = self.indices.get_memory_index(e.memory);
+                Instruction::MemoryDiscard(idx)
+            }
+
             TernOp(e) => {
                 use crate::ir::TernaryOp::*;
 

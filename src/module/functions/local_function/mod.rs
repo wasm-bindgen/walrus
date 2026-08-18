@@ -721,6 +721,10 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             let memory = ctx.indices.get_memory(mem).unwrap();
             ctx.alloc_instr(MemoryFill { memory }, loc);
         }
+        Operator::MemoryDiscard { mem } => {
+            let memory = ctx.indices.get_memory(mem).unwrap();
+            ctx.alloc_instr(MemoryDiscard { memory }, loc);
+        }
 
         Operator::Nop => {}
 
@@ -1763,8 +1767,7 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
 
         // List all unimplemented operators instead of having a catch-all arm.
         // So that future upgrades won't miss additions to this list that may be important to know.
-        Operator::MemoryDiscard { mem: _ }
-        | Operator::GlobalAtomicGet {
+        Operator::GlobalAtomicGet {
             ordering: _,
             global_index: _,
         }

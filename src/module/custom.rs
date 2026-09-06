@@ -28,6 +28,12 @@ pub trait CustomSection: WalrusAny + Debug + Send + Sync {
     /// This should *not* include the section header with id=0, the custom
     /// section's name, or the count of how many bytes are in the
     /// payload. `walrus` will handle these for you.
+    ///
+    /// The dynamic-linking sections `dylink` and `dylink.0` are emitted before
+    /// the standard sections, as required by their ABI. Their payloads must not
+    /// depend on module indices or code transformations. Walrus preserves the
+    /// supplied allocation and symbol metadata; transformations that change the
+    /// reserved memory or table layout must update that metadata themselves.
     fn data(&self, ids_to_indices: &IdsToIndices) -> Cow<'_, [u8]>;
 
     /// Add any core wasm roots to the provided `roots` argument.

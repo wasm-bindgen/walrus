@@ -30,7 +30,7 @@ Released YYYY-MM-DD.
 
 * TODO (or remove section if none)
 
-## 0.26.6
+## 0.27.0
 
 Released 2026-09-08.
 

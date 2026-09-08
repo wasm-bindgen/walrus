@@ -438,12 +438,6 @@ pub enum Instr {
         memory: MemoryId,
     },
 
-    /// `memory.discard`
-    MemoryDiscard {
-        /// The memory to discard
-        memory: MemoryId,
-    },
-
     /// `*.load`
     ///
     /// Loading a value from memory.
@@ -1746,7 +1740,6 @@ impl Instr {
             | Instr::DataDrop(..)
             | Instr::MemoryCopy(..)
             | Instr::MemoryFill(..)
-            | Instr::MemoryDiscard(..)
             | Instr::CallIndirect(..)
             | Instr::Load(..)
             | Instr::Store(..)

@@ -460,6 +460,17 @@ impl Module {
             locals: Default::default(),
             code_transform: Default::default(),
         };
+        // The dynamic-linking ABI requires this metadata before every standard
+        // section. Its payload contains allocation requirements and symbol names,
+        // not module indices or code offsets, so it can be emitted first.
+        for (_, section) in customs.iter() {
+            if matches!(section.name(), "dylink" | "dylink.0") {
+                cx.wasm_module.section(&wasm_encoder::CustomSection {
+                    name: section.name().into(),
+                    data: section.data(cx.indices),
+                });
+            }
+        }
         self.types.emit(&mut cx);
         self.imports.emit(&mut cx);
         self.funcs.emit_func_section(&mut cx);
@@ -495,7 +506,9 @@ impl Module {
         let indices = std::mem::take(cx.indices);
 
         for (_id, section) in customs.iter_mut() {
-            if section.name().starts_with(".debug") {
+            if section.name().starts_with(".debug")
+                || matches!(section.name(), "dylink" | "dylink.0")
+            {
                 continue;
             }
 

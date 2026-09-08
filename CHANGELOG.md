@@ -24,7 +24,7 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* TODO (or remove section if none)
+* Emit `dylink.0` and legacy `dylink` metadata before standard sections, preserving their payloads.
 
 ### Security
 

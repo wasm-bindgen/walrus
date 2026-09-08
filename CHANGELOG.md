@@ -24,11 +24,23 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* Emit `dylink.0` and legacy `dylink` metadata before standard sections, preserving their payloads.
+* TODO (or remove section if none)
 
 ### Security
 
 * TODO (or remove section if none)
+
+## 0.26.6
+
+Released 2026-09-08.
+
+### Removed
+
+* `memory.discard` experimental instruction removed
+
+### Changed
+
+* Emit `dylink.0` and legacy `dylink` metadata before standard sections, preserving their payloads.
 
 --------------------------------------------------------------------------------
 

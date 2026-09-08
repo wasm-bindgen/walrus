@@ -1,0 +1,19 @@
+src/module/functions/local_function/mod.rs
+  s_061f39e3723b20::t_eb830307054bd9 1766-1767
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c31333cb610882c2b667be94846dc49db7bc8ce9",
+  "prompts": {},
+  "sessions": {
+    "s_061f39e3723b20": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f7d71185dffenGH83xUhOTSVXz",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Guy Bedford <gbedford@cloudflare.com>"
+    }
+  }
+}

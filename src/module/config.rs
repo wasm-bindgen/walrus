@@ -182,8 +182,6 @@ impl ModuleConfig {
         // This is a pre-Phase 4 proposal, so only enable when unstable features are allowed.
         if !self.only_stable_features {
             features.insert(WasmFeatures::WIDE_ARITHMETIC);
-            // Enable the memory control proposal (`memory.discard`).
-            features.insert(WasmFeatures::MEMORY_CONTROL);
         }
 
         features

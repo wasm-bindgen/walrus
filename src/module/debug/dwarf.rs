@@ -74,26 +74,33 @@ where
                 .attr_value(constants::DW_AT_high_pc)
                 .expect("high_pc");
 
-            if let (Some(AttributeValue::Addr(low_addr)), Some(AttributeValue::Udata(offset))) =
+            let (Some(AttributeValue::Addr(low_addr)), Some(AttributeValue::Udata(offset))) =
                 (low_pc, high_pc)
-            {
-                let new_low_pc =
-                    (self.convert_address)(low_addr, AddressSearchPreference::InclusiveFunctionEnd);
-                let new_high_pc = (self.convert_address)(
-                    low_addr + offset,
-                    AddressSearchPreference::InclusiveFunctionEnd,
-                );
-                if let (
+            else {
+                continue;
+            };
+            let new_low_pc =
+                (self.convert_address)(low_addr, AddressSearchPreference::InclusiveFunctionEnd);
+            let new_high_pc = (self.convert_address)(
+                low_addr + offset,
+                AddressSearchPreference::InclusiveFunctionEnd,
+            );
+            let offset = match (new_low_pc, new_high_pc) {
+                (
                     Some(write::Address::Constant(new_low_pc)),
                     Some(write::Address::Constant(new_high_pc)),
-                ) = (new_low_pc, new_high_pc)
-                {
-                    debug_entry.set(
-                        constants::DW_AT_high_pc,
-                        write::AttributeValue::Udata(new_high_pc.saturating_sub(new_low_pc)),
-                    );
-                }
-            }
+                ) => new_high_pc.saturating_sub(new_low_pc),
+                _ => offset,
+            };
+            // gimli reads any `DW_AT_high_pc` offset as `Udata`, which it
+            // would then write as a variable-length LEB. Keep the fixed-width
+            // form LLVM emits: consumers that patch code addresses in place
+            // (binaryen's DWARF update) rely on the size not changing.
+            let offset = match u32::try_from(offset) {
+                Ok(offset) => write::AttributeValue::Data4(offset),
+                Err(_) => write::AttributeValue::Udata(offset),
+            };
+            debug_entry.set(constants::DW_AT_high_pc, offset);
         }
     }
 
@@ -547,7 +554,7 @@ mod tests {
             );
             unit1.get_mut(child1_id).set(
                 constants::DW_AT_high_pc,
-                write::AttributeValue::Udata(0x100),
+                write::AttributeValue::Data4(0x100),
             );
 
             unit_table.add(unit1);
@@ -624,8 +631,24 @@ mod tests {
             );
             assert_eq!(
                 *subprogram_entry.get(DW_AT_high_pc).unwrap(),
-                write::AttributeValue::Udata(0xE0)
+                write::AttributeValue::Data4(0xE0)
             );
         }
+
+        // The emitted form must stay fixed-width, as in the input.
+        let mut sections = write::Sections::new(write::EndianVec::new(LittleEndian));
+        converted_dwarf.write(&mut sections).unwrap();
+        let read_dwarf = Dwarf {
+            debug_info: read::DebugInfo::new(sections.debug_info.slice(), LittleEndian),
+            debug_abbrev: read::DebugAbbrev::new(sections.debug_abbrev.slice(), LittleEndian),
+            ..Default::default()
+        };
+        let header = read_dwarf.units().next().unwrap().unwrap();
+        let unit = read_dwarf.unit(header).unwrap();
+        let mut entries = unit.entries();
+        entries.next_dfs().unwrap();
+        let (_, subprogram) = entries.next_dfs().unwrap().unwrap();
+        let high_pc = subprogram.attr(DW_AT_high_pc).unwrap().unwrap();
+        assert_eq!(high_pc.raw_value(), AttributeValue::Data4(0xE0));
     }
 }

@@ -63,7 +63,8 @@ impl Emit for ModuleDebugData {
             .borrow(|sections| EndianSlice::new(sections.as_ref(), LittleEndian));
 
         let mut dwarf = write::Dwarf::from(&from_dwarf, &|address| {
-            if address == 0 || address == DEAD_CODE {
+            // `>=` also passes through lld's `-1` tombstone untouched.
+            if address == 0 || address >= DEAD_CODE {
                 Some(write::Address::Constant(address))
             } else {
                 convert_address(address, AddressSearchPreference::InclusiveFunctionEnd)

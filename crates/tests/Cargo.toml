@@ -11,11 +11,13 @@ walkdir = "2.2.9"
 [dev-dependencies]
 anyhow = "1.0"
 env_logger = "0.8.1"
+gimli = "0.32.0"
 serde = { version = "1.0.99", features = ['derive'] }
 serde_json = { version = "1.0.40", features = ['preserve_order'] }
 tempfile = "3.1.0"
 walrus = { path = "../.." }
 walrus-tests-utils = { path = "../tests-utils" }
+wasm-encoder = "0.245.1"
 wasmparser = "0.245.1"
 wasmprinter = "0.245"
 wat = "1.0.85"

@@ -15,7 +15,13 @@ pub enum AddressSearchPreference {
     InclusiveFunctionEnd,
 }
 
-pub(crate) static DEAD_CODE: u64 = 0xFFFFFFFF;
+/// Tombstone for addresses in code that no longer exists.
+///
+/// `-2` rather than `-1`: in DWARF 4 `.debug_loc` and `.debug_ranges` with
+/// 4-byte addresses, a `begin` of `-1` is the base address selection marker
+/// (which carries no expression length), so a `-1` tombstone desyncs every
+/// reader of the rest of the section. lld makes the same choice.
+pub(crate) static DEAD_CODE: u64 = 0xFFFF_FFFE;
 
 /// DWARF convertion context
 pub(crate) struct ConvertContext<'a, R: Reader<Offset = usize>> {

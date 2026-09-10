@@ -24,7 +24,11 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* TODO (or remove section if none)
+* DWARF addresses in removed code are now tombstoned as `-2` instead of `-1`.
+  In DWARF 4 `.debug_loc`/`.debug_ranges` with 4-byte addresses a `begin` of
+  `-1` is the base address selection marker, so the previous tombstone made
+  the rest of the section unparseable (`llvm-dwarfdump`: "unexpected end of
+  data"; `wasm-opt -g`: "debug_loc error").
 
 ### Security
 

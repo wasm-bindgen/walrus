@@ -24,14 +24,20 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* `DW_AT_high_pc` is now emitted as fixed-width `DW_FORM_data4` (as LLVM does)
-  rather than `DW_FORM_udata`. Tools that patch code addresses in place, such
-  as binaryen's DWARF update under `wasm-opt -g`, rely on the encoded size not
-  changing and aborted with "compile unit size was incorrect" on walrus output.
+* TODO (or remove section if none)
 
 ### Security
 
 * TODO (or remove section if none)
+
+## 0.27.2
+
+### Fixed
+
+* `DW_AT_high_pc` is now emitted as fixed-width `DW_FORM_data4` (as LLVM does)
+  rather than `DW_FORM_udata`. Tools that patch code addresses in place, such
+  as binaryen's DWARF update under `wasm-opt -g`, rely on the encoded size not
+  changing and aborted with "compile unit size was incorrect" on walrus output.
 
 ## 0.27.1
 

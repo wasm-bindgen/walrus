@@ -10,7 +10,9 @@ section needs parse, IR, visitor and emit support, plus handling in
 
 ## Build & Test
 
-The tests need [WABT](https://github.com/WebAssembly/wabt) on `$PATH`.
+The tests need [WABT](https://github.com/WebAssembly/wabt) and
+[wasm-tools](https://github.com/bytecodealliance/wasm-tools) (for
+`json-from-wast` in the spec tests) on `$PATH`.
 
 ```sh
 cargo test --all

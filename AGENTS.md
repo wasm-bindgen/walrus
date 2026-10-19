@@ -11,8 +11,9 @@ section needs parse, IR, visitor and emit support, plus handling in
 ## Build & Test
 
 The tests need [WABT](https://github.com/WebAssembly/wabt) and
-[wasm-tools](https://github.com/bytecodealliance/wasm-tools) (for
-`json-from-wast` in the spec tests) on `$PATH`.
+[wasm-tools](https://github.com/bytecodealliance/wasm-tools) on `$PATH`, and
+the spec tests need `git submodule update --init`; without the submodule,
+`crates/tests/build.rs` silently generates no spec tests.
 
 ```sh
 cargo test --all

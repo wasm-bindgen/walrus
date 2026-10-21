@@ -115,9 +115,6 @@ impl ModuleData {
     // Note that this is inaccordance with the upstream bulk memory proposal to
     // WebAssembly and isn't currently part of the WebAssembly standard.
     pub(crate) fn emit_data_count(&self, cx: &mut EmitContext) {
-        #[cfg(feature = "parallel")]
-        use rayon::iter::ParallelIterator;
-
         if self.arena.len() == 0 {
             return;
         }
@@ -140,11 +137,7 @@ impl ModuleData {
         // The key is that we don't want to generate this section for MVP Wasm,
         // which has niether passive data segments, nor the `data.drop` and
         // `memory.init` instructions.
-        let funcs = &cx.module.funcs;
-        if any_passive
-            || maybe_parallel!(funcs.(iter_local | par_iter_local))
-                .any(|(_, f)| !f.used_data_segments().is_empty())
-        {
+        if any_passive || cx.func_facts.values().any(|f| f.uses_data_segments) {
             cx.wasm_module
                 .section(&wasm_encoder::DataCountSection { count });
         }

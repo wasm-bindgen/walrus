@@ -13,12 +13,22 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use wasmparser::{FuncValidator, Operator, ValidatorResources};
 
-/// Return type for emit_locals: (encoded locals, used locals set, local index map)
-type EmitLocalsResult = (
-    Vec<(u32, wasm_encoder::ValType)>,
-    IdHashSet<Local>,
-    IdHashMap<Local, u32>,
-);
+/// Return type for emit_locals: (encoded locals, local index map)
+type EmitLocalsResult = (Vec<(u32, wasm_encoder::ValType)>, IdHashMap<Local, u32>);
+
+/// What emission needs to know about a local function's body. These are
+/// gathered in one IR walk, rather than one walk per question.
+#[derive(Debug)]
+pub(crate) struct EmitFacts {
+    /// The function's size, as returned by [`LocalFunction::size`].
+    pub size: u64,
+    /// Whether [`LocalFunction::used_data_segments`] is non-empty.
+    pub uses_data_segments: bool,
+    /// The targets of every `ref.func`, in visit order, repeats included.
+    pub ref_funcs: Vec<FunctionId>,
+    /// The locals that the function's instructions use.
+    pub used_locals: IdHashSet<Local>,
+}
 
 /// A function defined locally within the wasm module.
 #[derive(Debug)]
@@ -151,6 +161,49 @@ impl LocalFunction {
         &mut self.builder
     }
 
+    /// Gather what emission needs to know about this function in one walk.
+    ///
+    /// This is the same traversal as [`LocalFunction::size`],
+    /// [`LocalFunction::used_data_segments`] and the walks that find `ref.func`
+    /// targets and used locals, so it sees exactly the instruction sequences
+    /// reachable from the entry block. In particular, `size` must not be
+    /// computed from the arena of instruction sequences: that would count
+    /// dangling sequences too.
+    pub(crate) fn emit_facts(&self) -> EmitFacts {
+        let mut v = FactsVisitor {
+            facts: EmitFacts {
+                size: 0,
+                uses_data_segments: false,
+                ref_funcs: Vec::new(),
+                used_locals: IdHashSet::default(),
+            },
+        };
+        dfs_in_order(&mut v, self, self.entry_block());
+        return v.facts;
+
+        struct FactsVisitor {
+            facts: EmitFacts,
+        }
+
+        impl<'instr> Visitor<'instr> for FactsVisitor {
+            fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
+                self.facts.size += seq.len() as u64;
+            }
+
+            fn visit_data_id(&mut self, _: &DataId) {
+                self.facts.uses_data_segments = true;
+            }
+
+            fn visit_ref_func(&mut self, instr: &RefFunc) {
+                self.facts.ref_funcs.push(instr.func);
+            }
+
+            fn visit_local_id(&mut self, id: &LocalId) {
+                self.facts.used_locals.insert(*id);
+            }
+        }
+    }
+
     /// Get the size of this function, in number of instructions.
     pub fn size(&self) -> u64 {
         let mut v = SizeVisitor::default();
@@ -197,30 +250,14 @@ impl LocalFunction {
         }
     }
 
-    fn used_locals(&self) -> IdHashSet<Local> {
-        let mut locals = Used::default();
-        dfs_in_order(&mut locals, self, self.entry_block());
-        return locals.locals;
-
-        #[derive(Default)]
-        struct Used {
-            locals: IdHashSet<Local>,
-        }
-
-        impl<'a> Visitor<'a> for Used {
-            fn visit_local_id(&mut self, id: &LocalId) {
-                self.locals.insert(*id);
-            }
-        }
-    }
-
-    /// Emit this function's compact locals declarations.
+    /// Emit this function's compact locals declarations, given the locals
+    /// that its instructions use.
     pub(crate) fn emit_locals(
         &self,
         module: &Module,
         indices: &crate::emit::IdsToIndices,
+        used_set: &IdHashSet<Local>,
     ) -> EmitLocalsResult {
-        let used_set = self.used_locals();
         let mut used_locals = used_set.iter().cloned().collect::<Vec<_>>();
         // Sort to ensure we assign local indexes deterministically, and
         // everything is distinct so we can use a faster unstable sort.
@@ -266,7 +303,6 @@ impl LocalFunction {
                 .iter()
                 .map(|(ty, locals)| (locals.len() as u32, ty.to_wasmencoder_type(indices)))
                 .collect(),
-            used_set,
             local_map,
         )
     }

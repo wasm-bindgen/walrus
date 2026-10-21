@@ -98,7 +98,12 @@ impl LocalFunction {
             "the function entry type should have already been created before parsing the body",
         );
         let entry = ctx.push_control_with_ty(BlockKind::FunctionEntry, ty);
-        let mut instruction_mapping = BTreeMap::new();
+        // Every operator is at least one byte and `pos` is read before the
+        // operator is consumed, so offsets arrive strictly increasing. Pushing
+        // onto a `Vec` therefore builds the same sorted, duplicate-free table
+        // that collecting a `BTreeMap` would, without a tree insert per
+        // operator. The body size bounds the operator count.
+        let mut instruction_mapping = Vec::with_capacity(function_body_size);
         ctx.func.builder.entry = Some(entry);
         let mut ops_reader = body.get_operators_reader()?;
         while !ops_reader.eof() {
@@ -111,9 +116,14 @@ impl LocalFunction {
             };
             validator.op(pos, &inst)?;
             append_instruction(&mut ctx, inst, loc);
-            instruction_mapping.insert(pos - code_address_offset, loc);
+            let offset = pos - code_address_offset;
+            debug_assert!(instruction_mapping
+                .last()
+                .is_none_or(|&(prev, _)| prev < offset));
+            instruction_mapping.push((offset, loc));
         }
-        ctx.func.instruction_mapping = instruction_mapping.into_iter().collect();
+        instruction_mapping.shrink_to_fit();
+        ctx.func.instruction_mapping = instruction_mapping;
         ops_reader.finish()?;
 
         debug_assert!(ctx.controls.is_empty());

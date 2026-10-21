@@ -16,6 +16,9 @@ Released YYYY-MM-DD.
   its size, the locals and data segments it uses, and its `ref.func` targets,
   instead of walking every body four times for these. Emission of large
   modules is roughly 40% faster.
+* Parsing builds `LocalFunction::instruction_mapping` by pushing onto a `Vec`
+  instead of inserting every operator offset into a `BTreeMap`. The table's
+  contents are unchanged; parsing large modules is roughly a third faster.
 
 ### Deprecated
 

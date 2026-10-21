@@ -12,7 +12,9 @@ Released YYYY-MM-DD.
 
 ### Changed
 
-* TODO (or remove section if none)
+* Parsing builds `LocalFunction::instruction_mapping` by pushing onto a `Vec`
+  instead of inserting every operator offset into a `BTreeMap`. The table's
+  contents are unchanged; parsing large modules is roughly a third faster.
 
 ### Deprecated
 

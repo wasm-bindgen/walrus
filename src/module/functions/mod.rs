@@ -444,9 +444,16 @@ impl Module {
         };
         // `LocalFunction::parse` builds blocks on a scratch stack of
         // instructions, which is reused for the functions parsed by one task.
+        //
+        // Function sizes vary a lot, and walrus emits functions largest first,
+        // so splitting the list into contiguous chunks leaves the first chunk
+        // with most of the work. Make every function its own task instead.
+        // That gives every function a fresh scratch stack; a per-thread one
+        // that is reused across tasks measured no faster.
         #[cfg(feature = "parallel")]
         let results = bodies
             .into_par_iter()
+            .with_max_len(1)
             .map_init(Vec::new, parse)
             .collect::<Vec<_>>();
         #[cfg(not(feature = "parallel"))]
@@ -712,7 +719,15 @@ impl Emit for ModuleFunctions {
         // Functions can typically take awhile to serialize, so serialize
         // everything in parallel. Afterwards we'll actually place all the
         // functions together.
-        let bytes = maybe_parallel!(functions.(into_iter | into_par_iter))
+        //
+        // `functions` is sorted largest first, so splitting it into contiguous
+        // chunks would leave the first chunk with most of the work. Make every
+        // function its own task instead.
+        #[cfg(feature = "parallel")]
+        let functions = functions.into_par_iter().with_max_len(1);
+        #[cfg(not(feature = "parallel"))]
+        let functions = functions.into_iter();
+        let bytes = functions
             .map(|(id, func, _size)| {
                 log::debug!("emit function {:?} {:?}", id, cx.module.funcs.get(id).name);
                 let mut wasm = Vec::new();

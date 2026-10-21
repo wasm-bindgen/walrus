@@ -26,6 +26,9 @@ pub(crate) struct ControlFrame {
 
     /// This control frame's kind of block, eg loop vs block vs if/else.
     pub kind: BlockKind,
+
+    /// Where this block's instructions start in `ValidationContext::instrs`.
+    pub start: usize,
 }
 
 /// The control frame stack.
@@ -48,6 +51,12 @@ pub(crate) struct ValidationContext<'a> {
     /// The control frames stack.
     pub controls: &'a mut ControlStack,
 
+    /// The instructions of every open block, innermost last. Each frame's
+    /// instructions start at its `start`; they are moved into the frame's
+    /// `InstrSeq`, at their exact size, when the frame is popped. This avoids
+    /// growing every block's `Vec` one push at a time.
+    pub instrs: &'a mut Vec<(Instr, InstrLocId)>,
+
     /// If we're currently parsing an if/else instruction, where we're at
     pub if_else: Vec<IfElseState>,
 }
@@ -67,13 +76,16 @@ impl<'a> ValidationContext<'a> {
         func_id: FunctionId,
         func: &'a mut LocalFunction,
         controls: &'a mut ControlStack,
+        instrs: &'a mut Vec<(Instr, InstrLocId)>,
     ) -> ValidationContext<'a> {
+        debug_assert!(instrs.is_empty());
         ValidationContext {
             module,
             indices,
             func_id,
             func,
             controls,
+            instrs,
             if_else: Vec::new(),
         }
     }
@@ -89,6 +101,7 @@ impl<'a> ValidationContext<'a> {
             kind,
             self.func,
             self.controls,
+            self.instrs.len(),
             start_types,
             end_types,
         )
@@ -103,6 +116,7 @@ impl<'a> ValidationContext<'a> {
             kind,
             self.func,
             self.controls,
+            self.instrs.len(),
             ty.into(),
             start_types,
             end_types,
@@ -112,6 +126,7 @@ impl<'a> ValidationContext<'a> {
     pub fn pop_control(&mut self) -> Result<(ControlFrame, InstrSeqId)> {
         let frame = impl_pop_control(self.controls)?;
         let block = frame.block;
+        self.func.block_mut(block).instrs = self.instrs.split_off(frame.start);
         Ok((frame, block))
     }
 
@@ -128,15 +143,6 @@ impl<'a> ValidationContext<'a> {
         Ok(&self.controls[idx])
     }
 
-    pub fn alloc_instr_in_block(
-        &mut self,
-        block: InstrSeqId,
-        instr: impl Into<Instr>,
-        loc: InstrLocId,
-    ) {
-        self.func.block_mut(block).instrs.push((instr.into(), loc));
-    }
-
     pub fn alloc_instr_in_control(
         &mut self,
         control: usize,
@@ -147,8 +153,18 @@ impl<'a> ValidationContext<'a> {
         if frame.unreachable {
             return Ok(());
         }
-        let block = frame.block;
-        self.alloc_instr_in_block(block, instr, loc);
+        // Frames inside `control` have no instructions yet (this is used to
+        // add a block instruction to its parent right after pushing the
+        // block's frame), so the parent's instructions end at the top of
+        // `instrs`. Push there and move the inner frames' starts past it.
+        let inner = self.controls.len() - control..;
+        debug_assert!(self.controls[inner.clone()]
+            .iter()
+            .all(|f| f.start == self.instrs.len()));
+        self.instrs.push((instr.into(), loc));
+        for f in &mut self.controls[inner] {
+            f.start += 1;
+        }
         Ok(())
     }
 
@@ -166,24 +182,30 @@ impl<'a> ValidationContext<'a> {
         if frame.unreachable {
             return Ok(());
         }
-        let block = frame.block;
-        let seq = self.func.block_mut(block);
+        let parent_start = frame.start;
 
-        // The Try instruction should be the last instruction in the parent block
-        if let Some((Instr::Try(ref mut try_instr), _)) = seq.instrs.last_mut() {
-            try_instr.catches.push(catch);
-            return Ok(());
+        // The Try instruction should be the last instruction in the parent
+        // block, which ends where the innermost frame starts: the try body for
+        // `delegate`, or the new (still empty) handler for `catch`.
+        let end = self.controls.last().unwrap().start;
+        if end > parent_start {
+            if let (Instr::Try(ref mut try_instr), _) = self.instrs[end - 1] {
+                try_instr.catches.push(catch);
+                return Ok(());
+            }
         }
 
         anyhow::bail!("No Try instruction found to add catch clause to");
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn impl_push_control(
     types: &ModuleTypes,
     kind: BlockKind,
     func: &mut LocalFunction,
     controls: &mut ControlStack,
+    start: usize,
     start_types: Box<[ValType]>,
     end_types: Box<[ValType]>,
 ) -> Result<InstrSeqId> {
@@ -200,17 +222,20 @@ fn impl_push_control(
         kind,
         func,
         controls,
+        start,
         ty,
         start_types,
         end_types,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn impl_push_control_with_ty(
     types: &ModuleTypes,
     kind: BlockKind,
     func: &mut LocalFunction,
     controls: &mut ControlStack,
+    start: usize,
     ty: InstrSeqType,
     start_types: Box<[ValType]>,
     end_types: Box<[ValType]>,
@@ -228,6 +253,7 @@ fn impl_push_control_with_ty(
         unreachable: false,
         block,
         kind,
+        start,
     });
 
     block

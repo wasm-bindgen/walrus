@@ -394,23 +394,37 @@ impl Module {
 
         // Wasm modules can often have a lot of functions and this operation can
         // take some time, so parse all function bodies in parallel.
-        let results = maybe_parallel!(bodies.(into_iter | into_par_iter))
-            .map(|(id, body, args, ty, validator)| {
-                (
+        let parse = |instrs: &mut Vec<_>, (id, body, args, ty, validator)| {
+            (
+                id,
+                LocalFunction::parse(
+                    self,
+                    indices,
                     id,
-                    LocalFunction::parse(
-                        self,
-                        indices,
-                        id,
-                        ty,
-                        args,
-                        body,
-                        on_instr_pos,
-                        validator,
-                    ),
-                )
-            })
+                    ty,
+                    args,
+                    body,
+                    on_instr_pos,
+                    validator,
+                    instrs,
+                ),
+            )
+        };
+        // `LocalFunction::parse` builds blocks on a scratch stack of
+        // instructions, which is reused for the functions parsed by one task.
+        #[cfg(feature = "parallel")]
+        let results = bodies
+            .into_par_iter()
+            .map_init(Vec::new, parse)
             .collect::<Vec<_>>();
+        #[cfg(not(feature = "parallel"))]
+        let results = {
+            let mut instrs = Vec::new();
+            bodies
+                .into_iter()
+                .map(|body| parse(&mut instrs, body))
+                .collect::<Vec<_>>()
+        };
 
         // The function entry block and multi-value legacy `catch` /
         // `catch_all` handler blocks reference a `Type` that is implicit in

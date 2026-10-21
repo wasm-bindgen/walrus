@@ -19,6 +19,9 @@ Released YYYY-MM-DD.
   to find legacy `catch` handler types before the parallel body parse. The
   types are registered after parsing in the same order as before, so `TypeId`s
   and the emitted type section are unchanged.
+* Parsing builds each instruction sequence on a shared scratch stack and moves
+  it into its `InstrSeq` at its exact size when the block ends, rather than
+  growing every block's `Vec` one push at a time.
 
 ### Deprecated
 

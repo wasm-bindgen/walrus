@@ -15,6 +15,10 @@ Released YYYY-MM-DD.
 * Parsing builds `LocalFunction::instruction_mapping` by pushing onto a `Vec`
   instead of inserting every operator offset into a `BTreeMap`. The table's
   contents are unchanged; parsing large modules is roughly a third faster.
+* Parsing no longer decodes every function body a second time, serially,
+  to find legacy `catch` handler types before the parallel body parse. The
+  types are registered after parsing in the same order as before, so `TypeId`s
+  and the emitted type section are unchanged.
 
 ### Deprecated
 
@@ -26,7 +30,8 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* TODO (or remove section if none)
+* Parsing an invalid module with a legacy `try` whose block type is a struct
+  or array type returns a validation error instead of panicking.
 
 ### Security
 

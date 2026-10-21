@@ -6,7 +6,7 @@ use crate::module::functions::{FunctionId, LocalFunction};
 use crate::module::Module;
 use crate::parse::IndicesToIds;
 use crate::ty::ValType;
-use crate::{ModuleTypes, TypeId};
+use crate::ModuleTypes;
 use anyhow::Context;
 
 #[derive(Debug)]
@@ -50,7 +50,15 @@ pub(crate) struct ValidationContext<'a> {
 
     /// If we're currently parsing an if/else instruction, where we're at
     pub if_else: Vec<IfElseState>,
+
+    /// Multi-value legacy handler blocks with a placeholder type, with their
+    /// params and results, in operator order. See `push_legacy_handler`.
+    pub legacy_handler_tys: Vec<LegacyHandlerTy>,
 }
+
+/// A legacy handler block whose `MultiValue` type is resolved after parsing:
+/// the block, its params and its results.
+pub(crate) type LegacyHandlerTy = (InstrSeqId, Box<[ValType]>, Box<[ValType]>);
 
 #[derive(Debug)]
 pub struct IfElseState {
@@ -75,6 +83,7 @@ impl<'a> ValidationContext<'a> {
             func,
             controls,
             if_else: Vec::new(),
+            legacy_handler_tys: Vec::new(),
         }
     }
 
@@ -94,19 +103,54 @@ impl<'a> ValidationContext<'a> {
         )
     }
 
-    pub fn push_control_with_ty(&mut self, kind: BlockKind, ty: TypeId) -> InstrSeqId {
-        let (start_types, end_types) = self.module.types.params_results(ty);
-        let start_types: Box<[_]> = start_types.into();
-        let end_types: Box<[_]> = end_types.into();
+    /// Push the function entry frame.
+    ///
+    /// The entry block's type is a `MultiValue` entry `Type` that may not
+    /// exist yet, because bodies are parsed against a shared `&Module`. The
+    /// block gets a placeholder type that `parse_local_functions` replaces
+    /// after parsing.
+    pub fn push_entry_control(&mut self, results: Box<[ValType]>) -> InstrSeqId {
         impl_push_control_with_ty(
+            &self.module.types,
+            BlockKind::FunctionEntry,
+            self.func,
+            self.controls,
+            InstrSeqType::Simple(None),
+            Box::new([]),
+            results,
+        )
+    }
+
+    /// Push the frame of a legacy `catch` / `catch_all` handler.
+    ///
+    /// A handler's `[tag params] -> [try results]` signature is implicit in
+    /// the encoding, so when it's multi-value its `Type` may not exist yet.
+    /// Such a block gets a placeholder type and is recorded in
+    /// `legacy_handler_tys`, for `parse_local_functions` to register and
+    /// resolve after parsing.
+    pub fn push_legacy_handler(
+        &mut self,
+        kind: BlockKind,
+        start_types: Box<[ValType]>,
+        end_types: Box<[ValType]>,
+    ) -> InstrSeqId {
+        let simple = matches!((start_types.len(), end_types.len()), (0, 0) | (0, 1));
+        if simple {
+            return self.push_control(kind, start_types, end_types).unwrap();
+        }
+        let params = start_types.clone();
+        let results = end_types.clone();
+        let block = impl_push_control_with_ty(
             &self.module.types,
             kind,
             self.func,
             self.controls,
-            ty.into(),
+            InstrSeqType::Simple(None),
             start_types,
             end_types,
-        )
+        );
+        self.legacy_handler_tys.push((block, params, results));
+        block
     }
 
     pub fn pop_control(&mut self) -> Result<(ControlFrame, InstrSeqId)> {

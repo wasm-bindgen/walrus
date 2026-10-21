@@ -15,7 +15,7 @@ mod local_function;
 
 use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
-use crate::ir::InstrLocId;
+use crate::ir::{InstrLocId, InstrSeqType};
 use crate::module::imports::ImportId;
 use crate::module::Module;
 use crate::parse::IndicesToIds;
@@ -372,16 +372,6 @@ impl Module {
                 }
             }
 
-            // Ensure that there exists a `Type` for the function's entry
-            // block. This is required because multi-value blocks reference a
-            // `Type`, however function entry's type is implicit in the
-            // encoding, and doesn't already exist in the `ModuleTypes`.
-            let results = type_.results().to_vec();
-            self.types.add_entry_ty(&results);
-
-            // Likewise for legacy `catch` handler block types.
-            self.register_legacy_catch_block_types(&body, indices)?;
-
             // Next up comes all the locals of the function.
             let mut locals_reader = body.get_locals_reader()?;
             for _ in 0..locals_reader.get_count() {
@@ -422,72 +412,39 @@ impl Module {
             })
             .collect::<Vec<_>>();
 
-        // After all the function bodies are collected and finished push them
-        // into our function arena.
+        // The function entry block and multi-value legacy `catch` /
+        // `catch_all` handler blocks reference a `Type` that is implicit in
+        // the encoding, so it may not be in `ModuleTypes` yet, and bodies are
+        // parsed against `&Module` so they couldn't add it. Register these
+        // types now, function by function in index order: the entry type,
+        // then each handler type in operator order. This is the order they
+        // were registered in when that happened before parsing, so `TypeId`s
+        // and the emitted type section stay the same.
+        let mut parsed = Vec::with_capacity(results.len());
         for (id, func) in results {
-            let func = func?;
+            let (func, legacy_handler_tys) = func?;
+            let results = self.types.get(func.ty()).results().to_vec();
+            let entry_ty = self.types.add_entry_ty(&results);
+            for (_, params, results) in &legacy_handler_tys {
+                self.types.add(params, results);
+            }
+            parsed.push((id, func, entry_ty, legacy_handler_tys));
+        }
+
+        // Then fill in the placeholder block types, once every type above is
+        // registered. Handler types are resolved with `find`, as
+        // `push_control` does for other blocks, which returns the first
+        // matching type rather than necessarily the one just added.
+        for (id, mut func, entry_ty, legacy_handler_tys) in parsed {
+            let entry = func.entry_block();
+            func.block_mut(entry).ty = entry_ty.into();
+            for (block, params, results) in legacy_handler_tys {
+                func.block_mut(block).ty = InstrSeqType::existing(&self.types, &params, &results)
+                    .expect("legacy handler type was registered above");
+            }
             self.funcs.arena[id].kind = FunctionKind::Local(func);
         }
 
-        Ok(())
-    }
-
-    /// Pre-register the implicit `[tag params] -> [try results]` `Type` of
-    /// every non-`Simple` legacy `catch` / `catch_all` handler in `body`.
-    ///
-    /// Legacy `catch` handler signatures are implicit in the encoding and
-    /// so never in `ModuleTypes`. The IR builder runs in parallel over
-    /// `&Module` and cannot register them itself, so — like `add_entry_ty`
-    /// for the function entry block — they're pre-registered here.
-    fn register_legacy_catch_block_types(
-        &mut self,
-        body: &wasmparser::FunctionBody,
-        indices: &IndicesToIds,
-    ) -> Result<()> {
-        use wasmparser::{BlockType, Operator};
-
-        // One entry per open structured frame; `Some` holds a `try`'s
-        // result types. A `catch` pairs with the innermost `try`, i.e.
-        // the top frame.
-        let mut frames: Vec<Option<Vec<ValType>>> = Vec::new();
-        for op in body.get_operators_reader()? {
-            match op? {
-                Operator::Block { .. }
-                | Operator::Loop { .. }
-                | Operator::If { .. }
-                | Operator::TryTable { .. } => frames.push(None),
-                Operator::Try { blockty } => frames.push(Some(match blockty {
-                    BlockType::Empty => Vec::new(),
-                    BlockType::Type(t) => ValType::from_wasmparser_type(t, indices)?.into_vec(),
-                    BlockType::FuncType(i) => self.types.results(indices.get_type(i)?).to_vec(),
-                })),
-                // `end` closes any frame; `delegate` closes a `try` frame.
-                Operator::End | Operator::Delegate { .. } => {
-                    frames.pop();
-                }
-                Operator::Catch { tag_index } => {
-                    if let Some(Some(results)) = frames.last() {
-                        let results = results.clone();
-                        let tag_ty = self.tags.get(indices.get_tag(tag_index)?).ty();
-                        let params = self.types.params(tag_ty).to_vec();
-                        // `Simple` handlers (0 params, <=1 result) need no `Type`.
-                        if !matches!((params.len(), results.len()), (0, 0) | (0, 1)) {
-                            self.types.add(&params, &results);
-                        }
-                    }
-                }
-                Operator::CatchAll => {
-                    if let Some(Some(results)) = frames.last() {
-                        // Handler is `[] -> results`; multi-value iff >1 result.
-                        if results.len() > 1 {
-                            let results = results.clone();
-                            self.types.add(&[], &results);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
         Ok(())
     }
 

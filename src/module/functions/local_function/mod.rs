@@ -3,6 +3,7 @@
 mod context;
 mod emit;
 
+pub(crate) use self::context::LegacyHandlerTy;
 use self::context::ValidationContext;
 use crate::emit::IdsToIndices;
 use crate::map::{IdHashMap, IdHashSet};
@@ -51,6 +52,10 @@ impl LocalFunction {
     ///
     /// Validates the given function body and constructs the `Instr` IR at the
     /// same time.
+    ///
+    /// The entry block and the blocks in the returned list have placeholder
+    /// types, because the `Type`s they need may not exist yet; the caller
+    /// registers those types and fills them in.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(
         module: &Module,
@@ -61,7 +66,7 @@ impl LocalFunction {
         body: wasmparser::FunctionBody<'_>,
         on_instr_pos: Option<&(dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static)>,
         mut validator: FuncValidator<ValidatorResources>,
-    ) -> Result<LocalFunction> {
+    ) -> Result<(LocalFunction, Vec<LegacyHandlerTy>)> {
         let code_address_offset = module.funcs.code_section_offset;
         let function_body_size = body.range().end - body.range().start;
         let function_body_size_bit =
@@ -84,10 +89,7 @@ impl LocalFunction {
 
         let mut ctx = ValidationContext::new(module, indices, id, &mut func, controls);
 
-        let ty = module.types.find_for_function_entry(&result).expect(
-            "the function entry type should have already been created before parsing the body",
-        );
-        let entry = ctx.push_control_with_ty(BlockKind::FunctionEntry, ty);
+        let entry = ctx.push_entry_control(result);
         // Every operator is at least one byte and `pos` is read before the
         // operator is consumed, so offsets arrive strictly increasing. Pushing
         // onto a `Vec` therefore builds the same sorted, duplicate-free table
@@ -117,8 +119,9 @@ impl LocalFunction {
         ops_reader.finish()?;
 
         debug_assert!(ctx.controls.is_empty());
+        let legacy_handler_tys = std::mem::take(&mut ctx.legacy_handler_tys);
 
-        Ok(func)
+        Ok((func, legacy_handler_tys))
     }
 
     /// Get this function's type.
@@ -1734,9 +1737,8 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             ctx.func.block_mut(prev_block).end = loc;
 
             // Push a new control frame for this catch handler
-            let handler = ctx
-                .push_control(BlockKind::Catch, handler_params, frame.end_types.clone())
-                .unwrap();
+            let handler =
+                ctx.push_legacy_handler(BlockKind::Catch, handler_params, frame.end_types.clone());
 
             // Add the catch to the parent Try instruction
             ctx.add_legacy_catch(LegacyCatch::Catch { tag, handler })
@@ -1751,9 +1753,8 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
 
             // Push a new control frame for this catch-all handler (no parameters)
             let empty_params: Box<[ValType]> = Box::new([]);
-            let handler = ctx
-                .push_control(BlockKind::CatchAll, empty_params, frame.end_types.clone())
-                .unwrap();
+            let handler =
+                ctx.push_legacy_handler(BlockKind::CatchAll, empty_params, frame.end_types.clone());
 
             // Add the catch-all to the parent Try instruction
             ctx.add_legacy_catch(LegacyCatch::CatchAll { handler })

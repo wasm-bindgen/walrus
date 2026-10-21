@@ -438,20 +438,6 @@ impl ModuleTypes {
         })
     }
 
-    pub(crate) fn find_for_function_entry(&self, results: &[ValType]) -> Option<TypeId> {
-        self.arena.iter().find_map(|(id, ty)| {
-            if ty.is_function()
-                && ty.is_for_function_entry()
-                && ty.params().is_empty()
-                && ty.results() == results
-            {
-                Some(id)
-            } else {
-                None
-            }
-        })
-    }
-
     /// Push a new rec group, updating the type-to-group index.
     fn push_rec_group(&mut self, rg: RecGroup) {
         let idx = self.rec_groups.len();

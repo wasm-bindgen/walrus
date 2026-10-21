@@ -22,6 +22,10 @@ Released YYYY-MM-DD.
 * Parsing builds each instruction sequence on a shared scratch stack and moves
   it into its `InstrSeq` at its exact size when the block ends, rather than
   growing every block's `Vec` one push at a time.
+* With the `parallel` feature, function bodies are parsed and emitted one
+  function per rayon task. Walrus emits functions largest first, so splitting
+  the function list into contiguous chunks left one thread with most of the
+  work, both when emitting and when parsing walrus-emitted modules.
 
 ### Deprecated
 

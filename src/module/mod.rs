@@ -28,6 +28,7 @@ pub use crate::module::debug::ModuleDebugData;
 pub use crate::module::elements::{Element, ElementId, ModuleElements};
 pub use crate::module::elements::{ElementItems, ElementKind};
 pub use crate::module::exports::{Export, ExportId, ExportItem, ModuleExports};
+pub(crate) use crate::module::functions::EmitFacts;
 pub use crate::module::functions::{FuncParams, FuncResults};
 pub use crate::module::functions::{Function, FunctionId, ModuleFunctions};
 pub use crate::module::functions::{FunctionKind, ImportedFunction, LocalFunction};
@@ -336,26 +337,17 @@ impl Module {
     ///
     /// If any referenced function lacks a declaration, a synthetic `Declared`
     /// element segment is appended.
-    fn ensure_func_declarations(&mut self) {
-        use crate::ir::dfs_in_order;
+    fn ensure_func_declarations(&mut self, func_facts: &[(FunctionId, EmitFacts)]) {
         use crate::map::IdHashSet;
 
-        // 1. Collect all functions referenced by ref.func in code.
+        // 1. Collect all functions referenced by ref.func in code. NB: the
+        // undeclared ones are listed in this set's iteration order below, so
+        // keep building it the same way: one `insert` per `ref.func`, function
+        // by function in traversal order (no `extend`, which reserves).
         let mut ref_funcs: IdHashSet<crate::Function> = IdHashSet::default();
-        for func in self.funcs.iter() {
-            if let FunctionKind::Local(local) = &func.kind {
-                struct RefFuncVisitor<'a> {
-                    set: &'a mut IdHashSet<crate::Function>,
-                }
-                impl<'instr> crate::ir::Visitor<'instr> for RefFuncVisitor<'_> {
-                    fn visit_ref_func(&mut self, instr: &crate::ir::RefFunc) {
-                        self.set.insert(instr.func);
-                    }
-                }
-                let mut visitor = RefFuncVisitor {
-                    set: &mut ref_funcs,
-                };
-                dfs_in_order(&mut visitor, local, local.entry_block());
+        for (_, facts) in func_facts {
+            for &f in &facts.ref_funcs {
+                ref_funcs.insert(f);
             }
         }
 
@@ -445,9 +437,19 @@ impl Module {
 
     /// Emit this module into an in-memory wasm buffer.
     pub fn emit_wasm(&mut self) -> Vec<u8> {
+        #[cfg(feature = "parallel")]
+        use rayon::iter::ParallelIterator;
+
         log::debug!("start emit");
 
-        self.ensure_func_declarations();
+        // Walk every function body once for the facts that emission needs.
+        // `parallel` collects these in function order.
+        let funcs = &self.funcs;
+        let func_facts = maybe_parallel!(funcs.(iter_local | par_iter_local))
+            .map(|(id, f)| (id, f.emit_facts()))
+            .collect::<Vec<_>>();
+
+        self.ensure_func_declarations(&func_facts);
 
         let indices = &mut IdsToIndices::default();
 
@@ -457,7 +459,7 @@ impl Module {
             module: self,
             indices,
             wasm_module: wasm_encoder::Module::new(),
-            locals: Default::default(),
+            func_facts: func_facts.into_iter().collect(),
             code_transform: Default::default(),
         };
         // The dynamic-linking ABI requires this metadata before every standard
@@ -685,7 +687,11 @@ fn emit_name_section(cx: &mut EmitContext) {
         .module
         .funcs
         .iter()
-        .filter_map(|func| cx.locals.get(&func.id()).map(|l| (func, l)))
+        .filter_map(|func| {
+            cx.func_facts
+                .get(&func.id())
+                .map(|f| (func, &f.used_locals))
+        })
         .filter_map(|(func, locals)| {
             let local_names = locals
                 .iter()

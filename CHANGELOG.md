@@ -12,7 +12,10 @@ Released YYYY-MM-DD.
 
 ### Changed
 
-* TODO (or remove section if none)
+* Emitting a module walks each function body once, before emission, to find
+  its size, the locals and data segments it uses, and its `ref.func` targets,
+  instead of walking every body four times for these. Emission of large
+  modules is roughly 40% faster.
 
 ### Deprecated
 

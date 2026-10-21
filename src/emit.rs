@@ -3,7 +3,8 @@
 //! raw wasm structure's index spaces.
 
 use crate::ir::Local;
-use crate::map::{IdHashMap, IdHashSet};
+use crate::map::IdHashMap;
+use crate::module::EmitFacts;
 use crate::{CodeTransform, Global, GlobalId, Memory, MemoryId, Module, Table, TableId};
 use crate::{Data, DataId, Element, ElementId, Function, FunctionId};
 use crate::{Tag, TagId, Type, TypeId};
@@ -12,7 +13,8 @@ pub struct EmitContext<'a> {
     pub module: &'a Module,
     pub indices: &'a mut IdsToIndices,
     pub wasm_module: wasm_encoder::Module,
-    pub locals: IdHashMap<Function, IdHashSet<Local>>,
+    /// Facts about every local function's body, gathered before emission.
+    pub func_facts: IdHashMap<Function, EmitFacts>,
     pub code_transform: CodeTransform,
 }
 

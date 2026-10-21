@@ -24,6 +24,7 @@ use crate::ty::TypeId;
 use crate::ty::ValType;
 use crate::{ExportItem, FunctionBuilder, InstrSeqBuilder, LocalId, Memory, MemoryId};
 
+pub(crate) use self::local_function::EmitFacts;
 pub use self::local_function::LocalFunction;
 
 /// A function identifier.
@@ -633,7 +634,7 @@ fn used_local_functions<'a>(cx: &mut EmitContext<'a>) -> Vec<(FunctionId, &'a Lo
     let mut functions = Vec::new();
     for f in cx.module.funcs.iter() {
         match &f.kind {
-            FunctionKind::Local(l) => functions.push((f.id(), l, l.size())),
+            FunctionKind::Local(l) => functions.push((f.id(), l, cx.func_facts[&f.id()].size)),
             FunctionKind::Import(_) => {}
             FunctionKind::Uninitialized(_) => unreachable!(),
         }
@@ -682,8 +683,9 @@ impl Emit for ModuleFunctions {
                 let mut wasm = Vec::new();
                 let mut map = if generate_map { Some(Vec::new()) } else { None };
 
-                let (locals_types, used_locals, local_indices) =
-                    func.emit_locals(cx.module, cx.indices);
+                let used_locals = &cx.func_facts[&id].used_locals;
+                let (locals_types, local_indices) =
+                    func.emit_locals(cx.module, cx.indices, used_locals);
                 let mut wasm_function = wasm_encoder::Function::new(locals_types);
                 func.emit_instructions(
                     cx.indices,
@@ -692,14 +694,7 @@ impl Emit for ModuleFunctions {
                     map.as_mut(),
                 );
                 wasm_function.encode(&mut wasm);
-                (
-                    wasm,
-                    wasm_function.byte_len(),
-                    id,
-                    used_locals,
-                    local_indices,
-                    map,
-                )
+                (wasm, wasm_function.byte_len(), id, local_indices, map)
             })
             .collect::<Vec<_>>();
 
@@ -707,11 +702,10 @@ impl Emit for ModuleFunctions {
         cx.indices.locals.reserve(bytes.len());
 
         let mut offset_data = Vec::new();
-        for (wasm, byte_len, id, used_locals, local_indices, map) in bytes {
+        for (wasm, byte_len, id, local_indices, map) in bytes {
             let leb_len = wasm.len() - byte_len;
             wasm_code_section.raw(&wasm[leb_len..]);
             cx.indices.locals.insert(id, local_indices);
-            cx.locals.insert(id, used_locals);
             offset_data.push((byte_len, id, map, leb_len));
         }
         cx.wasm_module.section(&wasm_code_section);

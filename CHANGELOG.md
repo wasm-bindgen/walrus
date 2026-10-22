@@ -30,7 +30,9 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* TODO (or remove section if none)
+* Parsing no longer panics with "No Try instruction found to add catch clause
+  to" on a valid module that has a legacy `try` with a `catch`, `catch_all` or
+  `delegate` in unreachable code.
 
 ### Security
 

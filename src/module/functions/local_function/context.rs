@@ -159,6 +159,13 @@ impl<'a> ValidationContext<'a> {
     pub fn add_legacy_catch(&mut self, catch: crate::ir::LegacyCatch) -> Result<()> {
         // Find the most recent Try instruction in the parent control block
         let frame = self.control(1)?; // Parent block, not the try block itself
+
+        // A `try` in unreachable code was never added to its parent block
+        // (`alloc_instr_in_control` drops it), so its clauses have no `Try`
+        // to attach to and are dropped along with it.
+        if frame.unreachable {
+            return Ok(());
+        }
         let block = frame.block;
         let seq = self.func.block_mut(block);
 

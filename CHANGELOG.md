@@ -8,7 +8,10 @@ Released YYYY-MM-DD.
 
 ### Added
 
-* TODO (or remove section if none)
+* `ModuleConfig::legacy_exceptions` turns off support for the legacy exception
+  handling instructions (`try`, `catch`, `catch_all`, `delegate` and
+  `rethrow`). It defaults to `true`, so parsing is unchanged unless it is set
+  to `false`, in which case modules that use them fail validation.
 
 ### Changed
 
@@ -19,6 +22,10 @@ Released YYYY-MM-DD.
 * Parsing builds `LocalFunction::instruction_mapping` by pushing onto a `Vec`
   instead of inserting every operator offset into a `BTreeMap`. The table's
   contents are unchanged; parsing large modules is roughly a third faster.
+* Parsing skips the serial pre-scan of every function body for legacy
+  `catch` handler types when the module has no tag with params and no function
+  type with more than one result, or when `ModuleConfig::legacy_exceptions` is
+  `false`, since the pre-scan can't register a type then.
 
 ### Deprecated
 

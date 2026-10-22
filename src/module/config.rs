@@ -21,6 +21,7 @@ pub struct ModuleConfig {
     pub(crate) skip_strict_validate: bool,
     pub(crate) skip_producers_section: bool,
     pub(crate) skip_name_section: bool,
+    pub(crate) skip_legacy_exceptions: bool,
     pub(crate) preserve_code_transform: bool,
     pub(crate) on_parse: Option<OnParseFn>,
     pub(crate) on_instr_loc: Option<OnInstrLocFn>,
@@ -37,6 +38,7 @@ impl Clone for ModuleConfig {
             skip_strict_validate: self.skip_strict_validate,
             skip_producers_section: self.skip_producers_section,
             skip_name_section: self.skip_name_section,
+            skip_legacy_exceptions: self.skip_legacy_exceptions,
             preserve_code_transform: self.preserve_code_transform,
 
             // ... and this is left empty.
@@ -57,6 +59,7 @@ impl fmt::Debug for ModuleConfig {
             ref skip_strict_validate,
             ref skip_producers_section,
             ref skip_name_section,
+            ref skip_legacy_exceptions,
             ref preserve_code_transform,
             ref on_parse,
             ref on_instr_loc,
@@ -72,6 +75,7 @@ impl fmt::Debug for ModuleConfig {
             .field("skip_strict_validate", skip_strict_validate)
             .field("skip_producers_section", skip_producers_section)
             .field("skip_name_section", skip_name_section)
+            .field("skip_legacy_exceptions", skip_legacy_exceptions)
             .field("preserve_code_transform", preserve_code_transform)
             .field("on_parse", &on_parse.as_ref().map(|_| ".."))
             .field("on_instr_loc", &on_instr_loc.as_ref().map(|_| ".."))
@@ -166,6 +170,21 @@ impl ModuleConfig {
         self
     }
 
+    /// Sets a flag to whether the legacy exception handling instructions
+    /// (`try`, `catch`, `catch_all`, `delegate` and `rethrow`) are accepted
+    /// when parsing.
+    ///
+    /// These come from the phase 1 exception handling proposal, which the
+    /// standard `try_table` and `throw_ref` instructions replace. When this is
+    /// `false`, parsing a module that uses them fails validation, and parsing
+    /// skips the work it otherwise does up front to support them.
+    ///
+    /// By default this flag is `true`.
+    pub fn legacy_exceptions(&mut self, enable: bool) -> &mut ModuleConfig {
+        self.skip_legacy_exceptions = !enable;
+        self
+    }
+
     /// Returns a `wasmparser::WasmFeatures` based on the enabled proposals
     /// which should be used for `wasmparser::Parser`` and `wasmparser::Validator`.
     pub(crate) fn get_wasmparser_wasm_features(&self) -> WasmFeatures {
@@ -176,7 +195,9 @@ impl ModuleConfig {
         // Enable legacy exception handling to support older wasm modules
         // This is the phase 1 exception handling proposal that uses try/catch/delegate
         // Support this as long as browsers also support it
-        features.insert(WasmFeatures::LEGACY_EXCEPTIONS);
+        if !self.skip_legacy_exceptions {
+            features.insert(WasmFeatures::LEGACY_EXCEPTIONS);
+        }
 
         // Enable wide arithmetic proposal (i64.add128, i64.sub128, i64.mul_wide_s, i64.mul_wide_u)
         // This is a pre-Phase 4 proposal, so only enable when unstable features are allowed.

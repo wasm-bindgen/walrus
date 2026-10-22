@@ -351,6 +351,25 @@ impl Module {
         // This is pretty tough to parallelize, but we can look into it later if
         // necessary and it's a bottleneck!
         let mut bodies = Vec::with_capacity(functions.len());
+
+        // `register_legacy_catch_block_types` only registers a `Type` for a
+        // `catch` whose tag has params, or for a handler of a `try` with two
+        // or more results, which only a function type in the type section
+        // can give it. When the module has neither, or legacy exceptions are
+        // disabled so validation rejects any `try`, it would register
+        // nothing, so don't decode every body for it.
+        let has_legacy_catch_block_types = !self.config.skip_legacy_exceptions
+            && (self
+                .tags
+                .iter()
+                .filter_map(|tag| self.types.get(tag.ty()).as_function())
+                .any(|ty| !ty.params().is_empty())
+                || self
+                    .types
+                    .iter()
+                    .filter_map(|ty| ty.as_function())
+                    .any(|ty| ty.results().len() >= 2));
+
         for (i, (body, mut validator)) in functions.into_iter().enumerate() {
             let index = (num_imports + i) as u32;
             let id = indices.get_func(index)?;
@@ -381,7 +400,9 @@ impl Module {
             self.types.add_entry_ty(&results);
 
             // Likewise for legacy `catch` handler block types.
-            self.register_legacy_catch_block_types(&body, indices)?;
+            if has_legacy_catch_block_types {
+                self.register_legacy_catch_block_types(&body, indices)?;
+            }
 
             // Next up comes all the locals of the function.
             let mut locals_reader = body.get_locals_reader()?;

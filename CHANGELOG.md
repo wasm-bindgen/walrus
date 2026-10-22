@@ -26,6 +26,13 @@ Released YYYY-MM-DD.
   `catch` handler types when the module has no tag with params and no function
   type with more than one result, or when `ModuleConfig::legacy_exceptions` is
   `false`, since the pre-scan can't register a type then.
+* Parsing builds each instruction sequence on a shared scratch stack and moves
+  it into its `InstrSeq` at its exact size when the block ends, rather than
+  growing every block's `Vec` one push at a time.
+* With the `parallel` feature, function bodies are parsed and emitted one
+  function per rayon task. Walrus emits functions largest first, so splitting
+  the function list into contiguous chunks left one thread with most of the
+  work, both when emitting and when parsing walrus-emitted modules.
 
 ### Deprecated
 

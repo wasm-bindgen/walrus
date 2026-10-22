@@ -71,6 +71,7 @@ impl LocalFunction {
         body: wasmparser::FunctionBody<'_>,
         on_instr_pos: Option<&(dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static)>,
         mut validator: FuncValidator<ValidatorResources>,
+        instrs: &mut Vec<(Instr, InstrLocId)>,
     ) -> Result<LocalFunction> {
         let code_address_offset = module.funcs.code_section_offset;
         let function_body_size = body.range().end - body.range().start;
@@ -92,7 +93,11 @@ impl LocalFunction {
 
         let controls = &mut context::ControlStack::new();
 
-        let mut ctx = ValidationContext::new(module, indices, id, &mut func, controls);
+        // `instrs` is scratch space that the caller may reuse across
+        // functions; a previous function that failed to parse may have left
+        // instructions in it.
+        instrs.clear();
+        let mut ctx = ValidationContext::new(module, indices, id, &mut func, controls, instrs);
 
         let ty = module.types.find_for_function_entry(&result).expect(
             "the function entry type should have already been created before parsing the body",
@@ -127,6 +132,7 @@ impl LocalFunction {
         ops_reader.finish()?;
 
         debug_assert!(ctx.controls.is_empty());
+        debug_assert!(ctx.instrs.is_empty());
 
         Ok(func)
     }

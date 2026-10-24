@@ -1,0 +1,69 @@
+name: Publish
+
+# A release tag publishes the crates once the publish environment approves it,
+# then creates the GitHub release from the changelog. The crates go first, so
+# the release, which is immutable once published, only follows a successful
+# publish.
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    if: github.repository == 'wasm-bindgen/walrus'
+    environment:
+      name: publish
+      deployment: false
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: rust-lang/crates-io-auth-action@v1
+      id: auth
+    # walrus-macro is versioned separately, so it's only published when its
+    # version is new.
+    - env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      run: |
+        set -euo pipefail
+        for dir in crates/macro .; do
+          name=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$dir/Cargo.toml" | head -1)
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$dir/Cargo.toml" | head -1)
+          if curl -fsS -o /dev/null -A "walrus publish (github.com/wasm-bindgen/walrus)" \
+              "https://crates.io/api/v1/crates/$name/$version"; then
+            echo "$name $version is already published"
+          else
+            cargo publish --manifest-path "$dir/Cargo.toml"
+          fi
+        done
+
+  release:
+    name: GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        awk -v h="## $GITHUB_REF_NAME" '$0 == h {f = 1; next} f && /^## /{exit} f' CHANGELOG.md \
+          | grep -v '^Released ' | sed '/./,$!d' > "$RUNNER_TEMP/notes.md"
+        test -s "$RUNNER_TEMP/notes.md"
+        gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+          --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"

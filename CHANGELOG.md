@@ -8,6 +8,34 @@ Released YYYY-MM-DD.
 
 ### Added
 
+* TODO (or remove section if none)
+
+### Changed
+
+* TODO (or remove section if none)
+
+### Deprecated
+
+* TODO (or remove section if none)
+
+### Removed
+
+* TODO (or remove section if none)
+
+### Fixed
+
+* TODO (or remove section if none)
+
+### Security
+
+* TODO (or remove section if none)
+
+## 0.27.3
+
+Released 2026-10-24.
+
+### Added
+
 * `ModuleConfig::legacy_exceptions` turns off support for the legacy exception
   handling instructions (`try`, `catch`, `catch_all`, `delegate` and
   `rethrow`). It defaults to `true`, so parsing is unchanged unless it is set
@@ -34,23 +62,11 @@ Released YYYY-MM-DD.
   the function list into contiguous chunks left one thread with most of the
   work, both when emitting and when parsing walrus-emitted modules.
 
-### Deprecated
-
-* TODO (or remove section if none)
-
-### Removed
-
-* TODO (or remove section if none)
-
 ### Fixed
 
 * Parsing no longer panics with "No Try instruction found to add catch clause
   to" on a valid module that has a legacy `try` with a `catch`, `catch_all` or
   `delegate` in unreachable code.
-
-### Security
-
-* TODO (or remove section if none)
 
 ## 0.27.2
 

@@ -129,3 +129,16 @@ fn addresses_follow_a_function_count_of_any_length() {
         check_function_start(&body, extra_functions);
     }
 }
+
+#[test]
+fn function_start_follows_a_body_size_that_gets_shorter() {
+    // `i32.const 0` with its immediate padded to five bytes, as linkers write
+    // relocatable ones, then `drop`; walrus writes the immediate in one byte.
+    let mut body = [0x41, 0x80, 0x80, 0x80, 0x80, 0x00, 0x1a].repeat(20);
+    body.push(0x0b); // end
+    for extra_functions in [0, 199, 16_999] {
+        let (size, new_size) = check_function_start(&body, extra_functions);
+        // The body's size took two bytes and now takes one.
+        assert!(size >= 128 && new_size < 128, "{size} -> {new_size}");
+    }
+}

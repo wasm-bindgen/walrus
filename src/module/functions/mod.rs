@@ -775,8 +775,9 @@ impl Emit for ModuleFunctions {
             cx.code_transform.function_ranges.push((
                 id,
                 Range {
-                    // inclusive leb part
-                    start: code_start_offset - leb_len,
+                    // The body, after its size, whose encoding can be shorter
+                    // or longer than in the original module.
+                    start: code_start_offset,
                     end: cur_offset,
                 },
             ));

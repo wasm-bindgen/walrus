@@ -12,7 +12,8 @@ Released YYYY-MM-DD.
 
 ### Changed
 
-* TODO (or remove section if none)
+* `LocalFunction::original_range` now starts at the function body, after the
+  body's size, rather than at the size.
 
 ### Deprecated
 
@@ -27,6 +28,10 @@ Released YYYY-MM-DD.
 * DWARF code addresses are no longer one byte off in modules with fewer than
   128 or with 16,384 or more functions. The emitted DWARF assumed that the
   code section's function count takes two bytes.
+
+* A function's DWARF start address is no longer one byte late when walrus
+  emits its body's size in fewer bytes than the original module did, which
+  happens when re-encoding shrinks a body below 128 or 16,384 bytes.
 
 ### Security
 

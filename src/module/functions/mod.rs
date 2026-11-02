@@ -782,8 +782,10 @@ impl Emit for ModuleFunctions {
             ));
         }
         cx.code_transform.function_ranges.sort_by_key(|i| i.0);
-        // FIXME: code section start in DWARF debug information expects 2 bytes before actual code section start.
-        cx.code_transform.code_section_start = code_section_start_offset - 2;
+        // DWARF code addresses are offsets in the code section's contents,
+        // which start with the function count; `byte_len` leaves it out.
+        let count_len = leb128_len(wasm_code_section.len());
+        cx.code_transform.code_section_start = code_section_start_offset - count_len;
         cx.code_transform.instruction_map = instruction_map.into_iter().collect();
     }
 }
@@ -959,4 +961,14 @@ mod tests {
             "new local function has the right kind"
         );
     }
+}
+
+/// The number of bytes `value` takes as an unsigned LEB128.
+fn leb128_len(mut value: u32) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
 }

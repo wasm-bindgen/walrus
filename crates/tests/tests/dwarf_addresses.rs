@@ -1,0 +1,131 @@
+//! walrus rewrites the code addresses in DWARF to match the code it emits.
+//! These tests check them against the emitted code.
+
+use gimli::write::{Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, Sections};
+use gimli::{constants, read, Encoding, EndianSlice, Format, LittleEndian};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use wasm_encoder::{CodeSection, CustomSection, Function, FunctionSection, Module, TypeSection};
+use wasmparser::{Parser, Payload};
+
+/// A module whose first function has a local and the instructions `body`,
+/// followed by `extra_functions` empty functions and the `custom` sections.
+fn module(body: &[u8], extra_functions: u32, custom: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function([], []);
+    let mut functions = FunctionSection::new();
+    let mut code = CodeSection::new();
+    let mut first = Function::new([(1, wasm_encoder::ValType::I32)]);
+    first.raw(body.iter().copied());
+    code.function(&first);
+    functions.function(0);
+    for _ in 0..extra_functions {
+        let mut empty = Function::new([]);
+        empty.raw([0x0b]); // end
+        code.function(&empty);
+        functions.function(0);
+    }
+    let mut module = Module::new();
+    module.section(&types).section(&functions).section(&code);
+    for (name, data) in custom {
+        module.section(&CustomSection {
+            name: Cow::Borrowed(name),
+            data: Cow::Borrowed(data),
+        });
+    }
+    module.finish()
+}
+
+/// The code-section-relative start and the size of the first function body.
+fn first_body(wasm: &[u8]) -> (u64, usize) {
+    let mut code_start = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.unwrap() {
+            Payload::CodeSectionStart { range, .. } => code_start = range.start,
+            Payload::CodeSectionEntry(body) => {
+                return ((body.range().start - code_start) as u64, body.range().len())
+            }
+            _ => {}
+        }
+    }
+    panic!("no function body");
+}
+
+/// DWARF sections with one subprogram whose `low_pc` is `low_pc`.
+fn subprogram_at(low_pc: u64) -> Vec<(&'static str, Vec<u8>)> {
+    let encoding = Encoding {
+        format: Format::Dwarf32,
+        version: 4,
+        address_size: 4,
+    };
+    let mut dwarf = DwarfUnit::new(encoding);
+    dwarf.unit.line_program = LineProgram::none();
+    let root = dwarf.unit.root();
+    let subprogram = dwarf.unit.add(root, constants::DW_TAG_subprogram);
+    dwarf.unit.get_mut(subprogram).set(
+        constants::DW_AT_low_pc,
+        AttributeValue::Address(Address::Constant(low_pc)),
+    );
+    let mut sections = Sections::new(EndianVec::new(LittleEndian));
+    dwarf.write(&mut sections).unwrap();
+    let mut out = Vec::new();
+    sections
+        .for_each(|id, data| {
+            if !data.slice().is_empty() {
+                out.push((id.name(), data.slice().to_vec()));
+            }
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    out
+}
+
+fn subprogram_low_pc(wasm: &[u8]) -> u64 {
+    let mut sections = HashMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CustomSection(s) = payload.unwrap() {
+            sections.insert(s.name().to_string(), s.data());
+        }
+    }
+    let dwarf = read::Dwarf::load(|id| {
+        let data = sections.get(id.name()).copied().unwrap_or_default();
+        Ok::<_, gimli::Error>(EndianSlice::new(data, LittleEndian))
+    })
+    .unwrap();
+    let unit = dwarf.unit(dwarf.units().next().unwrap().unwrap()).unwrap();
+    let mut entries = unit.entries();
+    while let Some((_, entry)) = entries.next_dfs().unwrap() {
+        if entry.tag() == constants::DW_TAG_subprogram {
+            if let Some(read::AttributeValue::Addr(pc)) =
+                entry.attr_value(constants::DW_AT_low_pc).unwrap()
+            {
+                return pc;
+            }
+        }
+    }
+    panic!("no subprogram with a low_pc");
+}
+
+/// Round-trips a module whose first function is `body` through walrus, with
+/// a subprogram at that function's start, and checks that the subprogram
+/// still starts there.
+fn check_function_start(body: &[u8], extra_functions: u32) -> (usize, usize) {
+    let (start, size) = first_body(&module(body, extra_functions, &[]));
+    let wasm = module(body, extra_functions, &subprogram_at(start));
+    let mut config = walrus::ModuleConfig::new();
+    config.generate_dwarf(true);
+    let emitted = config.parse(&wasm).unwrap().emit_wasm();
+    let (new_start, new_size) = first_body(&emitted);
+    assert_eq!(subprogram_low_pc(&emitted), new_start);
+    (size, new_size)
+}
+
+#[test]
+fn addresses_follow_a_function_count_of_any_length() {
+    // `i32.const 0; drop; end`, which walrus emits unchanged.
+    let body = [0x41, 0x00, 0x1a, 0x0b];
+    // The function count takes one, two and three bytes.
+    for extra_functions in [0, 199, 16_999] {
+        check_function_start(&body, extra_functions);
+    }
+}

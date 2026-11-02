@@ -24,7 +24,9 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* TODO (or remove section if none)
+* DWARF code addresses are no longer one byte off in modules with fewer than
+  128 or with 16,384 or more functions. The emitted DWARF assumed that the
+  code section's function count takes two bytes.
 
 ### Security
 

@@ -64,6 +64,17 @@ impl CodeAddressGenerator {
                 }
             }
             Err(id) => {
+                // A function's start is the start of its body, before the
+                // local declarations, wherever they end in the emitted body.
+                if let Ok(i) = self
+                    .address_convert_table
+                    .binary_search_by_key(&address, |range| range.0.start)
+                {
+                    return CodeAddress::OffsetInFunction {
+                        id: self.address_convert_table[i].1,
+                        offset: 0,
+                    };
+                }
                 if id < self.instrument_address_convert_table.len()
                     && self.instrument_address_convert_table[id].0 - 1 == address
                 {

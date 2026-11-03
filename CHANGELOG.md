@@ -33,6 +33,9 @@ Released YYYY-MM-DD.
   emits its body's size in fewer bytes than the original module did, which
   happens when re-encoding shrinks a body below 128 or 16,384 bytes.
 
+* A function's DWARF start address is no longer moved into its local
+  declarations when a transform adds locals to a function that had none.
+
 ### Security
 
 * TODO (or remove section if none)

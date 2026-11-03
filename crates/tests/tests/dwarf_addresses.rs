@@ -8,14 +8,15 @@ use std::collections::HashMap;
 use wasm_encoder::{CodeSection, CustomSection, Function, FunctionSection, Module, TypeSection};
 use wasmparser::{Parser, Payload};
 
-/// A module whose first function has a local and the instructions `body`,
-/// followed by `extra_functions` empty functions and the `custom` sections.
-fn module(body: &[u8], extra_functions: u32, custom: &[(&str, Vec<u8>)]) -> Vec<u8> {
+/// A module whose first function has `locals` locals and the instructions
+/// `body`, followed by `extra_functions` empty functions and the `custom`
+/// sections.
+fn module(locals: u32, body: &[u8], extra_functions: u32, custom: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut types = TypeSection::new();
     types.ty().function([], []);
     let mut functions = FunctionSection::new();
     let mut code = CodeSection::new();
-    let mut first = Function::new([(1, wasm_encoder::ValType::I32)]);
+    let mut first = Function::new((locals > 0).then_some((locals, wasm_encoder::ValType::I32)));
     first.raw(body.iter().copied());
     code.function(&first);
     functions.function(0);
@@ -106,18 +107,29 @@ fn subprogram_low_pc(wasm: &[u8]) -> u64 {
     panic!("no subprogram with a low_pc");
 }
 
-/// Round-trips a module whose first function is `body` through walrus, with
-/// a subprogram at that function's start, and checks that the subprogram
-/// still starts there.
-fn check_function_start(body: &[u8], extra_functions: u32) -> (usize, usize) {
-    let (start, size) = first_body(&module(body, extra_functions, &[]));
-    let wasm = module(body, extra_functions, &subprogram_at(start));
+/// Round-trips a module whose first function has a local and `body` through
+/// walrus, with a subprogram at that function's start, after `transform`, and
+/// checks that the subprogram still starts there.
+fn check_function_start_after(
+    locals: u32,
+    body: &[u8],
+    extra_functions: u32,
+    transform: impl FnOnce(&mut walrus::Module),
+) -> (usize, usize) {
+    let (start, size) = first_body(&module(locals, body, extra_functions, &[]));
+    let wasm = module(locals, body, extra_functions, &subprogram_at(start));
     let mut config = walrus::ModuleConfig::new();
     config.generate_dwarf(true);
-    let emitted = config.parse(&wasm).unwrap().emit_wasm();
+    let mut walrus_module = config.parse(&wasm).unwrap();
+    transform(&mut walrus_module);
+    let emitted = walrus_module.emit_wasm();
     let (new_start, new_size) = first_body(&emitted);
     assert_eq!(subprogram_low_pc(&emitted), new_start);
     (size, new_size)
+}
+
+fn check_function_start(body: &[u8], extra_functions: u32) -> (usize, usize) {
+    check_function_start_after(1, body, extra_functions, |_| {})
 }
 
 #[test]
@@ -141,4 +153,21 @@ fn function_start_follows_a_body_size_that_gets_shorter() {
         // The body's size took two bytes and now takes one.
         assert!(size >= 128 && new_size < 128, "{size} -> {new_size}");
     }
+}
+
+#[test]
+fn function_start_follows_locals_added_to_a_function_without_any() {
+    // `i32.const 0; drop; end`, in a function without locals, whose start is
+    // then the byte before its first instruction.
+    let body = [0x41, 0x00, 0x1a, 0x0b];
+    check_function_start_after(0, &body, 0, |module| {
+        let local = module.locals.add(walrus::ValType::I32);
+        let (id, _) = module.funcs.iter_local().next().unwrap();
+        let function = module.funcs.get_mut(id).kind.unwrap_local_mut();
+        function
+            .builder_mut()
+            .func_body()
+            .i32_const(1)
+            .local_set(local);
+    });
 }

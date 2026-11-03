@@ -107,9 +107,9 @@ fn subprogram_low_pc(wasm: &[u8]) -> u64 {
     panic!("no subprogram with a low_pc");
 }
 
-/// Round-trips a module whose first function has a local and `body` through
-/// walrus, with a subprogram at that function's start, after `transform`, and
-/// checks that the subprogram still starts there.
+/// Round-trips a module whose first function has `locals` locals and `body`
+/// through walrus, with a subprogram at that function's start, after
+/// `transform`, and checks that the subprogram still starts there.
 fn check_function_start_after(
     locals: u32,
     body: &[u8],

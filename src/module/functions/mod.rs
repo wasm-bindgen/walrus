@@ -766,7 +766,6 @@ impl Emit for ModuleFunctions {
 
         // update the map afterwards based on final offset differences
         for (byte_len, id, map, leb_len) in offset_data {
-            // (this assumes the leb encodes the same)
             let code_start_offset = cur_offset + leb_len;
             cur_offset += leb_len + byte_len;
             if let Some(map) = map {

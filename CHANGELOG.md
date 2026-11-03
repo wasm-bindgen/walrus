@@ -12,8 +12,12 @@ Released YYYY-MM-DD.
 
 ### Changed
 
-* `LocalFunction::original_range` now starts at the function body, after the
-  body's size, rather than at the size.
+* `LocalFunction::original_range` and `CodeTransform::function_ranges` now
+  start at the function body, after the body's size, rather than at the size.
+
+* `CodeTransform::code_section_start` is now the start of the code section's
+  contents, at the function count, for any number of functions. It was
+  previously two bytes before the first function's size.
 
 ### Deprecated
 

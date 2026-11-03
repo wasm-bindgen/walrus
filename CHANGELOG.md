@@ -12,12 +12,7 @@ Released YYYY-MM-DD.
 
 ### Changed
 
-* `LocalFunction::original_range` and `CodeTransform::function_ranges` now
-  start at the function body, after the body's size, rather than at the size.
-
-* `CodeTransform::code_section_start` is now the start of the code section's
-  contents, at the function count, for any number of functions. It was
-  previously two bytes before the first function's size.
+* TODO (or remove section if none)
 
 ### Deprecated
 
@@ -26,6 +21,27 @@ Released YYYY-MM-DD.
 ### Removed
 
 * TODO (or remove section if none)
+
+### Fixed
+
+* TODO (or remove section if none)
+
+### Security
+
+* TODO (or remove section if none)
+
+## 0.28.0
+
+Released 2026-11-03.
+
+### Changed
+
+* `LocalFunction::original_range` and `CodeTransform::function_ranges` now
+  start at the function body, after the body's size, rather than at the size.
+
+* `CodeTransform::code_section_start` is now the start of the code section's
+  contents, at the function count, for any number of functions. It was
+  previously two bytes before the first function's size.
 
 ### Fixed
 
@@ -39,10 +55,6 @@ Released YYYY-MM-DD.
 
 * A function's DWARF start address is no longer moved into its local
   declarations when a transform adds locals to a function that had none.
-
-### Security
-
-* TODO (or remove section if none)
 
 ## 0.27.3
 

@@ -33,9 +33,9 @@ Released YYYY-MM-DD.
   128 or with 16,384 or more functions. The emitted DWARF assumed that the
   code section's function count takes two bytes.
 
-* A function's DWARF start address is no longer one byte late when walrus
-  emits its body's size in fewer bytes than the original module did, which
-  happens when re-encoding shrinks a body below 128 or 16,384 bytes.
+* A function's DWARF start address no longer moves when walrus emits its
+  body's size in a different number of bytes than the original module did,
+  as when re-encoding shrinks or grows a body across 128 or 16,384 bytes.
 
 * A function's DWARF start address is no longer moved into its local
   declarations when a transform adds locals to a function that had none.

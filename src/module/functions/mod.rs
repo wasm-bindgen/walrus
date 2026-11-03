@@ -783,11 +783,22 @@ impl Emit for ModuleFunctions {
         }
         cx.code_transform.function_ranges.sort_by_key(|i| i.0);
         // DWARF code addresses are offsets in the code section's contents,
-        // which start with the function count; `byte_len` leaves it out.
+        // which start with the function count that the section's `byte_len`
+        // leaves out.
         let count_len = leb128_len(wasm_code_section.len());
         cx.code_transform.code_section_start = code_section_start_offset - count_len;
         cx.code_transform.instruction_map = instruction_map.into_iter().collect();
     }
+}
+
+/// The number of bytes `value` takes as an unsigned LEB128.
+fn leb128_len(mut value: u32) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
 }
 
 #[cfg(test)]
@@ -961,14 +972,4 @@ mod tests {
             "new local function has the right kind"
         );
     }
-}
-
-/// The number of bytes `value` takes as an unsigned LEB128.
-fn leb128_len(mut value: u32) -> usize {
-    let mut len = 1;
-    while value >= 0x80 {
-        value >>= 7;
-        len += 1;
-    }
-    len
 }

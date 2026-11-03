@@ -95,10 +95,12 @@ pub struct CodeTransform {
     /// propagation.
     pub instruction_map: Vec<(InstrLocId, usize)>,
 
-    /// Offset of code section from the front of Wasm binary
+    /// Offset of the code section's contents, which start with the function
+    /// count, from the front of the Wasm binary. DWARF code addresses are
+    /// relative to it.
     pub code_section_start: usize,
 
-    /// Emitted binary ranges of functions
+    /// Emitted binary ranges of function bodies, after each body's size.
     pub function_ranges: Vec<(Id<Function>, Range<usize>)>,
 }
 

@@ -42,7 +42,8 @@ pub struct LocalFunction {
     /// InstrSeqId list mapping to original instruction
     pub instruction_mapping: Vec<(usize, InstrLocId)>,
 
-    /// Original function binary range.
+    /// Range of the function's body in the original module, after the body's
+    /// size.
     pub original_range: Option<Range<usize>>,
 }
 
@@ -75,15 +76,12 @@ impl LocalFunction {
     ) -> Result<LocalFunction> {
         let code_address_offset = module.funcs.code_section_offset;
         let function_body_size = body.range().end - body.range().start;
-        let function_body_size_bit =
-            (std::mem::size_of::<usize>() as u32 * 8 - function_body_size.leading_zeros() - 1) / 7
-                + 1;
         let mut func = LocalFunction {
             builder: FunctionBuilder::without_entry(ty),
             args,
             instruction_mapping: Vec::new(),
             original_range: Some(Range::<usize> {
-                start: body.range().start - code_address_offset - (function_body_size_bit as usize),
+                start: body.range().start - code_address_offset,
                 end: body.range().end - code_address_offset,
             }),
         };

@@ -64,6 +64,17 @@ impl CodeAddressGenerator {
                 }
             }
             Err(id) => {
+                // A function's start is the start of its body, before the
+                // local declarations, wherever they end in the emitted body.
+                if let Ok(i) = self
+                    .address_convert_table
+                    .binary_search_by_key(&address, |range| range.0.start)
+                {
+                    return CodeAddress::OffsetInFunction {
+                        id: self.address_convert_table[i].1,
+                        offset: 0,
+                    };
+                }
                 if id < self.instrument_address_convert_table.len()
                     && self.instrument_address_convert_table[id].0 - 1 == address
                 {
@@ -76,10 +87,11 @@ impl CodeAddressGenerator {
 
         // If the address is not mapped to any instruction, falling back to function-range-based comparison.
         let inclusive_range_comparor = |range: &(Range<usize>, Id<Function>)| {
-            // range.start < address <= range.end
+            // range.start <= address <= range.end: the ranges are function
+            // bodies, which never touch, because each body follows its size.
             if range.0.end < address {
                 Ordering::Less
-            } else if address <= range.0.start {
+            } else if address < range.0.start {
                 Ordering::Greater
             } else {
                 Ordering::Equal
@@ -198,7 +210,8 @@ mod tests {
             crate::FunctionBuilder::new(&mut module.types, &[], &[]),
         );
 
-        func2.original_range = Some(Range { start: 30, end: 50 });
+        // The ranges are function bodies, so the second body's size is between them.
+        func2.original_range = Some(Range { start: 31, end: 50 });
 
         let id2 = module.funcs.add_local(func2);
 
@@ -208,14 +221,21 @@ mod tests {
             address_converter.find_address(10, AddressSearchPreference::InclusiveFunctionEnd),
             CodeAddress::Unknown
         );
-        assert_eq!(
-            address_converter.find_address(20, AddressSearchPreference::ExclusiveFunctionEnd),
-            CodeAddress::OffsetInFunction { id: id1, offset: 0 }
-        );
-        assert_eq!(
-            address_converter.find_address(20, AddressSearchPreference::InclusiveFunctionEnd),
-            CodeAddress::Unknown
-        );
+        // A body's start is in its function, whichever end the search includes.
+        for inclusive in [false, true] {
+            let preference = || match inclusive {
+                false => AddressSearchPreference::ExclusiveFunctionEnd,
+                true => AddressSearchPreference::InclusiveFunctionEnd,
+            };
+            assert_eq!(
+                address_converter.find_address(20, preference()),
+                CodeAddress::OffsetInFunction { id: id1, offset: 0 }
+            );
+            assert_eq!(
+                address_converter.find_address(31, preference()),
+                CodeAddress::OffsetInFunction { id: id2, offset: 0 }
+            );
+        }
         assert_eq!(
             address_converter.find_address(25, AddressSearchPreference::ExclusiveFunctionEnd),
             CodeAddress::OffsetInFunction { id: id1, offset: 5 }
@@ -234,7 +254,7 @@ mod tests {
         );
         assert_eq!(
             address_converter.find_address(30, AddressSearchPreference::ExclusiveFunctionEnd),
-            CodeAddress::OffsetInFunction { id: id2, offset: 0 }
+            CodeAddress::Unknown
         );
         assert_eq!(
             address_converter.find_address(50, AddressSearchPreference::InclusiveFunctionEnd),

@@ -15,6 +15,8 @@ Released YYYY-MM-DD.
 * An `if` whose `else` arm is empty is emitted without the `else`, saving a
   byte per `if`. This was a TODO in the emitter; parsing already turned a
   missing `else` into an empty one.
+* gimli is updated from 0.32 to 0.34. `ModuleDebugData::dwarf` is a gimli
+  type, so code that reads it needs gimli 0.34 too.
 
 ### Deprecated
 
@@ -35,6 +37,17 @@ Released YYYY-MM-DD.
   `br`, `br_if` and `br_table`.
 * `visit_instr_seq_id` is now called for legacy `try` `catch` and `catch_all`
   handler blocks, matching the `try` body.
+* With `generate_dwarf`, location and range lists now follow the code walrus
+  moved. Offsets from a base address (DWARF 4 `.debug_loc`/`.debug_ranges`
+  entries and DWARF 5 `DW_LLE_offset_pair`/`DW_RLE_offset_pair`) were
+  previously treated as addresses or copied unchanged, so almost every
+  location list LLVM writes pointed at the wrong code. walrus now converts
+  DWARF with gimli's `Dwarf::convert` API instead of `Dwarf::from`, which
+  gimli documents as unsuitable for complex address transformations.
+* `generate_dwarf` no longer panics on DWARF 5 line programs that use file
+  index 0, as clang writes them.
+* A line sequence that covers several functions is split per function, so
+  its rows stay in address order after walrus reorders functions.
 
 ### Security
 

@@ -95,10 +95,9 @@ fn subprogram_low_pc(wasm: &[u8]) -> u64 {
     .unwrap();
     let unit = dwarf.unit(dwarf.units().next().unwrap().unwrap()).unwrap();
     let mut entries = unit.entries();
-    while let Some((_, entry)) = entries.next_dfs().unwrap() {
+    while let Some(entry) = entries.next_dfs().unwrap() {
         if entry.tag() == constants::DW_TAG_subprogram {
-            if let Some(read::AttributeValue::Addr(pc)) =
-                entry.attr_value(constants::DW_AT_low_pc).unwrap()
+            if let Some(read::AttributeValue::Addr(pc)) = entry.attr_value(constants::DW_AT_low_pc)
             {
                 return pc;
             }

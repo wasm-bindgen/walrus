@@ -1,13 +1,17 @@
-//! transform entries in WebAssembly DWARF sections
+//! Convert the input module's DWARF to match the emitted code.
+//!
+//! walrus re-encodes every instruction and reorders functions, so code
+//! addresses don't move by a constant. `gimli::write::Dwarf::from` only
+//! suits a constant shift: it passes the offsets in range lists, location
+//! lists, line programs and `DW_AT_high_pc` through unchanged, or through
+//! the address callback as if they were addresses. So this drives
+//! `gimli::write::Dwarf::convert` itself, and maps every range from its
+//! absolute start and end.
 
-/// `write` provides only address-based entry conversions,
-/// does not provide entry-wise conversions.
-/// We want to convert addresses of instructions, here will re-implement.
-use gimli::*;
+use gimli::write::{self, Address, ConvertLineSequenceEnd, ConvertResult};
+use gimli::{constants, read, AttributeValue, Reader};
 
-use super::units::DebuggingInformationCursor;
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum AddressSearchPreference {
     /// Normal range comparison (inclusive start, exclusive end)
     ExclusiveFunctionEnd,
@@ -23,632 +27,295 @@ pub enum AddressSearchPreference {
 /// reader of the rest of the section. lld makes the same choice.
 pub(crate) static DEAD_CODE: u64 = 0xFFFF_FFFE;
 
-/// DWARF convertion context
-pub(crate) struct ConvertContext<'a, R: Reader<Offset = usize>> {
-    /// Source DWARF debug data
-    pub debug_str: &'a read::DebugStr<R>,
-    pub debug_line_str: &'a read::DebugLineStr<R>,
-
-    pub strings: &'a mut write::StringTable,
-    pub line_strings: &'a mut write::LineStringTable,
-
-    /// Address conversion function.
-    /// First argument is an address in original wasm binary.
-    /// If the address is mapped in transformed wasm binary, the address should be wrapped in Option::Some.
-    /// If the address is not mapped, None should be returned.
-    pub convert_address: &'a dyn Fn(u64, AddressSearchPreference) -> Option<write::Address>,
+/// Addresses linkers write for code they discarded.
+fn is_tombstone(address: u64) -> bool {
+    address == 0 || address >= DEAD_CODE
 }
 
-impl<'a, R> ConvertContext<'a, R>
-where
-    R: Reader<Offset = usize>,
-{
-    pub(crate) fn new(
-        debug_str: &'a read::DebugStr<R>,
-        debug_line_str: &'a read::DebugLineStr<R>,
-        strings: &'a mut write::StringTable,
-        line_strings: &'a mut write::LineStringTable,
-        convert_address: &'a dyn Fn(u64, AddressSearchPreference) -> Option<write::Address>,
-    ) -> Self {
-        ConvertContext {
-            debug_str,
-            debug_line_str,
-            strings,
-            line_strings,
-            convert_address,
+/// Where code moved, in code-section-relative addresses.
+pub(crate) struct Addresses<'a> {
+    /// Maps an input address to its output address.
+    pub map: &'a dyn Fn(u64, AddressSearchPreference) -> Option<u64>,
+    /// Input function bodies, sorted.
+    pub input_bodies: Vec<(u64, u64)>,
+    /// Output function bodies, sorted.
+    pub output_bodies: Vec<(u64, u64)>,
+}
+
+impl Addresses<'_> {
+    /// A single address, such as `DW_AT_low_pc` or `DW_OP_addr`.
+    fn address(&self, address: u64) -> Option<Address> {
+        if is_tombstone(address) {
+            return Some(Address::Constant(address));
         }
+        let address = (self.map)(address, AddressSearchPreference::InclusiveFunctionEnd);
+        Some(Address::Constant(address.unwrap_or(DEAD_CODE)))
     }
 
-    pub(crate) fn convert_high_pc(
-        &self,
-        from_unit: &mut gimli::read::EntriesCursor<R>,
-        unit: &mut DebuggingInformationCursor,
-    ) {
-        while let (Ok(Some((_, from_debug_entry))), Some(debug_entry)) =
-            (from_unit.next_dfs(), unit.next_dfs())
-        {
-            let low_pc = from_debug_entry
-                .attr_value(constants::DW_AT_low_pc)
-                .expect("low_pc");
-            let high_pc = from_debug_entry
-                .attr_value(constants::DW_AT_high_pc)
-                .expect("high_pc");
+    /// The output ranges covering what `begin..end` covered. A range over
+    /// several functions becomes one range per function, because functions
+    /// are reordered. Parts in code that no longer exists are dropped.
+    fn ranges(&self, begin: u64, end: u64) -> Vec<(u64, u64)> {
+        let mut out = Vec::new();
+        if is_tombstone(begin) || begin >= end {
+            return out;
+        }
+        let first = self.input_bodies.partition_point(|&(_, e)| e <= begin);
+        for &(body_start, body_end) in &self.input_bodies[first..] {
+            if body_start >= end {
+                break;
+            }
+            let (b, e) = (begin.max(body_start), end.min(body_end));
+            let b = (self.map)(b, AddressSearchPreference::ExclusiveFunctionEnd);
+            let e = (self.map)(e, AddressSearchPreference::InclusiveFunctionEnd);
+            if let (Some(b), Some(e)) = (b, e) {
+                if b < e {
+                    out.push((b, e));
+                }
+            }
+        }
+        out
+    }
 
-            let (Some(AttributeValue::Addr(low_addr)), Some(AttributeValue::Udata(offset))) =
-                (low_pc, high_pc)
+    /// The output function body containing `address`, including its end.
+    fn output_body(&self, address: u64) -> Option<(u64, u64)> {
+        let i = self.output_bodies.partition_point(|&(s, _)| s <= address);
+        let body = *self.output_bodies.get(i.checked_sub(1)?)?;
+        (address <= body.1).then_some(body)
+    }
+}
+
+pub(crate) fn convert<R: Reader<Offset = usize>>(
+    from: &read::Dwarf<R>,
+    addresses: &Addresses,
+) -> ConvertResult<write::Dwarf> {
+    let mut dwarf = write::Dwarf::default();
+    let mut units = dwarf.convert(from)?;
+    while let Some((mut unit, root)) = units.read_unit()? {
+        if let Some(program) = unit.read_line_program(None, None)? {
+            let (program, files) = convert_line_program(program, addresses)?;
+            unit.set_line_program(program, files);
+        }
+        // In DWARF 2-4, range and location list entries are relative to the
+        // unit's `DW_AT_low_pc` unless a list sets its own base.
+        let low_pc = match root.attr_value(constants::DW_AT_low_pc) {
+            Some(value) => root.read_unit.attr_address(value)?,
+            None => None,
+        };
+        // gimli's writer treats the unit as having a base address when its
+        // converted `DW_AT_low_pc` is nonzero.
+        let lists = Lists {
+            addresses,
+            relative_to_unit: root.read_unit.encoding().version <= 4
+                && low_pc.is_some_and(|a| addresses.address(a) != Some(Address::Constant(0))),
+        };
+        let root_id = unit.unit.root();
+        convert_attributes(&mut unit, root_id, &root, &lists)?;
+        let mut entry = root;
+        while let Some(id) = unit.read_entry(&mut entry)? {
+            let id = unit.add_entry(id, &entry);
+            convert_attributes(&mut unit, id, &entry, &lists)?;
+        }
+    }
+    Ok(dwarf)
+}
+
+/// Rows are moved to their instructions' new addresses. Each output function
+/// gets its own sequence, sorted by address, because functions are reordered
+/// and rows must not go backwards within a sequence. Rows for instructions
+/// that no longer exist are dropped.
+fn convert_line_program<R: Reader<Offset = usize>>(
+    mut program: write::ConvertLineProgram<'_, R>,
+    addresses: &Addresses,
+) -> ConvertResult<(write::LineProgram, Vec<write::FileId>)> {
+    while let Some(sequence) = program.read_sequence()? {
+        let Some(start) = sequence.start else {
+            continue;
+        };
+        if is_tombstone(start) {
+            continue;
+        }
+        let end = match sequence.end {
+            ConvertLineSequenceEnd::Length(length) => start + length,
+            ConvertLineSequenceEnd::Address(address) => address,
+        };
+        let end = (addresses.map)(end, AddressSearchPreference::InclusiveFunctionEnd);
+        let mut rows = Vec::with_capacity(sequence.rows.len());
+        for row in sequence.rows {
+            let address = start + row.address_offset;
+            let Some(address) =
+                (addresses.map)(address, AddressSearchPreference::InclusiveFunctionEnd)
             else {
                 continue;
             };
-            let new_low_pc =
-                (self.convert_address)(low_addr, AddressSearchPreference::InclusiveFunctionEnd);
-            let new_high_pc = (self.convert_address)(
-                low_addr + offset,
-                AddressSearchPreference::InclusiveFunctionEnd,
-            );
-            let offset = match (new_low_pc, new_high_pc) {
-                (
-                    Some(write::Address::Constant(new_low_pc)),
-                    Some(write::Address::Constant(new_high_pc)),
-                ) => new_high_pc.saturating_sub(new_low_pc),
-                _ => offset,
+            let Some(body) = addresses.output_body(address) else {
+                continue;
             };
-            // gimli reads any `DW_AT_high_pc` offset as `Udata`, which it
-            // would then write as a variable-length LEB. Keep the fixed-width
-            // form LLVM emits: consumers that patch code addresses in place
-            // (binaryen's DWARF update) rely on the size not changing.
-            let offset = match u32::try_from(offset) {
-                Ok(offset) => write::AttributeValue::Data4(offset),
-                Err(_) => write::AttributeValue::Udata(offset),
+            rows.push((body, address, row));
+        }
+        // Stable, so rows at the same address keep their order.
+        rows.sort_by_key(|&(body, address, _)| (body.0, address));
+        for group in rows.chunk_by(|a, b| a.0 == b.0) {
+            let (body, base, _) = group[0];
+            program.begin_sequence(Some(Address::Constant(base)));
+            for &(_, address, mut row) in group {
+                row.address_offset = address - base;
+                program.generate_row(row);
+            }
+            // The sequence ends where it did, if that is still in this
+            // function and after its rows, or else at the function's end.
+            let last = group[group.len() - 1].1;
+            let end = match end {
+                Some(end) if end > last && addresses.output_body(end) == Some(body) => end,
+                _ => body.1.max(last + 1),
             };
-            debug_entry.set(constants::DW_AT_high_pc, offset);
+            program.end_sequence(end - base);
         }
     }
-
-    pub(crate) fn convert_unit_line_program(
-        &mut self,
-        from_unit: read::Unit<R>,
-    ) -> Option<write::LineProgram> {
-        match from_unit.line_program {
-            Some(ref from_program) => {
-                let from_program = from_program.clone();
-                let line_program = self
-                    .convert_line_program(from_program)
-                    .expect("cannot convert line program");
-                Some(line_program)
-            }
-            None => None,
-        }
-    }
-
-    /// Perform conversion in DWARF line program header.
-    /// Almostly cloned from https://github.com/gimli-rs/gimli/blob/master/src/write/line.rs#L985
-    fn convert_line_program_header(
-        &mut self,
-        from_program: &read::IncompleteLineProgram<R>,
-        files: &mut Vec<write::FileId>,
-    ) -> write::ConvertResult<write::LineProgram> {
-        let from_header = from_program.header();
-        let encoding = from_header.encoding();
-
-        let comp_dir = match from_header.directory(0) {
-            Some(comp_dir) => self.convert_line_string(comp_dir)?,
-            None => write::LineString::new(&[][..], encoding, self.line_strings),
-        };
-
-        let (comp_name, comp_file_info) = match from_header.file(0) {
-            Some(comp_file) => {
-                if comp_file.directory_index() != 0 {
-                    return Err(write::ConvertError::InvalidDirectoryIndex);
-                }
-                (
-                    self.convert_line_string(comp_file.path_name())?,
-                    Some(write::FileInfo {
-                        timestamp: comp_file.timestamp(),
-                        size: comp_file.size(),
-                        md5: *comp_file.md5(),
-                        source: None,
-                    }),
-                )
-            }
-            None => (
-                write::LineString::new(&[][..], encoding, self.line_strings),
-                None,
-            ),
-        };
-
-        if from_header.line_base() > 0 {
-            return Err(write::ConvertError::InvalidLineBase);
-        }
-        let mut program = write::LineProgram::new(
-            encoding,
-            from_header.line_encoding(),
-            comp_dir,
-            None,
-            comp_name,
-            comp_file_info,
-        );
-
-        let mut dirs = Vec::new();
-        let file_skip = if from_header.version() <= 4 {
-            // The first directory is implicit.
-            dirs.push(program.default_directory());
-            // A file index of 0 is invalid for version <= 4, but putting
-            // something there makes the indexing easier.
-            0
-        } else {
-            // We don't add the first file to `files`, but still allow
-            // it to be referenced from converted instructions.
-            1
-        };
-
-        for from_dir in from_header.include_directories() {
-            let from_dir = self.convert_line_string(from_dir.clone())?;
-            dirs.push(program.add_directory(from_dir));
-        }
-
-        for from_file in from_header.file_names().iter().skip(file_skip) {
-            let from_name = self.convert_line_string(from_file.path_name())?;
-            let from_dir = from_file.directory_index();
-            if from_dir >= dirs.len() as u64 {
-                return Err(write::ConvertError::InvalidDirectoryIndex);
-            }
-            let from_dir = dirs[from_dir as usize];
-            let from_info = Some(write::FileInfo {
-                timestamp: from_file.timestamp(),
-                size: from_file.size(),
-                md5: *from_file.md5(),
-                source: None,
-            });
-            files.push(program.add_file(from_name, from_dir, from_info));
-        }
-
-        Ok(program)
-    }
-
-    /// Perform address conversion in DWARF line program entries.
-    /// Almostly cloned from https://github.com/gimli-rs/gimli/blob/master/src/write/line.rs#L1066
-    fn convert_line_program(
-        &mut self,
-        mut from_program: read::IncompleteLineProgram<R>,
-    ) -> write::ConvertResult<write::LineProgram> {
-        let mut files = Vec::new();
-        // Create mappings in case the source has duplicate files or directories.
-        let mut program = self
-            .convert_line_program_header(&from_program, &mut files)
-            .expect("line program header cannot be converted");
-
-        // We can't use the `from_program.rows()` because that wouldn't let
-        // us preserve address relocations.
-        let mut from_row = read::LineRow::new(from_program.header());
-        let mut instructions = from_program.header().instructions();
-        let mut current_sequence_base_address = None;
-        let mut from_base_address = 0;
-
-        while let Some(instruction) = instructions.next_instruction(from_program.header())? {
-            match instruction {
-                read::LineInstruction::SetAddress(val) => {
-                    if program.in_sequence() {
-                        return Err(write::ConvertError::UnsupportedLineInstruction);
-                    }
-                    from_base_address = val;
-
-                    from_row.execute(read::LineInstruction::SetAddress(0), &mut from_program)?;
-                }
-                read::LineInstruction::DefineFile(_) => {
-                    return Err(write::ConvertError::UnsupportedLineInstruction);
-                }
-                _ => {
-                    if from_row.execute(instruction, &mut from_program)? {
-                        if !program.in_sequence() {
-                            // begin new sequence if exists
-                            current_sequence_base_address = (self.convert_address)(
-                                from_base_address,
-                                AddressSearchPreference::ExclusiveFunctionEnd,
-                            );
-
-                            if current_sequence_base_address.is_some() {
-                                program.begin_sequence(current_sequence_base_address);
-                            }
-                        }
-
-                        if let Some(write::Address::Constant(base_address)) =
-                            current_sequence_base_address
-                        {
-                            // New offset from sequence base address in the transformed wasm binary
-                            // can be different from one in the original wasm binary.
-                            // Therefore, reculculating the new offset here.
-                            let from_row_address = from_row.address() + from_base_address;
-                            let row_address = (self.convert_address)(
-                                from_row_address,
-                                AddressSearchPreference::InclusiveFunctionEnd,
-                            );
-
-                            // either sequence_base_address or row_address is not resolved, ignore this entry.
-                            if let Some(write::Address::Constant(address)) = row_address {
-                                let address_offset = address.saturating_sub(base_address);
-
-                                if from_row.end_sequence() {
-                                    program.end_sequence(address_offset);
-                                    from_base_address = from_row_address;
-                                } else {
-                                    program.row().address_offset = address_offset;
-                                    program.row().op_index = from_row.op_index();
-                                    program.row().file = {
-                                        let file = from_row.file_index();
-                                        if file > files.len() as u64 {
-                                            return Err(write::ConvertError::InvalidFileIndex);
-                                        }
-                                        if file == 0 && program.version() <= 4 {
-                                            return Err(write::ConvertError::InvalidFileIndex);
-                                        }
-                                        files[(file - 1) as usize]
-                                    };
-                                    program.row().line = match from_row.line() {
-                                        Some(line) => line.get(),
-                                        None => 0,
-                                    };
-                                    program.row().column = match from_row.column() {
-                                        read::ColumnType::LeftEdge => 0,
-                                        read::ColumnType::Column(val) => val.get(),
-                                    };
-                                    program.row().discriminator = from_row.discriminator();
-                                    program.row().is_statement = from_row.is_stmt();
-                                    program.row().basic_block = from_row.basic_block();
-                                    program.row().prologue_end = from_row.prologue_end();
-                                    program.row().epilogue_begin = from_row.epilogue_begin();
-                                    program.row().isa = from_row.isa();
-                                    program.generate_row();
-                                }
-                            }
-                        }
-
-                        from_row.reset(from_program.header());
-                    }
-                }
-            };
-        }
-        Ok(program)
-    }
-
-    /// write::LineString::from is not public function, cloned from https://github.com/gimli-rs/gimli/blob/master/src/write/line.rs#L1131
-    fn convert_line_string(
-        &mut self,
-        from_attr: read::AttributeValue<R>,
-    ) -> write::ConvertResult<write::LineString> {
-        Ok(match from_attr {
-            read::AttributeValue::String(r) => write::LineString::String(r.to_slice()?.to_vec()),
-            read::AttributeValue::DebugStrRef(offset) => {
-                let r = self.debug_str.get_str(offset)?;
-                let id = self.strings.add(r.to_slice()?);
-                write::LineString::StringRef(id)
-            }
-            read::AttributeValue::DebugLineStrRef(offset) => {
-                let r = self.debug_line_str.get_str(offset)?;
-                let id = self.line_strings.add(r.to_slice()?);
-                write::LineString::LineStringRef(id)
-            }
-            _ => return Err(write::ConvertError::UnsupportedLineStringForm),
-        })
-    }
+    Ok(program.program())
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::module::debug::units::DebuggingInformationCursor;
+/// How to write the range and location lists of one unit.
+struct Lists<'a, 'b> {
+    addresses: &'a Addresses<'b>,
+    /// The unit has a nonzero base address, which DWARF 2-4 list entries
+    /// are relative to. Lists then start with a base address entry of 0, and
+    /// hold offsets from it.
+    relative_to_unit: bool,
+}
 
-    use super::AddressSearchPreference;
-    use gimli::*;
-    use std::cell::RefCell;
-
-    fn make_test_debug_line(
-        debug_line: &mut write::DebugLine<write::EndianVec<LittleEndian>>,
-    ) -> IncompleteLineProgram<EndianSlice<'_, LittleEndian>> {
-        let encoding = Encoding {
-            format: Format::Dwarf32,
-            version: 4,
-            address_size: 4,
-        };
-        let dir1 = &b"dir1"[..];
-        let file1 = &b"file1"[..];
-        let comp_file = write::LineString::String(file1.to_vec());
-
-        let mut program = write::LineProgram::new(
-            encoding,
-            LineEncoding {
-                minimum_instruction_length: 1,
-                maximum_operations_per_instruction: 8,
-                line_base: 0,
-                line_range: 10,
-                default_is_stmt: true,
-            },
-            write::LineString::String(dir1.to_vec()),
-            None,
-            comp_file.clone(),
-            None,
-        );
-
-        {
-            program.row().file = program.add_file(comp_file, program.default_directory(), None);
-            program.begin_sequence(Some(write::Address::Constant(0x1000)));
-            program.generate_row();
-            let address_offset = program.row().address_offset + 1u64;
-            program.end_sequence(address_offset);
-        }
-
-        program
-            .write(
-                debug_line,
-                encoding,
-                &write::DebugLineStrOffsets::none(),
-                &write::DebugStrOffsets::none(),
-            )
-            .unwrap();
-
-        let debug_line = read::DebugLine::new(debug_line.slice(), LittleEndian);
-        debug_line
-            .program(DebugLineOffset(0), 4, None, None)
-            .unwrap()
-    }
-
-    #[test]
-    fn convert_callback_invoke() {
-        let called_address_to_be_converted: RefCell<Vec<(u64, AddressSearchPreference)>> =
-            RefCell::new(Vec::new());
-        {
-            let mut debug_line = write::DebugLine::from(write::EndianVec::new(LittleEndian));
-            let incomplete_debug_line = make_test_debug_line(&mut debug_line);
-
-            let convert_address = |address, preference| -> Option<write::Address> {
-                called_address_to_be_converted
-                    .borrow_mut()
-                    .push((address, preference));
-                Some(write::Address::Constant(address + 0x10))
-            };
-
-            let empty_debug_str = Default::default();
-            let empty_debug_line_str = Default::default();
-
-            let mut line_strings = write::LineStringTable::default();
-            let mut strings = write::StringTable::default();
-            let mut convert_context = crate::module::debug::ConvertContext::new(
-                &empty_debug_str,
-                &empty_debug_line_str,
-                &mut strings,
-                &mut line_strings,
-                &convert_address,
-            );
-            convert_context
-                .convert_line_program(incomplete_debug_line)
-                .unwrap();
-        }
-
-        {
-            let called_address_to_be_converted = called_address_to_be_converted.borrow();
-            assert_eq!(called_address_to_be_converted.len(), 3);
-            assert_eq!(
-                called_address_to_be_converted[0],
-                (0x1000, AddressSearchPreference::ExclusiveFunctionEnd)
-            ); // begin sequence
-            assert_eq!(
-                called_address_to_be_converted[1],
-                (0x1000, AddressSearchPreference::InclusiveFunctionEnd)
-            ); // first line row
-            assert_eq!(
-                called_address_to_be_converted[2],
-                (0x1001, AddressSearchPreference::InclusiveFunctionEnd)
-            ); // end sequence
-        }
-    }
-
-    #[test]
-    fn test_converted_address() {
-        let mut converted_debug_line = write::DebugLine::from(write::EndianVec::new(LittleEndian));
-        {
-            let mut debug_line = write::DebugLine::from(write::EndianVec::new(LittleEndian));
-            let incomplete_debug_line = make_test_debug_line(&mut debug_line);
-
-            let convert_address = |address, _| -> Option<write::Address> {
-                Some(write::Address::Constant(address + 0x10))
-            };
-
-            let empty_dwarf = Dwarf::default();
-            let mut line_strings = write::LineStringTable::default();
-            let mut strings = write::StringTable::default();
-
-            let mut convert_context = crate::module::debug::ConvertContext::new(
-                &empty_dwarf.debug_str,
-                &empty_dwarf.debug_line_str,
-                &mut strings,
-                &mut line_strings,
-                &convert_address,
-            );
-            let converted_program = convert_context
-                .convert_line_program(incomplete_debug_line)
-                .unwrap();
-
-            converted_program
-                .write(
-                    &mut converted_debug_line,
-                    converted_program.encoding(),
-                    &write::DebugLineStrOffsets::none(),
-                    &write::DebugStrOffsets::none(),
-                )
-                .unwrap();
-        }
-
-        {
-            let read_debug_line = read::DebugLine::new(converted_debug_line.slice(), LittleEndian);
-            let read_program = read_debug_line
-                .program(DebugLineOffset(0), 4, None, None)
-                .unwrap();
-
-            let mut rows = read_program.rows();
-            let row = rows.next_row().unwrap().unwrap().1;
-            assert_eq!(row.address(), 0x1010);
-        }
-    }
-
-    #[test]
-    fn test_converted_none_address() {
-        let mut converted_debug_line = write::DebugLine::from(write::EndianVec::new(LittleEndian));
-        {
-            let mut debug_line = write::DebugLine::from(write::EndianVec::new(LittleEndian));
-            let incomplete_debug_line = make_test_debug_line(&mut debug_line);
-
-            let convert_address = |_, _| -> Option<write::Address> { None };
-
-            let empty_dwarf = Dwarf::default();
-            let mut line_strings = write::LineStringTable::default();
-            let mut strings = write::StringTable::default();
-
-            let mut convert_context = crate::module::debug::ConvertContext::new(
-                &empty_dwarf.debug_str,
-                &empty_dwarf.debug_line_str,
-                &mut strings,
-                &mut line_strings,
-                &convert_address,
-            );
-            let converted_program = convert_context
-                .convert_line_program(incomplete_debug_line)
-                .unwrap();
-
-            converted_program
-                .write(
-                    &mut converted_debug_line,
-                    converted_program.encoding(),
-                    &write::DebugLineStrOffsets::none(),
-                    &write::DebugStrOffsets::none(),
-                )
-                .unwrap();
-        }
-
-        {
-            let read_debug_line = read::DebugLine::new(converted_debug_line.slice(), LittleEndian);
-            let read_program = read_debug_line
-                .program(DebugLineOffset(0), 4, None, None)
-                .unwrap();
-
-            let mut rows = read_program.rows();
-            let row = rows.next_row().unwrap();
-            assert!(row.is_none());
-        }
-    }
-
-    fn make_test_debug_info() -> write::Sections<write::EndianVec<LittleEndian>> {
-        let mut unit_table = write::UnitTable::default();
-        {
-            let mut unit1 = write::Unit::new(
-                Encoding {
-                    version: 4,
-                    address_size: 4,
-                    format: Format::Dwarf32,
-                },
-                write::LineProgram::none(),
-            );
-
-            let root_id = unit1.root();
-            let child1_id = unit1.add(root_id, constants::DW_TAG_subprogram);
-            unit1.get_mut(child1_id).set(
-                constants::DW_AT_low_pc,
-                write::AttributeValue::Address(write::Address::Constant(0x1000)),
-            );
-            unit1.get_mut(child1_id).set(
-                constants::DW_AT_high_pc,
-                write::AttributeValue::Data4(0x100),
-            );
-
-            unit_table.add(unit1);
-        }
-
-        let mut sections = write::Sections::new(write::EndianVec::new(LittleEndian));
-        unit_table
-            .write(
-                &mut sections,
-                &write::DebugLineStrOffsets::none(),
-                &write::DebugStrOffsets::none(),
-            )
-            .unwrap();
-        sections
-    }
-
-    #[test]
-    fn test_convert_high_pc() {
-        let sections = make_test_debug_info();
-        let read_dwarf = Dwarf {
-            debug_info: read::DebugInfo::new(sections.debug_info.slice(), LittleEndian),
-            debug_abbrev: read::DebugAbbrev::new(sections.debug_abbrev.slice(), LittleEndian),
-            ..Default::default()
-        };
-
-        let read_first_unit_header = read_dwarf.units().next().unwrap().unwrap();
-        let read_first_unit = read_dwarf.unit(read_first_unit_header).unwrap();
-        let mut read_first_unit_entries = read_first_unit.entries();
-
-        let convert_address = |address, _| -> Option<write::Address> {
-            if address < 0x1050 {
-                Some(write::Address::Constant(address + 0x10))
-            } else {
-                Some(write::Address::Constant(address - 0x10))
+fn convert_attributes<R: Reader<Offset = usize>>(
+    unit: &mut write::ConvertUnit<'_, R>,
+    id: write::UnitEntryId,
+    entry: &write::ConvertUnitEntry<'_, R>,
+    lists: &Lists,
+) -> ConvertResult<()> {
+    let addresses = lists.addresses;
+    let address = |a| addresses.address(a);
+    for attr in &entry.attrs {
+        let read_unit = entry.read_unit;
+        let value = match attr.value() {
+            // Not supported by gimli, and safe to drop.
+            _ if attr.name() == constants::DW_AT_GNU_locviews => continue,
+            AttributeValue::LocationListsRef(offset) => {
+                convert_location_list(unit, read_unit, offset, lists)?
             }
+            AttributeValue::DebugLocListsIndex(index) => {
+                let offset = read_unit.locations_offset(index)?;
+                convert_location_list(unit, read_unit, offset, lists)?
+            }
+            AttributeValue::RangeListsRef(offset) => {
+                let offset = read_unit.ranges_offset_from_raw(offset);
+                convert_range_list(unit, read_unit, offset, lists)?
+            }
+            AttributeValue::DebugRngListsIndex(index) => {
+                let offset = read_unit.ranges_offset(index)?;
+                convert_range_list(unit, read_unit, offset, lists)?
+            }
+            AttributeValue::Udata(size) if attr.name() == constants::DW_AT_high_pc => {
+                convert_high_pc(entry, size, addresses)?
+            }
+            _ => unit.convert_attribute_value(read_unit, attr, &address)?,
         };
-
-        let mut strings = write::StringTable::default();
-        let mut line_strings = write::LineStringTable::default();
-
-        let convert_context = crate::module::debug::ConvertContext::new(
-            &read_dwarf.debug_str,
-            &read_dwarf.debug_line_str,
-            &mut strings,
-            &mut line_strings,
-            &convert_address,
-        );
-
-        let mut converted_dwarf = write::Dwarf::from(&read_dwarf, &|address| {
-            convert_address(address, AddressSearchPreference::InclusiveFunctionEnd)
-        })
-        .unwrap();
-
-        let id = converted_dwarf.units.id(0);
-
-        {
-            let unit = converted_dwarf.units.get_mut(id);
-            let mut write_unit_first_entries = DebuggingInformationCursor::new(unit);
-
-            convert_context
-                .convert_high_pc(&mut read_first_unit_entries, &mut write_unit_first_entries);
-        }
-
-        {
-            let unit = converted_dwarf.units.get_mut(id);
-            let mut write_unit_first_entries = DebuggingInformationCursor::new(unit);
-
-            let _root = write_unit_first_entries.next_dfs();
-            let subprogram_entry = write_unit_first_entries.next_dfs().unwrap();
-
-            assert_eq!(
-                *subprogram_entry.get(DW_AT_low_pc).unwrap(),
-                write::AttributeValue::Address(write::Address::Constant(0x1010))
-            );
-            assert_eq!(
-                *subprogram_entry.get(DW_AT_high_pc).unwrap(),
-                write::AttributeValue::Data4(0xE0)
-            );
-        }
-
-        // The emitted form must stay fixed-width, as in the input.
-        let mut sections = write::Sections::new(write::EndianVec::new(LittleEndian));
-        converted_dwarf.write(&mut sections).unwrap();
-        let read_dwarf = Dwarf {
-            debug_info: read::DebugInfo::new(sections.debug_info.slice(), LittleEndian),
-            debug_abbrev: read::DebugAbbrev::new(sections.debug_abbrev.slice(), LittleEndian),
-            ..Default::default()
-        };
-        let header = read_dwarf.units().next().unwrap().unwrap();
-        let unit = read_dwarf.unit(header).unwrap();
-        let mut entries = unit.entries();
-        entries.next_dfs().unwrap();
-        let (_, subprogram) = entries.next_dfs().unwrap().unwrap();
-        let high_pc = subprogram.attr(DW_AT_high_pc).unwrap().unwrap();
-        assert_eq!(high_pc.raw_value(), AttributeValue::Data4(0xE0));
+        unit.unit.get_mut(id).set(attr.name(), value);
     }
+    Ok(())
+}
+
+/// `DW_AT_high_pc` as a size: the distance between the new `low_pc` and the
+/// new address of `low_pc + size`.
+fn convert_high_pc<R: Reader<Offset = usize>>(
+    entry: &write::ConvertUnitEntry<'_, R>,
+    size: u64,
+    addresses: &Addresses,
+) -> ConvertResult<write::AttributeValue> {
+    let low = match entry.attr_value(constants::DW_AT_low_pc) {
+        Some(value) => entry.read_unit.attr_address(value)?,
+        None => None,
+    };
+    let size = match low {
+        Some(low) if !is_tombstone(low) => {
+            let map = |a| (addresses.map)(a, AddressSearchPreference::InclusiveFunctionEnd);
+            match (map(low), map(low + size)) {
+                (Some(new_low), Some(new_high)) => new_high.saturating_sub(new_low),
+                _ => size,
+            }
+        }
+        _ => size,
+    };
+    // Keep the fixed-width form LLVM emits: consumers that patch code
+    // addresses in place (binaryen's DWARF update) rely on the size not
+    // changing.
+    Ok(match u32::try_from(size) {
+        Ok(size) => write::AttributeValue::Data4(size),
+        Err(_) => write::AttributeValue::Udata(size),
+    })
+}
+
+fn convert_location_list<R: Reader<Offset = usize>>(
+    unit: &mut write::ConvertUnit<'_, R>,
+    read_unit: read::UnitRef<'_, R>,
+    offset: gimli::LocationListsOffset,
+    lists: &Lists,
+) -> ConvertResult<write::AttributeValue> {
+    let address = |a| lists.addresses.address(a);
+    let mut list = Vec::new();
+    // Resolved entries: absolute addresses, tombstones skipped.
+    let mut from = read_unit.locations(offset)?;
+    while let Some(entry) = from.next()? {
+        let ranges = lists.addresses.ranges(entry.range.begin, entry.range.end);
+        if ranges.is_empty() {
+            continue;
+        }
+        let data = unit.convert_expression(read_unit, entry.data, &address)?;
+        for (begin, end) in ranges {
+            if lists.relative_to_unit && list.is_empty() {
+                list.push(write::Location::BaseAddress {
+                    address: Address::Constant(0),
+                });
+            }
+            let data = data.clone();
+            list.push(if lists.relative_to_unit {
+                write::Location::OffsetPair { begin, end, data }
+            } else {
+                write::Location::StartEnd {
+                    begin: Address::Constant(begin),
+                    end: Address::Constant(end),
+                    data,
+                }
+            });
+        }
+    }
+    let id = unit.unit.locations.add(write::LocationList(list));
+    Ok(write::AttributeValue::LocationListRef(id))
+}
+
+fn convert_range_list<R: Reader<Offset = usize>>(
+    unit: &mut write::ConvertUnit<'_, R>,
+    read_unit: read::UnitRef<'_, R>,
+    offset: gimli::RangeListsOffset,
+    lists: &Lists,
+) -> ConvertResult<write::AttributeValue> {
+    let mut list = Vec::new();
+    // Resolved entries: absolute addresses, tombstones skipped.
+    let mut from = read_unit.ranges(offset)?;
+    while let Some(range) = from.next()? {
+        for (begin, end) in lists.addresses.ranges(range.begin, range.end) {
+            if lists.relative_to_unit && list.is_empty() {
+                list.push(write::Range::BaseAddress {
+                    address: Address::Constant(0),
+                });
+            }
+            list.push(if lists.relative_to_unit {
+                write::Range::OffsetPair { begin, end }
+            } else {
+                write::Range::StartEnd {
+                    begin: Address::Constant(begin),
+                    end: Address::Constant(end),
+                }
+            });
+        }
+    }
+    let id = unit.unit.ranges.add(write::RangeList(list));
+    Ok(write::AttributeValue::RangeListRef(id))
 }

@@ -11,7 +11,7 @@ walkdir = "2.2.9"
 [dev-dependencies]
 anyhow = "1.0"
 env_logger = "0.8.1"
-gimli = "0.32.0"
+gimli = "0.34.0"
 serde = { version = "1.0.99", features = ['derive'] }
 serde_json = { version = "1.0.40", features = ['preserve_order'] }
 tempfile = "3.1.0"

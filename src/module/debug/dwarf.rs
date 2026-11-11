@@ -104,6 +104,85 @@ where
         }
     }
 
+    /// Rewrites each `DW_AT_ranges` list from the ranges as readers resolve
+    /// them.
+    ///
+    /// `write::Dwarf::from` converts every value of a range list as an
+    /// address, but offset pairs (DWARF 4 `.debug_ranges` pairs in a unit
+    /// with a non-zero base address or after a base address entry, and DWARF
+    /// 5 `DW_RLE_offset_pair`) are offsets from that base, so they came out
+    /// as unrelated addresses. Pieces in code that no longer exists are
+    /// dropped.
+    pub(crate) fn convert_ranges(
+        &self,
+        dwarf: &read::Dwarf<R>,
+        from_unit: &read::Unit<R>,
+        unit: &mut write::Unit,
+    ) -> read::Result<()> {
+        let convert = |address| match address {
+            0 => None,
+            a if a >= DEAD_CODE => None,
+            a => match (self.convert_address)(a, AddressSearchPreference::InclusiveFunctionEnd) {
+                Some(write::Address::Constant(a)) => Some(a),
+                _ => None,
+            },
+        };
+        // In DWARF 4, address pairs are offsets from the unit's base address,
+        // so give the converted list a base of 0.
+        let base = (from_unit.encoding().version <= 4 && from_unit.low_pc != 0).then_some(
+            write::Range::BaseAddress {
+                address: write::Address::Constant(0),
+            },
+        );
+        let mut lists = Vec::new();
+        let mut from_entries = from_unit.entries();
+        while let Some((_, from_entry)) = from_entries.next_dfs()? {
+            let offset = match from_entry.attr_value(constants::DW_AT_ranges)? {
+                Some(value) => dwarf.attr_ranges_offset(from_unit, value)?,
+                None => None,
+            };
+            let tag = from_entry.tag();
+            let Some(offset) = offset else {
+                lists.push((tag, None));
+                continue;
+            };
+            let mut list = Vec::from_iter(base.clone());
+            let mut ranges = dwarf.ranges(from_unit, offset)?;
+            while let Some(range) = ranges.next()? {
+                match (convert(range.begin), convert(range.end)) {
+                    (Some(begin), Some(end)) if begin < end => list.push(write::Range::StartEnd {
+                        begin: write::Address::Constant(begin),
+                        end: write::Address::Constant(end),
+                    }),
+                    _ => log::debug!(
+                        "dropping DWARF range [{:#x}, {:#x}) in removed code",
+                        range.begin,
+                        range.end
+                    ),
+                }
+            }
+            lists.push((tag, Some(unit.ranges.add(write::RangeList(list)))));
+        }
+        // `write::Dwarf::from` converts every entry, in the order of the
+        // input tree, so both depth-first walks visit the same entries in the
+        // same order (as in `convert_high_pc`).
+        let mut entries = DebuggingInformationCursor::new(unit);
+        for (tag, list) in lists {
+            let Some(entry) = entries.next_dfs() else {
+                debug_assert!(false, "converted unit has fewer entries than the input");
+                break;
+            };
+            debug_assert_eq!(tag, entry.tag(), "converted entries are out of step");
+            if let Some(list) = list {
+                entry.set(
+                    constants::DW_AT_ranges,
+                    write::AttributeValue::RangeListRef(list),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn convert_unit_line_program(
         &mut self,
         from_unit: read::Unit<R>,

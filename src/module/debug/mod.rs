@@ -105,6 +105,9 @@ impl Emit for ModuleDebugData {
 
                 convert_context.convert_high_pc(&mut from_entries, &mut entries);
             }
+            convert_context
+                .convert_ranges(&from_dwarf, &from_unit, unit)
+                .expect("cannot convert DWARF ranges");
 
             // perform line program transformation
             if let Some(program) = convert_context.convert_unit_line_program(from_unit) {

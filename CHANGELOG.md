@@ -35,6 +35,11 @@ Released YYYY-MM-DD.
   `br`, `br_if` and `br_table`.
 * `visit_instr_seq_id` is now called for legacy `try` `catch` and `catch_all`
   handler blocks, matching the `try` body.
+* DWARF range lists whose pairs are offsets from a base address (DWARF 4
+  `.debug_ranges` in a unit with a non-zero base address or after a base
+  address entry, and DWARF 5 offset pairs) now still cover their functions
+  after re-encoding. walrus converted the offsets as if they were code
+  addresses.
 
 ### Security
 

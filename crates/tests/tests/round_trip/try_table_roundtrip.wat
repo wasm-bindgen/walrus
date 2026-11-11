@@ -37,13 +37,11 @@
       i32.ne
       if ;; label = @1
         unreachable
-      else
       end
       i32.const 1
       i32.ne
       if ;; label = @1
         unreachable
-      else
       end
     )
     (func $throw-1-2 (;1;) (type 0)

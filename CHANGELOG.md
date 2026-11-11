@@ -24,7 +24,15 @@ Released YYYY-MM-DD.
 
 ### Fixed
 
-* TODO (or remove section if none)
+* `VisitorMut`'s per-instruction methods (`visit_const_mut` and so on) no
+  longer visit the instruction's fields by default. The traversal already
+  does that, so a `VisitorMut` that only overrode, say, `visit_value_mut` saw
+  every field twice. `Visitor` already behaved this way.
+* `visit_instr_seq_id` is no longer called for the branch target of
+  `br_on_null`, `br_on_non_null`, `br_on_cast` and `br_on_cast_fail`, matching
+  `br`, `br_if` and `br_table`.
+* `visit_instr_seq_id` is now called for legacy `try` `catch` and `catch_all`
+  handler blocks, matching the `try` body.
 
 ### Security
 

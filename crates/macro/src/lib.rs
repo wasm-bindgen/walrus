@@ -451,7 +451,7 @@ fn create_visit(variants: &[WalrusVariant]) -> impl quote::ToTokens {
             #[doc=#doc]
             #[inline]
             fn #method_name_mut(&mut self, instr: &mut #name) {
-                instr.visit_mut(self);
+                // ...
             }
         });
 

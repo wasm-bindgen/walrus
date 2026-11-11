@@ -12,7 +12,9 @@ Released YYYY-MM-DD.
 
 ### Changed
 
-* TODO (or remove section if none)
+* An `if` whose `else` arm is empty is emitted without the `else`, saving a
+  byte per `if`. This was a TODO in the emitter; parsing already turned a
+  missing `else` into an empty one.
 
 ### Deprecated
 

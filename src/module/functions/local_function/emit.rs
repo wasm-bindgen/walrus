@@ -13,6 +13,7 @@ pub(crate) fn run(
     map: Option<&mut Vec<(InstrLocId, usize)>>,
 ) {
     let v = &mut Emit {
+        func,
         indices,
         blocks: vec![],
         block_kinds: vec![BlockKind::FunctionEntry],
@@ -22,6 +23,7 @@ pub(crate) fn run(
         try_table_catches: IdHashMap::default(),
         legacy_catches: IdHashMap::default(),
         catch_parent: IdHashMap::default(),
+        empty_else: IdHashMap::default(),
         _phantom: std::marker::PhantomData,
     };
     dfs_in_order(v, func, func.entry_block());
@@ -31,6 +33,9 @@ pub(crate) fn run(
 }
 
 struct Emit<'a, 'instr> {
+    // The function being emitted, to look up `if` alternatives.
+    func: &'a LocalFunction,
+
     // Needed so we can map locals to their indices.
     indices: &'a IdsToIndices,
     local_indices: &'a IdHashMap<Local, u32>,
@@ -60,6 +65,9 @@ struct Emit<'a, 'instr> {
 
     // Map from catch handler ID to parent try block ID
     catch_parent: IdHashMap<InstrSeq, InstrSeqId>,
+
+    // `if` consequents whose alternative is empty, so the `else` is omitted.
+    empty_else: IdHashMap<InstrSeq, ()>,
 
     // Phantom data to use the 'instr lifetime
     _phantom: std::marker::PhantomData<&'instr ()>,
@@ -175,10 +183,13 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
         match popped_kind.unwrap() {
             BlockKind::If => {
                 // We're about to visit the `else` block, so push its kind.
-                //
-                // TODO: don't emit `else` for empty else blocks
                 self.block_kinds.push(BlockKind::Else);
-                self.encoder.instruction(&Instruction::Else);
+                // An empty `else` can be left out: `if` without `else` is
+                // valid exactly when an empty `else` would be (the block's
+                // results equal its params), and it means the same.
+                if self.empty_else.remove(&seq.id()).is_none() {
+                    self.encoder.instruction(&Instruction::Else);
+                }
             }
             BlockKind::Try | BlockKind::Catch => {
                 // Determine the try block ID
@@ -266,8 +277,11 @@ impl<'instr> Visitor<'instr> for Emit<'_, 'instr> {
             // `if` block, we'll pop the `if` kind and push the `else`
             // kind. This allows us to maintain the `self.blocks.len() ==
             // self.block_kinds.len()` invariant.
-            IfElse(_) => {
+            IfElse(e) => {
                 self.block_kinds.push(BlockKind::If);
+                if self.func.block(e.alternative).instrs.is_empty() {
+                    self.empty_else.insert(e.consequent, ());
+                }
                 true
             }
             TryTable(t) => {

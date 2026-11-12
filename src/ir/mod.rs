@@ -569,12 +569,14 @@ pub enum Instr {
     /// `br_on_null` - branch if reference is null
     BrOnNull {
         /// The block to branch to if the reference is null
+        #[walrus(skip_visit)] // should have already been visited
         block: InstrSeqId,
     },
 
     /// `br_on_non_null` - branch if reference is non-null
     BrOnNonNull {
         /// The block to branch to if the reference is non-null
+        #[walrus(skip_visit)] // should have already been visited
         block: InstrSeqId,
     },
 
@@ -635,6 +637,7 @@ pub enum Instr {
     /// If cast fails: fall through with original value on stack.
     BrOnCast {
         /// Branch target
+        #[walrus(skip_visit)] // should have already been visited
         block: InstrSeqId,
         /// Whether input type is nullable
         #[walrus(skip_visit)]
@@ -654,6 +657,7 @@ pub enum Instr {
     /// If cast succeeds: fall through with cast value.
     BrOnCastFail {
         /// Branch target
+        #[walrus(skip_visit)] // should have already been visited
         block: InstrSeqId,
         /// Whether input type is nullable
         #[walrus(skip_visit)]
@@ -1892,10 +1896,14 @@ impl<'instr> Visit<'instr> for LegacyCatch {
         V: Visitor<'instr>,
     {
         match self {
-            LegacyCatch::Catch { tag, .. } => {
+            LegacyCatch::Catch { tag, handler } => {
                 visitor.visit_tag_id(tag);
+                visitor.visit_instr_seq_id(handler);
             }
-            LegacyCatch::CatchAll { .. } | LegacyCatch::Delegate { .. } => {}
+            LegacyCatch::CatchAll { handler } => {
+                visitor.visit_instr_seq_id(handler);
+            }
+            LegacyCatch::Delegate { .. } => {}
         }
     }
 }
@@ -1906,10 +1914,14 @@ impl VisitMut for LegacyCatch {
         V: VisitorMut,
     {
         match self {
-            LegacyCatch::Catch { tag, .. } => {
+            LegacyCatch::Catch { tag, handler } => {
                 visitor.visit_tag_id_mut(tag);
+                visitor.visit_instr_seq_id_mut(handler);
             }
-            LegacyCatch::CatchAll { .. } | LegacyCatch::Delegate { .. } => {}
+            LegacyCatch::CatchAll { handler } => {
+                visitor.visit_instr_seq_id_mut(handler);
+            }
+            LegacyCatch::Delegate { .. } => {}
         }
     }
 }

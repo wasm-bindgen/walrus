@@ -2,10 +2,12 @@ mod dwarf;
 mod expression;
 
 use crate::emit::{Emit, EmitContext};
-use crate::{CustomSection, Module, RawCustomSection};
+use crate::map::IdHashMap;
+use crate::parse::IndicesToIds;
+use crate::{CustomSection, Function, FunctionId, GlobalId, LocalId, Module, RawCustomSection};
 use gimli::*;
 
-use self::dwarf::Addresses;
+use self::dwarf::{Addresses, Indices};
 use self::expression::{CodeAddressConverter, CodeAddressGenerator};
 
 /// The DWARF debug section in input WebAssembly binary.
@@ -13,13 +15,27 @@ use self::expression::{CodeAddressConverter, CodeAddressGenerator};
 pub struct ModuleDebugData {
     /// DWARF debug data
     pub dwarf: read::Dwarf<Vec<u8>>,
+    /// The input module's locals of each function and its globals, by the
+    /// indices `DW_OP_WASM_location` uses. Recorded when `generate_dwarf` is
+    /// on.
+    input_indices: Option<InputIndices>,
+}
+
+#[derive(Debug)]
+struct InputIndices {
+    locals: IdHashMap<Function, Vec<LocalId>>,
+    globals: Vec<GlobalId>,
 }
 
 impl Module {
     pub(crate) fn parse_debug_sections(
         &mut self,
         mut debug_sections: Vec<RawCustomSection>,
+        indices: &IndicesToIds,
     ) -> Result<()> {
+        let has_debug_info = debug_sections
+            .iter()
+            .any(|s| s.name() == ".debug_info" && !s.data.is_empty());
         let load_section = |id: gimli::SectionId| -> Result<Vec<u8>> {
             Ok(
                 match debug_sections
@@ -33,6 +49,10 @@ impl Module {
         };
 
         self.debug.dwarf = read::Dwarf::load(load_section)?;
+        if self.config.generate_dwarf && has_debug_info {
+            let (locals, globals) = indices.local_and_global_tables();
+            self.debug.input_indices = Some(InputIndices { locals, globals });
+        }
 
         Ok(())
     }
@@ -54,10 +74,10 @@ impl Emit for ModuleDebugData {
             .module
             .funcs
             .iter_local()
-            .filter_map(|(_, f)| f.original_range.clone())
-            .map(|r| (r.start as u64, r.end as u64))
+            .filter_map(|(id, f)| Some((id, f.original_range.clone()?)))
+            .map(|(id, r)| (r.start as u64, r.end as u64, id))
             .collect::<Vec<_>>();
-        input_bodies.sort_unstable();
+        input_bodies.sort_unstable_by_key(|&(start, _, _)| start);
         let mut output_bodies = cx
             .code_transform
             .function_ranges
@@ -81,9 +101,26 @@ impl Emit for ModuleDebugData {
             .module
             .debug
             .dwarf
-            .borrow(|sections| EndianSlice::new(sections.as_ref(), LittleEndian));
+            .borrow(|sections| EndianRcSlice::new(sections.as_slice().into(), LittleEndian));
 
-        let mut dwarf = dwarf::convert(&from_dwarf, &addresses).expect("cannot convert DWARF");
+        // Locals and globals that walrus removed have no index.
+        let local = |func: FunctionId, index: u32| -> Option<u32> {
+            let input = self.input_indices.as_ref()?;
+            let id = input.locals.get(&func)?.get(index as usize)?;
+            cx.indices.locals.get(&func)?.get(id).copied()
+        };
+        let global = |index: u32| -> Option<u32> {
+            let input = self.input_indices.as_ref()?;
+            cx.indices
+                .emitted_global_index(*input.globals.get(index as usize)?)
+        };
+        let indices = self.input_indices.as_ref().map(|_| Indices {
+            local: &local,
+            global: &global,
+        });
+
+        let mut dwarf = dwarf::convert(&from_dwarf, &addresses, indices.as_ref())
+            .expect("cannot convert DWARF");
 
         let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
         dwarf.write(&mut sections).expect("write failed");

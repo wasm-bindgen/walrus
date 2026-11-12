@@ -50,6 +50,13 @@ pub struct IdsToIndices {
     pub(crate) locals: IdHashMap<Function, IdHashMap<Local, u32>>,
 }
 
+impl IdsToIndices {
+    /// The emitted index of a global, or `None` if it isn't emitted.
+    pub(crate) fn emitted_global_index(&self, id: GlobalId) -> Option<u32> {
+        self.globals.get(&id).copied()
+    }
+}
+
 macro_rules! define_get_index {
     ( $(
         $get_name:ident, $id_ty:ty, $member:ident;

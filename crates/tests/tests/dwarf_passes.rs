@@ -227,9 +227,11 @@ struct Output {
     /// The ranges of the subprogram and the lexical block.
     subprogram: Vec<(u64, u64)>,
     block: Vec<(u64, u64)>,
-    /// The local index in `x`, `y`'s location list entries as (begin, end,
-    /// local index), and `s`'s address.
-    x: Option<u64>,
+    /// The local index in `x`, as (None, index) for an expression and
+    /// (Some((begin, end)), index) for each location list entry, `y`'s
+    /// location list entries as (begin, end, local index), and `s`'s
+    /// address.
+    x: Vec<(Option<(u64, u64)>, u64)>,
     y: Vec<(u64, u64, u64)>,
     s: Option<u64>,
 }
@@ -296,10 +298,16 @@ fn output(wasm: &[u8]) -> Output {
                 };
                 match &*name {
                     b"x" => {
-                        let read::AttributeValue::Exprloc(e) = location else {
-                            panic!("{location:?}")
-                        };
-                        out.x = Some(local_of(e, &unit));
+                        if let read::AttributeValue::Exprloc(e) = location {
+                            out.x.push((None, local_of(e, &unit)));
+                            continue;
+                        }
+                        let mut list = dwarf.attr_locations(&unit, location).unwrap().unwrap();
+                        while let Some(l) = list.next().unwrap() {
+                            let range = Some((l.range.begin, l.range.end));
+                            out.x.push((range, local_of(l.data, &unit)));
+                        }
+                        out.x.sort_unstable();
                     }
                     b"s" => {
                         let read::AttributeValue::Exprloc(e) = location else {
@@ -361,7 +369,7 @@ fn round_trip() {
     assert_eq!(dwarf.subprogram, [(f.start, f.end)]);
     assert_eq!(dwarf.block, [(f.addr(BLOCK.0), f.addr(BLOCK.1))]);
     // Instruction 1 is `local.set 1`, and instruction 5 `local.set 2`.
-    assert_eq!(dwarf.x, Some(local_at(f, 1)));
+    assert_eq!(dwarf.x, [(None, local_at(f, 1))]);
     assert_eq!(dwarf.y, [(f.addr(Y.0), f.addr(Y.1), local_at(f, 5))]);
     // A linear memory address, not a code address.
     assert_eq!(dwarf.s, Some(STATIC));
@@ -421,6 +429,41 @@ fn copied_code() {
     let mut block = vec![(f.addr(BLOCK.0), f.addr(BLOCK.1)), (g.addr(1), g.addr(3))];
     block.sort_unstable();
     assert_eq!(dwarf.block, block);
+    // The copy doesn't use `x`'s local, so `x` has no location in `g`.
+    assert_eq!(dwarf.x, [(Some((f.start, f.end)), local_at(f, 1))]);
+}
+
+#[test]
+fn copied_code_with_locals() {
+    // Copy `local.set 1; local.get 1; i32.const 1; i32.add`, with their
+    // locations, to the end of `g`, using a new local of `g` as an inliner
+    // would. `g` then returns 8.
+    let (_, out, dwarf) = run(|module| {
+        let (f, g) = (function(module, "f"), function(module, "g"));
+        let local = module.locals.add(walrus::ValType::I32);
+        let f = module.funcs.get(f).kind.unwrap_local();
+        let mut copy: Vec<_> = f.block(f.entry_block()).instrs[1..5].to_vec();
+        for (instr, _) in &mut copy {
+            if let Instr::LocalGet(LocalGet { local: l }) | Instr::LocalSet(LocalSet { local: l }) =
+                instr
+            {
+                *l = local;
+            }
+        }
+        let g = module.funcs.get_mut(g).kind.unwrap_local_mut();
+        let entry = g.entry_block();
+        g.block_mut(entry).instrs.extend(copy);
+    });
+    let (f, g) = (&out["f"], &out["g"]);
+    assert_eq!(g.instrs.len(), 6);
+    assert_ne!(local_at(g, 1), local_at(f, 1));
+    // `x` is `f`'s local 1 in `f`, and the new local in the copy.
+    let mut x = vec![
+        (Some((f.start, f.end)), local_at(f, 1)),
+        (Some((g.addr(1), g.addr(5))), local_at(g, 1)),
+    ];
+    x.sort_unstable();
+    assert_eq!(dwarf.x, x);
 }
 
 #[test]
@@ -450,6 +493,6 @@ fn coalesced_locals() {
     });
     let f = &out["f"];
     assert_eq!(local_at(f, 5), local_at(f, 1));
-    assert_eq!(dwarf.x, Some(local_at(f, 1)));
+    assert_eq!(dwarf.x, [(None, local_at(f, 1))]);
     assert_eq!(dwarf.y, [(f.addr(Y.0), f.addr(Y.1), local_at(f, 1))]);
 }

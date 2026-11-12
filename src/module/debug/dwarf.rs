@@ -23,6 +23,7 @@
 //! indices in `DW_OP_WASM_location` are remapped.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::{FunctionId, InstrLocId};
 use gimli::write::{self, Address, ConvertLineSequenceEnd, ConvertResult};
@@ -101,6 +102,9 @@ pub(crate) struct CodeMap<'a> {
     /// emitted there and nothing else was, so that a range covering the
     /// whole input function covers the whole output function.
     whole: Vec<Option<usize>>,
+    /// For each input function, the output functions its code is in: its
+    /// own, if it was emitted, and any a pass copied its code to. Sorted.
+    spread: Vec<Vec<u32>>,
 }
 
 /// A run of emitted code: (output function, start, end).
@@ -172,9 +176,11 @@ impl<'a> CodeMap<'a> {
 
         let mut first_emission = Vec::with_capacity(inputs.len());
         let mut whole = Vec::with_capacity(inputs.len());
+        let mut spread = Vec::with_capacity(inputs.len());
         for (i, f) in inputs.iter().enumerate() {
             let o = output_of.get(&f.id).copied();
             let mut only_o = o.is_some_and(|o| sole[o] == Some(Some(i)));
+            let mut outputs: Vec<u32> = o.map(|o| o as u32).into_iter().collect();
             let first: Vec<u32> = f
                 .instrs
                 .iter()
@@ -182,12 +188,18 @@ impl<'a> CodeMap<'a> {
                     let e = emitted.partition_point(|x| x.0 < loc);
                     for x in emitted[e..].iter().take_while(|x| x.0 == loc) {
                         only_o &= Some(x.1 as usize) == o;
+                        if outputs.last() != Some(&x.1) {
+                            outputs.push(x.1);
+                        }
                     }
                     e as u32
                 })
                 .collect();
+            outputs.sort_unstable();
+            outputs.dedup();
             first_emission.push(first);
             whole.push(o.filter(|_| only_o));
+            spread.push(outputs);
         }
 
         CodeMap {
@@ -200,6 +212,7 @@ impl<'a> CodeMap<'a> {
             known_before,
             first_emission,
             whole,
+            spread,
         }
     }
 
@@ -399,28 +412,37 @@ pub(crate) fn convert(
         // `DW_AT_low_pc` is nonzero.
         let root_pc = convert_pc(&root, &cx)?;
         cx.relative_to_unit = root.read_unit.encoding().version <= 4
-            && matches!(root_pc, Pc::Single(a) | Pc::Range(a, _) if a != 0);
-        // The function each entry is in, for the local indices in its
-        // expressions: the one its own `DW_AT_low_pc` is in, or else its
-        // parent's.
+            && matches!(root_pc, Pc::Single(a) | Pc::Range(_, a, _) if a != 0);
+        // For each entry, the function whose local indices its expressions
+        // use (the one its own `DW_AT_low_pc` is in, or else its parent's),
+        // and the emitted code it covers (its own, or else its parent's).
         // Entries are read depth first, so this holds the ancestors of the
         // current entry.
-        let mut functions = Vec::new();
+        let mut scopes: Vec<(write::UnitEntryId, Scope)> = Vec::new();
         let root_id = unit.unit.root();
-        let function = entry_function(&root, None, code)?;
-        functions.push((root_id, function));
-        convert_attributes(&mut unit, root_id, &root, root_pc, function, &cx)?;
+        let scope = Scope {
+            function: entry_function(&root, None, code)?,
+            runs: root_pc.runs().map(Rc::new),
+        };
+        convert_attributes(&mut unit, root_id, &root, root_pc, &scope, &cx)?;
+        scopes.push((root_id, scope));
         let mut entry = root;
         while let Some(id) = unit.read_entry(&mut entry)? {
             let id = unit.add_entry(id, &entry);
-            while functions.last().is_some_and(|f| Some(f.0) != entry.parent) {
-                functions.pop();
+            while scopes.last().is_some_and(|s| Some(s.0) != entry.parent) {
+                scopes.pop();
             }
-            let parent = functions.last().and_then(|f| f.1);
-            let function = entry_function(&entry, parent, code)?;
-            functions.push((id, function));
+            let parent = scopes.last().map(|s| &s.1);
             let pc = convert_pc(&entry, &cx)?;
-            convert_attributes(&mut unit, id, &entry, pc, function, &cx)?;
+            let scope = Scope {
+                function: entry_function(&entry, parent.and_then(|p| p.function), code)?,
+                runs: match pc.runs() {
+                    Some(runs) => Some(Rc::new(runs)),
+                    None => parent.and_then(|p| p.runs.clone()),
+                },
+            };
+            convert_attributes(&mut unit, id, &entry, pc, &scope, &cx)?;
+            scopes.push((id, scope));
         }
     }
     Ok(dwarf)
@@ -434,10 +456,12 @@ struct Sequence {
     rows: Vec<(u64, write::LineRow)>,
 }
 
-/// Each output function gets a sequence from the unit that its own input
-/// code belonged to, with a row wherever the input row covering its
-/// instructions changes. Instructions with no input location continue the
-/// row before them.
+/// Each output function gets sequences from every unit whose line program
+/// covers some of its code (usually just the unit its own input code
+/// belonged to, but a pass can copy code between functions), with a row
+/// wherever the input row covering its instructions changes. Instructions
+/// with no input location continue the row before them, and a sequence
+/// ends where the unit's coverage does.
 fn convert_line_program(
     mut program: write::ConvertLineProgram<'_, R>,
     code: &CodeMap,
@@ -488,21 +512,23 @@ fn convert_line_program(
         Some((s, i..j))
     };
 
-    for (o, f) in code.outputs.iter().enumerate() {
-        // Only the unit whose line program covers the function's own input
-        // code describes it.
-        let Some(&input) = code.input_of.get(&f.id) else {
-            continue;
-        };
-        let input = &code.inputs[input];
-        let owns = covering(input.start).is_some()
-            || input
-                .instrs
-                .first()
-                .is_some_and(|&(a, _)| covering(a as u64).is_some());
-        if !owns {
-            continue;
+    // The output functions with code from the input functions the unit's
+    // sequences cover, in address order.
+    let mut targets = Vec::new();
+    for sequence in &sequences {
+        let first = code.inputs.partition_point(|f| f.end <= sequence.start);
+        for (i, f) in code.inputs.iter().enumerate().skip(first) {
+            if f.start >= sequence.end {
+                break;
+            }
+            targets.extend(code.spread[i].iter().map(|&o| o as usize));
         }
+    }
+    targets.sort_unstable();
+    targets.dedup();
+
+    for o in targets {
+        let f = &code.outputs[o];
         // The rows in effect, and the start of the open sequence. Output
         // instructions with no input location keep the rows in effect; an
         // input address no row covers ends the sequence, as in the input.
@@ -560,6 +586,14 @@ fn entry_function(
     })
 }
 
+/// Where an entry's expressions apply.
+struct Scope {
+    /// The input function whose local indices they use.
+    function: Option<FunctionId>,
+    /// The emitted code the entry or its closest ancestor with code covers.
+    runs: Option<Rc<Vec<Run>>>,
+}
+
 /// An entry's converted `DW_AT_low_pc` and `DW_AT_high_pc`.
 #[derive(Clone, PartialEq)]
 enum Pc {
@@ -567,12 +601,26 @@ enum Pc {
     Unchanged,
     /// `DW_AT_low_pc` alone.
     Single(u64),
-    /// One range: its start, and `DW_AT_high_pc` with whether it's a size.
-    Range(u64, (u64, bool)),
+    /// One range: its output function, its start, and `DW_AT_high_pc` with
+    /// whether it's a size.
+    Range(usize, u64, (u64, bool)),
     /// The code is now in several places, so the pair becomes `DW_AT_ranges`.
     Ranges(Vec<Run>),
     /// All of the code was removed. Has whether `DW_AT_high_pc` is a size.
     Removed(bool),
+}
+
+impl Pc {
+    /// The emitted code of a range, if it has one.
+    fn runs(&self) -> Option<Vec<Run>> {
+        match self {
+            Pc::Range(o, s, (high, is_size)) => {
+                Some(vec![(*o, *s, if *is_size { s + high } else { *high })])
+            }
+            Pc::Ranges(runs) => Some(runs.clone()),
+            _ => None,
+        }
+    }
 }
 
 fn convert_pc(entry: &write::ConvertUnitEntry<'_, R>, cx: &Context) -> ConvertResult<Pc> {
@@ -599,8 +647,8 @@ fn convert_pc(entry: &write::ConvertUnitEntry<'_, R>, cx: &Context) -> ConvertRe
     Ok(match runs.len() {
         0 => Pc::Removed(is_size),
         1 => {
-            let (_, s, e) = runs.pop().unwrap();
-            Pc::Range(s, (if is_size { e - s } else { e }, is_size))
+            let (o, s, e) = runs.pop().unwrap();
+            Pc::Range(o, s, (if is_size { e - s } else { e }, is_size))
         }
         _ => Pc::Ranges(runs),
     })
@@ -611,9 +659,10 @@ fn convert_attributes(
     id: write::UnitEntryId,
     entry: &write::ConvertUnitEntry<'_, R>,
     pc: Pc,
-    function: Option<FunctionId>,
+    scope: &Scope,
     cx: &Context,
 ) -> ConvertResult<()> {
+    let function = scope.function;
     let address = |a| cx.address(a);
     let is_root = entry.parent.is_none();
     match &pc {
@@ -622,7 +671,7 @@ fn convert_attributes(
             let value = write::AttributeValue::Address(Address::Constant(*a));
             unit.unit.get_mut(id).set(constants::DW_AT_low_pc, value);
         }
-        Pc::Range(low, (high, is_size)) => {
+        Pc::Range(_, low, (high, is_size)) => {
             let low = write::AttributeValue::Address(Address::Constant(*low));
             let high = match (*is_size, u32::try_from(*high)) {
                 // Keep the fixed-width form LLVM emits: consumers that patch
@@ -673,46 +722,37 @@ fn convert_attributes(
         {
             continue;
         }
-        let value =
-            match attr.value() {
-                // Not supported by gimli, and safe to drop.
-                _ if name == constants::DW_AT_GNU_locviews => continue,
-                // gimli can't write macro sections, so these offsets would point
-                // at nothing.
-                AttributeValue::DebugMacinfoRef(_) | AttributeValue::DebugMacroRef(_) => continue,
-                _ if name == constants::DW_AT_GNU_macros => continue,
-                AttributeValue::LocationListsRef(offset) => {
-                    convert_location_list(unit, read_unit, offset, function, cx)?
+        let value = match attr.value() {
+            // Not supported by gimli, and safe to drop.
+            _ if name == constants::DW_AT_GNU_locviews => continue,
+            // gimli can't write macro sections, so these offsets would point
+            // at nothing.
+            AttributeValue::DebugMacinfoRef(_) | AttributeValue::DebugMacroRef(_) => continue,
+            _ if name == constants::DW_AT_GNU_macros => continue,
+            AttributeValue::LocationListsRef(offset) => {
+                convert_location_list(unit, read_unit, offset, function, cx)?
+            }
+            AttributeValue::DebugLocListsIndex(index) => {
+                let offset = read_unit.locations_offset(index)?;
+                convert_location_list(unit, read_unit, offset, function, cx)?
+            }
+            AttributeValue::RangeListsRef(offset) => {
+                let offset = read_unit.ranges_offset_from_raw(offset);
+                convert_range_list(unit, read_unit, offset, cx)?
+            }
+            AttributeValue::DebugRngListsIndex(index) => {
+                let offset = read_unit.ranges_offset(index)?;
+                convert_range_list(unit, read_unit, offset, cx)?
+            }
+            AttributeValue::Exprloc(expression) => {
+                match convert_exprloc(unit, read_unit, name, &expression, scope, cx)? {
+                    Some(value) => value,
+                    // The variable is now optimized out.
+                    None => continue,
                 }
-                AttributeValue::DebugLocListsIndex(index) => {
-                    let offset = read_unit.locations_offset(index)?;
-                    convert_location_list(unit, read_unit, offset, function, cx)?
-                }
-                AttributeValue::RangeListsRef(offset) => {
-                    let offset = read_unit.ranges_offset_from_raw(offset);
-                    convert_range_list(unit, read_unit, offset, cx)?
-                }
-                AttributeValue::DebugRngListsIndex(index) => {
-                    let offset = read_unit.ranges_offset(index)?;
-                    convert_range_list(unit, read_unit, offset, cx)?
-                }
-                AttributeValue::Exprloc(expression) => {
-                    let remapped = remap_wasm_locations(
-                        &expression,
-                        read_unit.encoding(),
-                        function.map(|f| (f, f)),
-                        cx,
-                    )?;
-                    match remapped {
-                        Some(expression) => write::AttributeValue::Exprloc(
-                            unit.convert_expression(read_unit, expression, &data_address)?,
-                        ),
-                        // The variable is now optimized out.
-                        None => continue,
-                    }
-                }
-                _ => unit.convert_attribute_value(read_unit, attr, &address)?,
-            };
+            }
+            _ => unit.convert_attribute_value(read_unit, attr, &address)?,
+        };
         unit.unit.get_mut(id).set(name, value);
     }
     Ok(())
@@ -792,24 +832,125 @@ fn convert_location_list(
             let Some(data) = data else {
                 continue;
             };
-            if cx.relative_to_unit && list.is_empty() {
-                list.push(write::Location::BaseAddress {
-                    address: Address::Constant(0),
-                });
-            }
-            list.push(if cx.relative_to_unit {
-                write::Location::OffsetPair { begin, end, data }
-            } else {
-                write::Location::StartEnd {
-                    begin: Address::Constant(begin),
-                    end: Address::Constant(end),
-                    data,
-                }
-            });
+            push_location(&mut list, begin, end, data, cx);
         }
     }
     let id = unit.unit.locations.add(write::LocationList(list));
     Ok(write::AttributeValue::LocationListRef(id))
+}
+
+fn push_location(
+    list: &mut Vec<write::Location>,
+    begin: u64,
+    end: u64,
+    data: write::Expression,
+    cx: &Context,
+) {
+    if cx.relative_to_unit && list.is_empty() {
+        list.push(write::Location::BaseAddress {
+            address: Address::Constant(0),
+        });
+    }
+    list.push(if cx.relative_to_unit {
+        write::Location::OffsetPair { begin, end, data }
+    } else {
+        write::Location::StartEnd {
+            begin: Address::Constant(begin),
+            end: Address::Constant(end),
+            data,
+        }
+    });
+}
+
+/// Attributes whose value can be a location list as well as an expression.
+fn can_be_location_list(name: constants::DwAt) -> bool {
+    matches!(
+        name,
+        constants::DW_AT_location
+            | constants::DW_AT_frame_base
+            | constants::DW_AT_return_addr
+            | constants::DW_AT_static_link
+            | constants::DW_AT_string_length
+            | constants::DW_AT_segment
+    )
+}
+
+/// An expression applies to the code of its scope, using the local indices
+/// of its scope's input function. Where a pass copied some of that code into
+/// other functions, which number their locals differently, it becomes a
+/// location list with an expression for each, if the attribute can be one.
+fn convert_exprloc(
+    unit: &mut write::ConvertUnit<'_, R>,
+    read_unit: read::UnitRef<'_, R>,
+    name: constants::DwAt,
+    expression: &read::Expression<R>,
+    scope: &Scope,
+    cx: &Context,
+) -> ConvertResult<Option<write::AttributeValue>> {
+    let encoding = read_unit.encoding();
+    let runs = scope.runs.as_deref().map_or(&[][..], |r| &r[..]);
+    // The output functions with the scope's code: the input function's own
+    // first, if it was emitted.
+    let mut outputs = Vec::new();
+    if let Some(function) = scope.function {
+        outputs.extend(cx.code.output_of.get(&function).copied());
+        for &(o, _, _) in runs {
+            if !outputs.contains(&o) {
+                outputs.push(o);
+            }
+        }
+    }
+    let functions = |o: usize| scope.function.map(|f| (f, cx.code.outputs[o].id));
+    let mut remapped = Vec::with_capacity(outputs.len());
+    for &o in &outputs {
+        remapped.push(remap_wasm_locations(
+            expression,
+            encoding,
+            functions(o),
+            cx,
+        )?);
+    }
+    let bytes = |e: &Option<read::Expression<R>>| e.as_ref().map(|e| e.0.bytes().to_vec());
+    let same = remapped.windows(2).all(|w| bytes(&w[0]) == bytes(&w[1]));
+    if outputs.len() <= 1 || same || !can_be_location_list(name) {
+        let expression = match remapped.into_iter().next() {
+            Some(remapped) => remapped,
+            // The function isn't known or wasn't emitted.
+            None => remap_wasm_locations(expression, encoding, scope.function.map(|f| (f, f)), cx)?,
+        };
+        return Ok(match expression {
+            Some(e) => Some(write::AttributeValue::Exprloc(unit.convert_expression(
+                read_unit,
+                e,
+                &data_address,
+            )?)),
+            None => None,
+        });
+    }
+    let mut converted = HashMap::new();
+    let mut list = Vec::new();
+    for &(o, begin, end) in runs {
+        let data = match converted.get(&o) {
+            Some(data) => Option::clone(data),
+            None => {
+                let i = outputs.iter().position(|&x| x == o).unwrap();
+                let data = match remapped[i].clone() {
+                    Some(e) => Some(unit.convert_expression(read_unit, e, &data_address)?),
+                    None => None,
+                };
+                converted.insert(o, data.clone());
+                data
+            }
+        };
+        if let Some(data) = data {
+            push_location(&mut list, begin, end, data, cx);
+        }
+    }
+    if list.is_empty() {
+        return Ok(None);
+    }
+    let id = unit.unit.locations.add(write::LocationList(list));
+    Ok(Some(write::AttributeValue::LocationListRef(id)))
 }
 
 fn convert_range_list(

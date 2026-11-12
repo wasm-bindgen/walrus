@@ -69,7 +69,10 @@ Released YYYY-MM-DD.
   replace. Each line row, range, location list entry and code address is
   derived from where its input instructions were emitted, so code that is
   now in several places gets a `DW_AT_ranges` list, and a local a pass
-  replaced is found through the instructions that used it. Previously
+  replaced is found through the instructions that used it. A variable whose
+  code was copied into another function, which numbers its locals
+  differently, gets a location list with the right local in each, and code
+  copied from another compile unit keeps its line rows. Previously
   addresses were mapped through a table that kept one place per input
   instruction.
 * Line rows stay on the instructions they describe. In a Rust -O0 build,

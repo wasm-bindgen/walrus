@@ -94,7 +94,6 @@ impl Emit for ModuleDebugData {
         let ranges: IdHashMap<Function, _> =
             cx.code_transform.function_ranges.iter().cloned().collect();
         let outputs = cx
-            .code_transform
             .function_instructions
             .iter()
             .filter_map(|(id, instrs)| {

@@ -771,7 +771,7 @@ impl Emit for ModuleFunctions {
                     *offset += code_start_offset;
                 }
                 collect_non_default_code_offsets(&mut instruction_map, &map);
-                cx.code_transform.function_instructions.push((id, map));
+                cx.function_instructions.push((id, map));
             }
             cx.code_transform.function_ranges.push((
                 id,

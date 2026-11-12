@@ -416,9 +416,9 @@ fn convert_range_list(
 /// `DW_OP_WASM_location` operations, or returns `None` if it names a local
 /// or global that walrus removed. Local indices are those of `function`.
 ///
-/// A new index is written in as many bytes as the old one when it fits, so
-/// branch offsets stay valid. An expression with a branch over an operation
-/// that had to grow is dropped rather than left wrong.
+/// A new index can take more or fewer LEB128 bytes than the old one, so the
+/// offsets of `DW_OP_bra` and `DW_OP_skip` are recomputed. (gimli re-encodes
+/// the result, and recomputes them again for its own encoding.)
 fn remap_wasm_locations(
     expression: &read::Expression<R>,
     encoding: gimli::Encoding,
@@ -428,10 +428,14 @@ fn remap_wasm_locations(
     let Some(indices) = cx.indices else {
         return Ok(Some(expression.clone()));
     };
-    let mut out = Vec::new();
-    let (mut changed, mut resized, mut branches) = (false, false, false);
+    // Each operation's offset in the input, its bytes in the output, and
+    // for a branch, the input offset of its target.
+    let mut ops: Vec<(usize, Vec<u8>, Option<isize>)> = Vec::new();
+    let mut changed = false;
+    let len = expression.0.len();
     let mut rest = expression.0.clone();
     while !rest.is_empty() {
+        let offset = len - rest.len();
         let mut bytes = rest.clone();
         let op = read::Operation::parse(&mut rest, encoding)?;
         bytes.truncate(bytes.len() - rest.len())?;
@@ -445,12 +449,13 @@ fn remap_wasm_locations(
                 function.map_or(Some(index), |f| (indices.local)(f, index)),
             ),
             read::Operation::WasmGlobal { index } => (index, (indices.global)(index)),
-            op => {
-                branches |= matches!(
-                    op,
-                    read::Operation::Bra { .. } | read::Operation::Skip { .. }
-                );
-                out.extend_from_slice(&bytes);
+            read::Operation::Bra { target } | read::Operation::Skip { target } => {
+                let end = (len - rest.len()) as isize;
+                ops.push((offset, bytes.to_vec(), Some(end + isize::from(target))));
+                continue;
+            }
+            _ => {
+                ops.push((offset, bytes.to_vec(), None));
                 continue;
             }
         };
@@ -459,20 +464,48 @@ fn remap_wasm_locations(
         };
         // The opcode and kind, then the index: a fixed 4 bytes for kind 3,
         // LEB128 otherwise.
-        out.extend_from_slice(&bytes[..2]);
+        let mut out = bytes[..2].to_vec();
         if bytes[1] == 3 {
             out.extend_from_slice(&new.to_le_bytes());
         } else {
-            let len = write_uleb128_padded(&mut out, new.into(), bytes.len() - 2);
-            resized |= len != bytes.len() - 2;
+            write_uleb128(&mut out, new.into());
         }
         changed |= new != old;
+        ops.push((offset, out, None));
     }
     if !changed {
         return Ok(Some(expression.clone()));
     }
-    if branches && resized {
-        return Ok(None);
+    // The output offset of each operation, and of the end.
+    let mut offsets = Vec::with_capacity(ops.len() + 1);
+    let mut total = 0;
+    for (_, bytes, _) in &ops {
+        offsets.push(total);
+        total += bytes.len();
+    }
+    offsets.push(total);
+    let new_offset = |old: isize| -> Option<isize> {
+        let old = usize::try_from(old).ok()?;
+        let i = match ops.binary_search_by_key(&old, |op| op.0) {
+            Ok(i) => i,
+            Err(i) if i == ops.len() && old == len => i,
+            // Not the start of an operation, so the input was invalid.
+            Err(_) => return None,
+        };
+        Some(offsets[i] as isize)
+    };
+    let mut out = Vec::with_capacity(total);
+    for (i, (_, bytes, target)) in ops.iter().enumerate() {
+        let Some(target) = *target else {
+            out.extend_from_slice(bytes);
+            continue;
+        };
+        let relative = new_offset(target).map(|t| t - offsets[i + 1] as isize);
+        let Some(relative) = relative.and_then(|r| i16::try_from(r).ok()) else {
+            return Ok(None);
+        };
+        out.push(bytes[0]);
+        out.extend_from_slice(&relative.to_le_bytes());
     }
     Ok(Some(read::Expression(EndianRcSlice::new(
         out.into(),
@@ -480,17 +513,13 @@ fn remap_wasm_locations(
     ))))
 }
 
-/// Writes `value` as LEB128 in at least `min_len` bytes, and returns the
-/// number of bytes written.
-fn write_uleb128_padded(out: &mut Vec<u8>, mut value: u64, min_len: usize) -> usize {
-    let mut len = 0;
+fn write_uleb128(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
-        len += 1;
-        if value == 0 && len >= min_len {
+        if value == 0 {
             out.push(byte);
-            return len;
+            return;
         }
         out.push(byte | 0x80);
     }

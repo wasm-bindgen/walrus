@@ -1,7 +1,8 @@
 //! DWARF addresses inside code that walrus removes must not be written as
 //! `-1`: in DWARF 4 `.debug_loc`/`.debug_ranges` with 4-byte addresses, a
 //! `begin` of `-1` is the base address selection marker, which desyncs every
-//! reader of the rest of the section.
+//! reader of the rest of the section. Location list entries in removed code
+//! are dropped.
 
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, Expression, LineProgram, Location, LocationList,
@@ -136,10 +137,14 @@ fn removed_code_tombstone_is_not_base_address_marker() {
     while let Some(header) = units.next().unwrap() {
         let unit = dwarf.unit(header).unwrap();
         let mut entries = unit.entries();
-        while let Some((_, entry)) = entries.next_dfs().unwrap() {
-            let offset = match entry.attr_value(constants::DW_AT_location).unwrap() {
+        while let Some(entry) = entries.next_dfs().unwrap() {
+            let offset = match entry.attr_value(constants::DW_AT_location) {
                 Some(read::AttributeValue::LocationListsRef(offset)) => offset,
                 _ => continue,
+            };
+            let name = match entry.attr_value(constants::DW_AT_name) {
+                Some(read::AttributeValue::String(name)) => name.to_string().unwrap().to_string(),
+                other => panic!("unexpected name {other:?}"),
             };
             lists += 1;
             // The whole list (and everything after it in the section) must
@@ -153,7 +158,9 @@ fn removed_code_tombstone_is_not_base_address_marker() {
                 );
                 n += 1;
             }
-            assert_eq!(n, 1);
+            // `straddle` starts in the removed function.
+            let expected = if name == "straddle" { 0 } else { 1 };
+            assert_eq!(n, expected, "entries in `{name}`'s list");
         }
     }
     assert_eq!(lists, 2);

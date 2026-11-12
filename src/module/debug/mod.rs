@@ -1,14 +1,12 @@
 mod dwarf;
 mod expression;
-mod units;
 
 use crate::emit::{Emit, EmitContext};
 use crate::{CustomSection, Module, RawCustomSection};
 use gimli::*;
 
-use self::dwarf::{AddressSearchPreference, ConvertContext, DEAD_CODE};
+use self::dwarf::Addresses;
 use self::expression::{CodeAddressConverter, CodeAddressGenerator};
-use self::units::DebuggingInformationCursor;
 
 /// The DWARF debug section in input WebAssembly binary.
 #[derive(Debug, Default)]
@@ -44,15 +42,38 @@ impl Emit for ModuleDebugData {
     fn emit(&self, cx: &mut EmitContext) {
         let address_generator = CodeAddressGenerator::new(&cx.module.funcs);
         let address_converter = CodeAddressConverter::new(&cx.code_transform);
+        let code_section_start = cx.code_transform.code_section_start;
 
-        let convert_address = |address, search_preference| -> Option<write::Address> {
-            let address = address as usize;
-            let code = address_generator.find_address(address, search_preference);
-            let address = address_converter.find_address(code);
-
-            address
-                .map(|x| (x - cx.code_transform.code_section_start) as u64)
-                .map(write::Address::Constant)
+        let map = |address: u64, search_preference| -> Option<u64> {
+            let code = address_generator.find_address(address as usize, search_preference);
+            address_converter
+                .find_address(code)
+                .map(|x| (x - code_section_start) as u64)
+        };
+        let mut input_bodies = cx
+            .module
+            .funcs
+            .iter_local()
+            .filter_map(|(_, f)| f.original_range.clone())
+            .map(|r| (r.start as u64, r.end as u64))
+            .collect::<Vec<_>>();
+        input_bodies.sort_unstable();
+        let mut output_bodies = cx
+            .code_transform
+            .function_ranges
+            .iter()
+            .map(|(_, r)| {
+                (
+                    (r.start - code_section_start) as u64,
+                    (r.end - code_section_start) as u64,
+                )
+            })
+            .collect::<Vec<_>>();
+        output_bodies.sort_unstable();
+        let addresses = Addresses {
+            map: &map,
+            input_bodies,
+            output_bodies,
         };
 
         #[allow(deprecated)]
@@ -62,55 +83,7 @@ impl Emit for ModuleDebugData {
             .dwarf
             .borrow(|sections| EndianSlice::new(sections.as_ref(), LittleEndian));
 
-        let mut dwarf = write::Dwarf::from(&from_dwarf, &|address| {
-            // `>=` also passes through lld's `-1` tombstone untouched.
-            if address == 0 || address >= DEAD_CODE {
-                Some(write::Address::Constant(address))
-            } else {
-                convert_address(address, AddressSearchPreference::InclusiveFunctionEnd)
-                    .or(Some(write::Address::Constant(DEAD_CODE)))
-            }
-        })
-        .expect("cannot convert to writable dwarf");
-
-        let units = {
-            let mut from_unit_headers = from_dwarf.units();
-            let mut units = Vec::new();
-
-            while let Some(from_unit) = from_unit_headers.next().expect("") {
-                let index = units.len();
-                units.push((from_unit, dwarf.units.id(index)));
-            }
-
-            units
-        };
-
-        let mut convert_context = ConvertContext::new(
-            &from_dwarf.debug_str,
-            &from_dwarf.debug_line_str,
-            &mut dwarf.strings,
-            &mut dwarf.line_strings,
-            &convert_address,
-        );
-
-        for (from_id, id) in units {
-            let from_unit: Unit<EndianSlice<'_, LittleEndian>, usize> =
-                from_dwarf.unit(from_id).expect("readable unit");
-            let unit = dwarf.units.get_mut(id);
-
-            // perform high pc transformation of DWARF .debug_info
-            {
-                let mut from_entries = from_unit.entries();
-                let mut entries = DebuggingInformationCursor::new(unit);
-
-                convert_context.convert_high_pc(&mut from_entries, &mut entries);
-            }
-
-            // perform line program transformation
-            if let Some(program) = convert_context.convert_unit_line_program(from_unit) {
-                unit.line_program = program;
-            }
-        }
+        let mut dwarf = dwarf::convert(&from_dwarf, &addresses).expect("cannot convert DWARF");
 
         let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
         dwarf.write(&mut sections).expect("write failed");

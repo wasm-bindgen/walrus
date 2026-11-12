@@ -694,11 +694,9 @@ fn used_local_functions<'a>(cx: &mut EmitContext<'a>) -> Vec<(FunctionId, &'a Lo
 
 fn collect_non_default_code_offsets(
     code_transform: &mut BTreeMap<InstrLocId, usize>,
-    code_offset: usize,
-    map: Vec<(InstrLocId, usize)>,
+    map: &[(InstrLocId, usize)],
 ) {
-    for (src, dst) in map {
-        let dst = dst + code_offset;
+    for &(src, dst) in map {
         if !src.is_default() {
             code_transform.insert(src, dst);
         }
@@ -768,8 +766,12 @@ impl Emit for ModuleFunctions {
         for (byte_len, id, map, leb_len) in offset_data {
             let code_start_offset = cur_offset + leb_len;
             cur_offset += leb_len + byte_len;
-            if let Some(map) = map {
-                collect_non_default_code_offsets(&mut instruction_map, code_start_offset, map);
+            if let Some(mut map) = map {
+                for (_, offset) in &mut map {
+                    *offset += code_start_offset;
+                }
+                collect_non_default_code_offsets(&mut instruction_map, &map);
+                cx.code_transform.function_instructions.push((id, map));
             }
             cx.code_transform.function_ranges.push((
                 id,

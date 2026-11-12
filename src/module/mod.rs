@@ -102,7 +102,16 @@ pub struct CodeTransform {
 
     /// Emitted binary ranges of function bodies, after each body's size.
     pub function_ranges: Vec<(Id<Function>, Range<usize>)>,
+
+    /// Each emitted function's instructions in order, with their offsets in
+    /// the output Wasm. Unlike `instruction_map`, this keeps every place a
+    /// location was emitted.
+    pub(crate) function_instructions: Vec<(Id<Function>, EmittedInstructions)>,
 }
+
+/// An emitted function's instructions: each one's location and its offset in
+/// the output Wasm, in order.
+pub(crate) type EmittedInstructions = Vec<(InstrLocId, usize)>;
 
 impl Module {
     /// Create a default, empty module that uses the given configuration.

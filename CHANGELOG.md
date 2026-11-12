@@ -22,6 +22,9 @@ Released YYYY-MM-DD.
   0.33, which also requires 1.88.
 * `ModuleDebugData` has a private field, so it can no longer be built with a
   struct expression; use `Default`.
+* With `generate_dwarf`, `DW_AT_macros`, `DW_AT_macro_info` and
+  `DW_AT_GNU_macros` are removed. walrus never emitted the macro sections
+  they point into, because gimli can't write them.
 
 ### Deprecated
 
@@ -58,6 +61,20 @@ Released YYYY-MM-DD.
   locals by type and drops unused ones, so 10-24% of the local indices in
   optimized Rust builds named the wrong local. Locations of removed locals
   and globals are dropped.
+* With `generate_dwarf`, `DW_OP_addr` keeps its address. In Wasm it's a
+  linear memory address of static data, but walrus treated it as a code
+  address, so the locations of static and global variables were replaced,
+  usually with the removed-code tombstone.
+* DWARF now follows code that passes insert, copy or remove, and locals they
+  replace. Each line row, range, location list entry and code address is
+  derived from where its input instructions were emitted, so code that is
+  now in several places gets a `DW_AT_ranges` list, and a local a pass
+  replaced is found through the instructions that used it. Previously
+  addresses were mapped through a table that kept one place per input
+  instruction.
+* Line rows stay on the instructions they describe. In a Rust -O0 build,
+  133 instructions whose row was line 0 were given other lines. `delegate`
+  also keeps its row now.
 
 ### Security
 

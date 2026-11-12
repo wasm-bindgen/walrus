@@ -45,6 +45,10 @@ pub struct LocalFunction {
     /// Range of the function's body in the original module, after the body's
     /// size.
     pub original_range: Option<Range<usize>>,
+
+    /// With `generate_dwarf`, the local index each input `local.get`,
+    /// `local.set` and `local.tee` used, until the debug data takes them.
+    pub(crate) dwarf_local_operands: Vec<(InstrLocId, u32)>,
 }
 
 impl LocalFunction {
@@ -55,6 +59,7 @@ impl LocalFunction {
             builder,
             instruction_mapping: Vec::new(),
             original_range: None,
+            dwarf_local_operands: Vec::new(),
         }
     }
 
@@ -84,7 +89,10 @@ impl LocalFunction {
                 start: body.range().start - code_address_offset,
                 end: body.range().end - code_address_offset,
             }),
+            dwarf_local_operands: Vec::new(),
         };
+        let record_locals = module.config.generate_dwarf;
+        let mut dwarf_local_operands = Vec::new();
 
         let result: Vec<_> = module.types.get(ty).results().to_vec();
         let result = result.into_boxed_slice();
@@ -118,6 +126,14 @@ impl LocalFunction {
                 InstrLocId::new(pos as u32)
             };
             validator.op(pos, &inst)?;
+            if record_locals {
+                if let Operator::LocalGet { local_index }
+                | Operator::LocalSet { local_index }
+                | Operator::LocalTee { local_index } = inst
+                {
+                    dwarf_local_operands.push((loc, local_index));
+                }
+            }
             append_instruction(&mut ctx, inst, loc);
             let offset = pos - code_address_offset;
             debug_assert!(instruction_mapping
@@ -127,6 +143,7 @@ impl LocalFunction {
         }
         instruction_mapping.shrink_to_fit();
         ctx.func.instruction_mapping = instruction_mapping;
+        ctx.func.dwarf_local_operands = dwarf_local_operands;
         ops_reader.finish()?;
 
         debug_assert!(ctx.controls.is_empty());
@@ -1803,7 +1820,9 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             // Delegate to an outer block - ends the try block early
             ctx.add_legacy_catch(LegacyCatch::Delegate { relative_depth })
                 .unwrap();
-            ctx.pop_control().unwrap();
+            let (_, block) = ctx.pop_control().unwrap();
+            // `delegate` ends the try body, as `end` would.
+            ctx.func.block_mut(block).end = loc;
         }
         Operator::Rethrow { relative_depth } => {
             // Rethrow a caught exception

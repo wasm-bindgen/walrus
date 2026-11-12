@@ -26,6 +26,9 @@ pub(crate) struct EmitFacts {
     pub uses_data_segments: bool,
     /// The targets of every `ref.func`, in visit order, repeats included.
     pub ref_funcs: Vec<FunctionId>,
+    /// Every function the body refers to by index (`call`, `return_call`,
+    /// `ref.func`), repeats included.
+    pub func_refs: Vec<FunctionId>,
     /// The locals that the function's instructions use.
     pub used_locals: IdHashSet<Local>,
 }
@@ -189,6 +192,7 @@ impl LocalFunction {
                 size: 0,
                 uses_data_segments: false,
                 ref_funcs: Vec::new(),
+                func_refs: Vec::new(),
                 used_locals: IdHashSet::default(),
             },
         };
@@ -210,6 +214,10 @@ impl LocalFunction {
 
             fn visit_ref_func(&mut self, instr: &RefFunc) {
                 self.facts.ref_funcs.push(instr.func);
+            }
+
+            fn visit_function_id(&mut self, id: &FunctionId) {
+                self.facts.func_refs.push(*id);
             }
 
             fn visit_local_id(&mut self, id: &LocalId) {

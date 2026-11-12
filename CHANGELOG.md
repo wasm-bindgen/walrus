@@ -22,6 +22,12 @@ Released YYYY-MM-DD.
   0.33, which also requires 1.88.
 * `ModuleDebugData` has a private field, so it can no longer be built with a
   struct expression; use `Default`.
+* Defined functions are emitted, and numbered, most-referenced first instead
+  of largest first. A function index is a LEB128, so the functions whose
+  index is written most often (by `call`, `return_call`, `ref.func`, exports,
+  element segments, global initializers and the start section) get the
+  one-byte indices. Functions referenced equally often are still ordered
+  largest first.
 
 ### Deprecated
 

@@ -74,6 +74,14 @@ impl IndicesToIds {
         self.types[index as usize] = id;
     }
 
+    /// The input module's local indices of each function, and its global
+    /// indices, for remapping the ones DWARF names.
+    pub(crate) fn local_and_global_tables(
+        &self,
+    ) -> (IdHashMap<Function, Vec<LocalId>>, Vec<GlobalId>) {
+        (self.locals.clone(), self.globals.clone())
+    }
+
     /// Pushes a new local ID to map it to the next index internally
     pub(crate) fn push_local(&mut self, function: FunctionId, id: LocalId) -> u32 {
         let list = self.locals.entry(function).or_default();

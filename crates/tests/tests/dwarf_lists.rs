@@ -136,8 +136,10 @@ fn dwarf(version: u16, input: &[Body]) -> Vec<(&'static str, Vec<u8>)> {
         constants::DW_AT_ranges,
         AttributeValue::RangeListRef(ranges),
     );
+    // A constant, since neither function has locals.
     let mut expr = Expression::new();
-    expr.op_wasm_local(0);
+    expr.op_constu(1);
+    expr.op(constants::DW_OP_stack_value);
     let locations = dwarf.unit.locations.add(LocationList(vec![
         Location::BaseAddress {
             address: Address::Constant(base),

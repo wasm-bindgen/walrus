@@ -309,7 +309,7 @@ impl Module {
         )
         .context("failed to parse code section")?;
 
-        ret.parse_debug_sections(debug_sections)
+        ret.parse_debug_sections(debug_sections, &indices)
             .context("failed to parse debug data section")?;
 
         ret.producers

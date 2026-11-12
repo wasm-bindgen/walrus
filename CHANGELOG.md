@@ -20,6 +20,8 @@ Released YYYY-MM-DD.
 * The minimum supported Rust version is now 1.88, which gimli 0.34 requires,
   and `Cargo.toml` declares it. gimli's `Dwarf::convert` API first shipped in
   0.33, which also requires 1.88.
+* `ModuleDebugData` has a private field, so it can no longer be built with a
+  struct expression; use `Default`.
 
 ### Deprecated
 
@@ -51,6 +53,11 @@ Released YYYY-MM-DD.
   index 0, as clang writes them.
 * A line sequence that covers several functions is split per function, so
   its rows stay in address order after walrus reorders functions.
+* With `generate_dwarf`, the local and global indices in
+  `DW_OP_WASM_location` are remapped to the ones walrus emits. walrus groups
+  locals by type and drops unused ones, so 10-24% of the local indices in
+  optimized Rust builds named the wrong local. Locations of removed locals
+  and globals are dropped.
 
 ### Security
 

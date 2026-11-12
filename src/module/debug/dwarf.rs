@@ -263,6 +263,14 @@ fn convert_location_list<R: Reader<Offset = usize>>(
     // Resolved entries: absolute addresses, tombstones skipped.
     let mut from = read_unit.locations(offset)?;
     while let Some(entry) = from.next()? {
+        // gimli resolves `DW_LLE_default_location` to the whole address
+        // space, which no other entry can cover with 4-byte addresses. It
+        // applies wherever no other entry does, so it needs no mapping.
+        if entry.range.begin == 0 && entry.range.end == u64::MAX {
+            let data = unit.convert_expression(read_unit, entry.data, &address)?;
+            list.push(write::Location::DefaultLocation { data });
+            continue;
+        }
         let ranges = lists.addresses.ranges(entry.range.begin, entry.range.end);
         if ranges.is_empty() {
             continue;

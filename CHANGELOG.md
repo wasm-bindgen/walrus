@@ -17,6 +17,9 @@ Released YYYY-MM-DD.
   missing `else` into an empty one.
 * gimli is updated from 0.32 to 0.34. `ModuleDebugData::dwarf` is a gimli
   type, so code that reads it needs gimli 0.34 too.
+* The minimum supported Rust version is now 1.88, which gimli 0.34 requires,
+  and `Cargo.toml` declares it. gimli's `Dwarf::convert` API first shipped in
+  0.33, which also requires 1.88.
 
 ### Deprecated
 

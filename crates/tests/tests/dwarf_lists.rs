@@ -263,3 +263,99 @@ fn dwarf4_lists_and_lines_follow_moved_code() {
 fn dwarf5_lists_and_lines_follow_moved_code() {
     check(5);
 }
+
+/// A DWARF 5 location list's `DW_LLE_default_location` is kept: it applies
+/// wherever no other entry does, so it has no addresses to move.
+#[test]
+fn dwarf5_default_location_is_kept() {
+    let input = bodies(&code().finish());
+    let encoding = Encoding {
+        format: Format::Dwarf32,
+        version: 5,
+        address_size: 4,
+    };
+    let mut dwarf = DwarfUnit::new(encoding);
+    let root = dwarf.unit.root();
+    dwarf.unit.get_mut(root).set(
+        constants::DW_AT_low_pc,
+        AttributeValue::Address(Address::Constant(0)),
+    );
+    // `DW_OP_lit<n>; DW_OP_stack_value`.
+    let constant = |n: u8| {
+        let mut expr = Expression::new();
+        expr.op(constants::DwOp(constants::DW_OP_lit0.0 + n));
+        expr.op(constants::DW_OP_stack_value);
+        expr
+    };
+    let locations = dwarf.unit.locations.add(LocationList(vec![
+        Location::StartEnd {
+            begin: Address::Constant(input[1].instrs[4]),
+            end: Address::Constant(input[1].instrs[13]),
+            data: constant(0),
+        },
+        Location::DefaultLocation { data: constant(1) },
+    ]));
+    let var = dwarf.unit.add(root, constants::DW_TAG_variable);
+    dwarf.unit.get_mut(var).set(
+        constants::DW_AT_location,
+        AttributeValue::LocationListRef(locations),
+    );
+    let mut sections = Sections::new(EndianVec::new(LittleEndian));
+    dwarf.write(&mut sections).unwrap();
+    let mut module = code();
+    sections
+        .for_each(|id, data| {
+            if !data.slice().is_empty() {
+                module.section(&CustomSection {
+                    name: Cow::Borrowed(id.name()),
+                    data: Cow::Borrowed(data.slice()),
+                });
+            }
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+    let mut config = walrus::ModuleConfig::new();
+    config.generate_dwarf(true);
+    let output = config.parse(&module.finish()).unwrap().emit_wasm();
+    let new = bodies(&output);
+    let sections = custom_sections(&output);
+    let dwarf = read::Dwarf::load(|id| {
+        let data = sections
+            .iter()
+            .find(|(name, _)| name == id.name())
+            .map_or(&[][..], |(_, data)| data.as_slice());
+        Ok::<_, gimli::Error>(EndianSlice::new(data, LittleEndian))
+    })
+    .unwrap();
+    let unit = dwarf.unit(dwarf.units().next().unwrap().unwrap()).unwrap();
+    let mut entries = unit.entries();
+    let mut found = Vec::new();
+    while let Some(entry) = entries.next_dfs().unwrap() {
+        let Some(value) = entry.attr_value(constants::DW_AT_location) else {
+            continue;
+        };
+        let offset = dwarf.attr_locations_offset(&unit, value).unwrap().unwrap();
+        let mut raw = dwarf.raw_locations(&unit, offset).unwrap();
+        while let Some(entry) = raw.next().unwrap() {
+            found.push(match entry {
+                read::RawLocListEntry::StartEnd { begin, end, data } => {
+                    (Some((begin, end)), data.0.to_vec())
+                }
+                read::RawLocListEntry::DefaultLocation { data } => (None, data.0.to_vec()),
+                other => panic!("unexpected entry {other:?}"),
+            });
+        }
+    }
+    // The large function is emitted first.
+    assert_eq!(
+        found,
+        [
+            (
+                Some((new[0].instrs[4], new[0].instrs[13])),
+                vec![0x30, 0x9f]
+            ),
+            (None, vec![0x31, 0x9f]),
+        ]
+    );
+}

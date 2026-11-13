@@ -8,7 +8,9 @@ Released YYYY-MM-DD.
 
 ### Added
 
-* TODO (or remove section if none)
+* `ModuleConfig::generate_source_map` and `Module::emit_wasm_with_source_map`
+  build a source map of the emitted module from its DWARF, and point the
+  module at it with a `sourceMappingURL` section.
 
 ### Changed
 

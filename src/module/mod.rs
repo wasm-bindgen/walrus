@@ -439,6 +439,26 @@ impl Module {
 
     /// Emit this module into an in-memory wasm buffer.
     pub fn emit_wasm(&mut self) -> Vec<u8> {
+        self.emit(None).0
+    }
+
+    /// Emit this module into an in-memory wasm buffer, along with a JSON
+    /// source map of it built from its DWARF.
+    ///
+    /// The module gets a `sourceMappingURL` custom section with
+    /// `source_mapping_url`, where the map will be served from, in place of
+    /// any it had. Unless the module was configured with
+    /// [`ModuleConfig::generate_source_map`], no map is built and this is
+    /// the same as [`Module::emit_wasm`]: the module gets no
+    /// `sourceMappingURL` section, and keeps any it had.
+    pub fn emit_wasm_with_source_map(
+        &mut self,
+        source_mapping_url: &str,
+    ) -> (Vec<u8>, Option<String>) {
+        self.emit(Some(source_mapping_url))
+    }
+
+    fn emit(&mut self, source_mapping_url: Option<&str>) -> (Vec<u8>, Option<String>) {
         #[cfg(feature = "parallel")]
         use rayon::iter::ParallelIterator;
 
@@ -501,17 +521,20 @@ impl Module {
             self.producers.emit(&mut cx);
         }
 
-        if self.config.generate_dwarf {
-            self.debug.emit(&mut cx);
+        let source_mapping_url = source_mapping_url.filter(|_| self.config.generate_source_map);
+        let map = if self.config.generate_dwarf || source_mapping_url.is_some() {
+            self.debug.emit(&mut cx, source_mapping_url.is_some())
         } else {
             log::debug!("skipping DWARF custom section");
-        }
+            None
+        };
 
         let indices = std::mem::take(cx.indices);
 
         for (_id, section) in customs.iter_mut() {
             if section.name().starts_with(".debug")
                 || matches!(section.name(), "dylink" | "dylink.0")
+                || (source_mapping_url.is_some() && section.name() == "sourceMappingURL")
             {
                 continue;
             }
@@ -528,6 +551,15 @@ impl Module {
             });
         }
 
+        if let Some(url) = source_mapping_url {
+            let mut data = Vec::new();
+            wasm_encoder::Encode::encode(url, &mut data);
+            cx.wasm_module.section(&wasm_encoder::CustomSection {
+                name: "sourceMappingURL".into(),
+                data: data.into(),
+            });
+        }
+
         let out = cx.wasm_module.finish();
         log::debug!("emission finished");
 
@@ -537,7 +569,7 @@ impl Module {
         //     panic!("Unable to validate serialized output");
         // }
 
-        out
+        (out, map)
     }
 
     /// Returns an iterator over all functions in this module

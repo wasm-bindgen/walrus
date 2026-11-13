@@ -1,13 +1,14 @@
-//! `emit_wasm_with_source_map` builds a source map from the DWARF of the
-//! emitted module. These tests write a module with a line table the way
-//! rustc writes it, for a made-up crate `krate`. The map is compared as text
-//! with `source_map/krate.txt`, which `WALRUS_BLESS=1` rewrites.
+//! `emit_wasm_with_source_map` builds a source map, with Scopes, from the
+//! DWARF of the emitted module. These tests write a module with DWARF the
+//! way rustc writes it, for a made-up crate `krate`. The map is compared as
+//! text with `source_map/krate.txt`, which `WALRUS_BLESS=1` rewrites.
 
 use gimli::constants::*;
 use gimli::write::{
-    Address, AttributeValue as Attr, DwarfUnit, EndianVec, LineProgram, LineString, Sections,
+    Address, AttributeValue as Attr, DwarfUnit, EndianVec, FileId, LineProgram, LineString, Range,
+    RangeList, Sections, UnitEntryId,
 };
-use gimli::{Encoding, Format, LineEncoding, LittleEndian};
+use gimli::{DwAt, DwTag, Encoding, Format, LineEncoding, LittleEndian};
 use serde_json::{json, Value};
 use std::fmt::Write;
 use std::path::Path;
@@ -118,6 +119,93 @@ impl Code {
     }
 }
 
+/// Writes the debugging information entries of one unit.
+struct Entries<'a> {
+    dwarf: &'a mut DwarfUnit,
+    code: &'a Code,
+    files: [FileId; 2],
+    /// The source of the functions, whose namespace is `krate` in `lib.rs`.
+    file: usize,
+    krate: UnitEntryId,
+}
+
+impl Entries<'_> {
+    fn add(&mut self, parent: UnitEntryId, tag: DwTag, attrs: Vec<(DwAt, Attr)>) -> UnitEntryId {
+        let id = self.dwarf.unit.add(parent, tag);
+        for (name, value) in attrs {
+            self.dwarf.unit.get_mut(id).set(name, value);
+        }
+        id
+    }
+
+    /// A function declared on `line`, with the body of module function `f`,
+    /// or only inlined. A linkage name is v0, legacy, or empty for none.
+    fn function(
+        &mut self,
+        f: Option<usize>,
+        line: u64,
+        name: &str,
+        linkage_name: &str,
+    ) -> UnitEntryId {
+        let mut attrs = vec![
+            (DW_AT_name, Attr::String(name.into())),
+            (
+                DW_AT_decl_file,
+                Attr::FileIndex(Some(self.files[self.file])),
+            ),
+            (DW_AT_decl_line, Attr::Udata(line)),
+        ];
+        if !linkage_name.is_empty() {
+            attrs.push((DW_AT_linkage_name, Attr::String(linkage_name.into())));
+        }
+        if let Some(f) = f {
+            let &(start, _, end) = &self.code.bodies[f];
+            attrs.push((DW_AT_low_pc, Attr::Address(Address::Constant(start))));
+            attrs.push((DW_AT_high_pc, Attr::Udata(end - start)));
+        } else {
+            attrs.push((DW_AT_inline, Attr::Inline(DW_INL_inlined)));
+        }
+        let parent = match self.file {
+            LIB => self.krate,
+            _ => self.dwarf.unit.root(),
+        };
+        self.add(parent, DW_TAG_subprogram, attrs)
+    }
+
+    /// A call of `origin`, inlined into module function `f` from instruction
+    /// to instruction in each of `pieces`: with `DW_AT_ranges` for more than
+    /// one.
+    fn inlined(
+        &mut self,
+        parent: UnitEntryId,
+        origin: UnitEntryId,
+        (file, line, column): Position,
+        f: usize,
+        pieces: &[(usize, usize)],
+    ) -> UnitEntryId {
+        let code = self.code;
+        let at = |i: usize| code.bodies[f].1[i];
+        let mut attrs = vec![
+            (DW_AT_abstract_origin, Attr::UnitRef(origin)),
+            (DW_AT_call_file, Attr::FileIndex(Some(self.files[file]))),
+            (DW_AT_call_line, Attr::Udata(line)),
+            (DW_AT_call_column, Attr::Udata(column)),
+        ];
+        if let [(start, end)] = *pieces {
+            attrs.push((DW_AT_low_pc, Attr::Address(Address::Constant(at(start)))));
+            attrs.push((DW_AT_high_pc, Attr::Udata(at(end) - at(start))));
+        } else {
+            let list = pieces.iter().map(|&(start, end)| Range::StartEnd {
+                begin: Address::Constant(at(start)),
+                end: Address::Constant(at(end)),
+            });
+            let list = self.dwarf.unit.ranges.add(RangeList(list.collect()));
+            attrs.push((DW_AT_ranges, Attr::RangeListRef(list)));
+        }
+        self.add(parent, DW_TAG_inlined_subroutine, attrs)
+    }
+}
+
 /// The DWARF of the module whose code is `code`.
 fn dwarf(code: &Code) -> Sections<EndianVec<LittleEndian>> {
     let encoding = Encoding {
@@ -158,6 +246,72 @@ fn dwarf(code: &Code) -> Sections<EndianVec<LittleEndian>> {
     unit.set(DW_AT_comp_dir, Attr::String("/work".into()));
     unit.set(DW_AT_low_pc, Attr::Address(Address::Constant(0)));
     unit.set(DW_AT_stmt_list, Attr::LineProgramRef);
+    let krate = dwarf.unit.add(root, DW_TAG_namespace);
+    let name = Attr::String("krate".into());
+    dwarf.unit.get_mut(krate).set(DW_AT_name, name);
+    let mut e = Entries {
+        dwarf: &mut dwarf,
+        code,
+        files,
+        file: OPS,
+        krate,
+    };
+
+    // `core`'s `call_once` of a closure, which is only inlined, and the
+    // vtable shim of another closure's.
+    let call_once = e.function(
+        None,
+        250,
+        "call_once<krate::once::{closure_env#0}, ()>",
+        "_RNvYNCNvCsjC8j7CnY1Nh_5krate4once0INtNtNtCs8hZryZq3oeI_4core3ops8function6FnOnceuE9call_onceB6_",
+    );
+    e.function(
+        Some(SHIM),
+        250,
+        "call_once<krate::ONCE::{closure_env#0}, ()>",
+        "_RNSNvYNCNvCsjC8j7CnY1Nh_5krate4ONCE0INtNtNtCs8hZryZq3oeI_4core3ops8function6FnOnceuE9call_once6vtableB8_",
+    );
+    e.file = LIB;
+
+    // Functions that are only inlined.
+    let square = e.function(None, 10, "square", "_RNvCsjC8j7CnY1Nh_5krate6square");
+    let sum = e.function(None, 20, "sum", "_RNvCsjC8j7CnY1Nh_5krate3sum");
+    let apply = e.function(
+        None,
+        70,
+        "apply<krate::outer::{closure_env#0}>",
+        "_RINvCsjC8j7CnY1Nh_5krate5applyNCNvB2_5outer0EB2_",
+    );
+    let closure = e.function(
+        None,
+        61,
+        "{closure#0}",
+        "_RNCNvCsjC8j7CnY1Nh_5krate5outer0B3_",
+    );
+
+    // A legacy linkage name. `sum` is inlined in two pieces, and inlines
+    // `square` twice.
+    let run = e.function(Some(RUN), 40, "run", "_ZN5krate3run17h0123456789abcdefE");
+    let call = e.inlined(run, sum, (LIB, 42, 9), RUN, &[(4, 12), (16, 20)]);
+    e.inlined(call, square, (LIB, 21, 5), RUN, &[(6, 8)]);
+    e.inlined(call, square, (LIB, 21, 17), RUN, &[(10, 12)]);
+    e.inlined(run, call_once, (LIB, 44, 9), RUN, &[(24, 26)]);
+
+    // `#[no_mangle]`, so only its name in the namespace. It inlines `apply`
+    // and the closure, which has no row on its declaration line, 61.
+    let outer = e.function(Some(OUTER), 60, "outer", "");
+    let call = e.inlined(outer, apply, (LIB, 61, 13), OUTER, &[(2, 8)]);
+    e.inlined(call, closure, (LIB, 71, 5), OUTER, &[(4, 6)]);
+
+    // Two copies of a generic function, whose v0 names encode `u32` as `m`
+    // and `u64` as `y`.
+    for (f, ty, v0) in [(ID_U32, "u32", 'm'), (ID_U64, "u64", 'y')] {
+        let linkage_name = format!("_RINvCsjC8j7CnY1Nh_5krate2id{v0}EB2_");
+        e.function(Some(f), 50, &format!("id<{ty}>"), &linkage_name);
+    }
+
+    let dead = e.function(Some(DEAD), 80, "dead", "_RNvCsjC8j7CnY1Nh_5krate4dead");
+    e.inlined(dead, square, (LIB, 81, 5), DEAD, &[(2, 4)]);
 
     let mut sections = Sections::new(EndianVec::new(LittleEndian));
     dwarf.write(&mut sections).unwrap();
@@ -204,8 +358,9 @@ fn map_follows_the_dwarf() {
         std::fs::write(&path, &text).unwrap();
     }
     assert_eq!(text, std::fs::read_to_string(&path).unwrap());
-    assert_eq!(map["version"], 3);
-    assert_eq!(map["names"], json!([]));
+    // `dead` has a scope until gc removes it.
+    let (_, all) = emit(parse(|c| c.generate_source_map(true)), false);
+    assert!(all["names"].to_string().contains("\"krate::dead\""));
 }
 
 #[test]
@@ -249,10 +404,25 @@ fn code_is_the_same_with_a_source_map() {
     assert_eq!(both, ([&dwarf[..], URL_SECTION].concat(), map));
 }
 
-/// The map as text: its sources and its mappings. Offsets are `Code::label`s,
+#[test]
+fn a_map_without_scopes_has_the_same_mappings() {
+    let (wasm, map) = emit(parse(|c| c.generate_source_map(true)), true);
+    let (plain_wasm, plain) = emit(
+        parse(|c| c.generate_source_map(true).source_map_scopes(false)),
+        true,
+    );
+    assert_eq!(plain_wasm, wasm);
+    let expected =
+        json!({"version": 3, "sources": map["sources"], "names": [], "mappings": map["mappings"]});
+    assert_eq!(plain, expected);
+}
+
+/// The map as text: its sources, its mappings, each source's scopes, and
+/// each segment of ranges. Nesting is indented, offsets are `Code::label`s,
 /// and positions are 1-based, like DWARF's.
 fn print(code: &Code, map: &Value) -> String {
     let sources = map["sources"].as_array().unwrap();
+    let name = |i: i64| map["names"][i as usize].as_str().unwrap();
     let file = |source: u64| {
         let path = sources[source as usize].as_str().unwrap();
         path.rsplit('/').next().unwrap()
@@ -269,6 +439,90 @@ fn print(code: &Code, map: &Value) -> String {
         let location = (item.len() == 4).then(|| at(source, line, column));
         let location = location.unwrap_or_else(|| "-".into());
         writeln!(out, "  {} {location}", code.label(offset)).unwrap();
+    }
+
+    // Each source's scope names, in pre-order, for the ranges.
+    let mut defined: Vec<Vec<&str>> = Vec::new();
+    for (source, scopes) in map["scopes"].as_array().unwrap().iter().enumerate() {
+        writeln!(out, "scopes {}", file(source as u64)).unwrap();
+        let (mut lines, mut open, mut position) = (Vec::new(), Vec::new(), (0, 0));
+        let (mut name_index, mut kind) = (0, 0);
+        defined.push(Vec::new());
+        for item in items(scopes.as_str().unwrap()) {
+            // After B's flags, or C's tag: a line delta, then a column,
+            // relative on the same line.
+            let i = if item[0] == 1 { 2 } else { 1 };
+            let (line, column) = (item[i], item[i + 1]);
+            let base = if line == 0 { position.1 } else { 0 };
+            position = (position.0 + line, base + column);
+            let here = pos(position.0, position.1);
+            match item[..] {
+                // B: flags, line, column, name (flag 1), kind; frame: flag 4.
+                [1, flags, _, _, ref rest @ ..] => {
+                    let mut rest = rest.iter().map(|&v| signed(v));
+                    let scope = if flags & 1 != 0 {
+                        name_index += rest.next().unwrap();
+                        name(name_index)
+                    } else {
+                        ""
+                    };
+                    kind += rest.next().unwrap();
+                    let frame = if flags & 4 != 0 { " frame" } else { "" };
+                    let indent = "  ".repeat(open.len() + 1);
+                    lines.push(format!("{indent}{here}-"));
+                    open.push((lines.len() - 1, format!("{} {scope}{frame}", name(kind))));
+                    defined[source].push(scope);
+                }
+                // C: line, column.
+                [2, _, _] => {
+                    let (line, tail) = open.pop().unwrap();
+                    lines[line] += &format!("{here} {tail}");
+                }
+                _ => panic!("unexpected scope item {item:?}"),
+            }
+        }
+        out.extend(lines.iter().map(|l| format!("{}\n", l.trim_end())));
+    }
+
+    out.push_str("ranges\n");
+    for segment in map["ranges"].as_array().unwrap() {
+        let (mut column, mut source, mut scope, mut open) = (0, 0, 0, Vec::new());
+        let mut lines: Vec<String> = Vec::new();
+        for item in items(segment.as_str().unwrap()) {
+            match item[..] {
+                // E: flags, column, definition (flag 2); frame: flag 4.
+                [4, flags, delta, ref definition @ ..] => {
+                    assert_eq!(flags & 1, 0, "Wasm has one line");
+                    column += delta;
+                    let mut name = "";
+                    if let [source_delta, index] = *definition {
+                        source += signed(source_delta);
+                        scope = if source_delta == 0 {
+                            scope + signed(index)
+                        } else {
+                            index as i64
+                        };
+                        name = defined[source as usize][scope as usize];
+                    }
+                    let frame = if flags & 4 != 0 { " frame" } else { "" };
+                    let indent = "  ".repeat(open.len() + 1);
+                    lines.push(format!("{indent}{}-", code.label(column)));
+                    open.push((lines.len() - 1, format!("{name}{frame}")));
+                }
+                // I: the call site's source, line and column.
+                [8, source, line, column] => {
+                    open.last_mut().unwrap().1 += &format!(" @ {}", at(source, line, column));
+                }
+                // F: column.
+                [5, delta] => {
+                    column += delta;
+                    let (line, tail) = open.pop().unwrap();
+                    lines[line] += &format!("{} {tail}", code.label(column));
+                }
+                _ => panic!("unexpected range item {item:?}"),
+            }
+        }
+        out.extend(lines.iter().map(|l| format!("{l}\n")));
     }
     out
 }

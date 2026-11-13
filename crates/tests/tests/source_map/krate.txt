@@ -26,3 +26,28 @@ mappings
   id_u64.end -
   shim.0 function.rs:250:5
   shim.end -
+scopes lib.rs
+  1:1-72:1 Module
+    10:1-11:6 Function krate::square frame
+    20:1-21:29 Function krate::sum frame
+    40:1-45:2 Function krate::run frame
+    50:1-51:13 Function krate::id frame
+    60:1-63:6 Function krate::outer frame
+      62:9-62:10 Function krate::outer::{closure#0} frame
+    70:1-71:13 Function krate::apply frame
+scopes function.rs
+  1:1-251:1 Module
+    250:5-250:6 Function <_ as core::ops::function::FnOnce>::call_once frame
+ranges
+  run-run.end krate::run frame
+    run.4-run.12 krate::sum @ lib.rs:42:9
+      run.6-run.8 krate::square @ lib.rs:21:5
+      run.10-run.12 krate::square @ lib.rs:21:17
+    run.16-run.20 krate::sum @ lib.rs:42:9
+    run.24-run.26 <_ as core::ops::function::FnOnce>::call_once @ lib.rs:44:9
+  outer-outer.end krate::outer frame
+    outer.2-outer.8 krate::apply @ lib.rs:61:13
+      outer.4-outer.6 krate::outer::{closure#0} @ lib.rs:71:5
+  id_u32-id_u32.end krate::id frame
+  id_u64-id_u64.end krate::id frame
+  shim-shim.end <_ as core::ops::function::FnOnce>::call_once frame

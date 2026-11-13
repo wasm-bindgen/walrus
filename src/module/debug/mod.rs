@@ -1,5 +1,7 @@
 mod dwarf;
 mod expression;
+mod rust_names;
+mod scopes;
 mod source_map;
 
 use crate::emit::EmitContext;
@@ -143,6 +145,14 @@ impl ModuleDebugData {
                 )
                 .expect("never");
         }
-        source_map.then(|| source_map::build(&sections, &cx.code_transform))
+        let scopes = !cx.module.config.skip_source_map_scopes;
+        source_map.then(|| {
+            source_map::build(
+                &sections,
+                &cx.code_transform,
+                &rust_names::RustNames,
+                scopes,
+            )
+        })
     }
 }

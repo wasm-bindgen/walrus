@@ -9,8 +9,14 @@ Released YYYY-MM-DD.
 ### Added
 
 * `ModuleConfig::generate_source_map` and `Module::emit_wasm_with_source_map`
-  build a source map of the emitted module from its DWARF, and point the
-  module at it with a `sourceMappingURL` section.
+  build a source map of the emitted module from its DWARF, with the
+  [Scopes](https://tc39.es/ecma426/branch/proposal-scopes/) of its functions
+  and inlined calls, and point the module at it with a `sourceMappingURL`
+  section. Each source file gets a `Module` scope around the `Function`
+  scopes of its functions, which the generic copies and shims of a function
+  share.
+  `ModuleConfig::source_map_scopes(false)` leaves the Scopes out, for a map
+  with only mappings.
 
 ### Changed
 

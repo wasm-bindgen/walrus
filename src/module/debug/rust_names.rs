@@ -68,23 +68,19 @@ fn strip_generics(name: &str) -> String {
             .last()
             .is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '}');
         let turbofish = out.ends_with("::");
+        if chars[i] == '<' && turbofish && chars[i..].starts_with(&['<', 'i', 'm', 'p', 'l', ' ']) {
+            // A legacy `<impl Trait for Type>` path segment names the impl,
+            // so it stays, without the generic arguments inside it.
+            let end = closing(&chars, i);
+            let inner: String = chars[i + 1..end].iter().collect();
+            out.push('<');
+            out.push_str(&strip_generics(&inner));
+            out.push('>');
+            i = end + 1;
+            continue;
+        }
         if chars[i] == '<' && (after_ident || turbofish) {
-            let mut depth = 0;
-            while i < chars.len() {
-                match chars[i] {
-                    '<' => depth += 1,
-                    '>' if i > 0 && chars[i - 1] == '-' => {}
-                    '>' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            i += 1;
+            i = closing(&chars, i) + 1;
             if turbofish {
                 out.truncate(out.len() - 2);
             }
@@ -96,14 +92,67 @@ fn strip_generics(name: &str) -> String {
     out
 }
 
-/// `<A as T>::f` and `<B as T>::f` to `<_ as T>::f`; otherwise `_` and the
-/// path segments they share at the end.
+/// The index of the `>` that closes the `<` at `start`, or the end.
+fn closing(chars: &[char], start: usize) -> usize {
+    let mut depth = 0;
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i] {
+            '<' => depth += 1,
+            '>' if i > 0 && chars[i - 1] == '-' => {}
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
+/// The parts of a name around its first legacy `<impl …>` segment: the
+/// text up to and including `<impl `, what the impl names, and the text
+/// from its closing `>`.
+fn impl_segment(name: &str) -> Option<(&str, &str, &str)> {
+    let start = name.find("<impl ")? + "<impl ".len();
+    let mut depth = 1;
+    let mut previous = ' ';
+    let end = name[start..]
+        .char_indices()
+        .find(|&(_, c)| {
+            match c {
+                '<' => depth += 1,
+                '>' if previous != '-' => depth -= 1,
+                _ => {}
+            }
+            previous = c;
+            depth == 0
+        })
+        .map_or(name.len(), |(i, _)| start + i);
+    Some((&name[..start], &name[start..end], &name[end..]))
+}
+
+/// `<A as T>::f` and `<B as T>::f` to `<_ as T>::f`, and legacy
+/// `<impl T for A>::f` and `<impl T for B>::f` to `<impl T for _>::f`;
+/// otherwise `_` and the path segments they share at the end.
 ///
 /// Each source function has one original scope, which all of its instances
 /// share, so its name must be right for every instance: the parts that
 /// differ become `_`. A function's outermost frame still gets its
 /// instance's own name from the name section.
 fn common_name(a: &str, b: &str) -> String {
+    if let (Some((pa, ia, ra)), Some((pb, ib, rb))) = (impl_segment(a), impl_segment(b)) {
+        if pa == pb && ra == rb {
+            match (ia.rsplit_once(" for "), ib.rsplit_once(" for ")) {
+                (Some((ta, _)), Some((tb, _))) if ta == tb => return format!("{pa}{ta} for _{ra}"),
+                (None, None) => return format!("{pa}_{ra}"),
+                _ => {}
+            }
+        }
+    }
     let shared: usize = a
         .chars()
         .rev()
@@ -149,5 +198,31 @@ mod tests {
         );
         assert_eq!(common_name("a::x::f", "b::x::f"), "_::x::f");
         assert_eq!(common_name("f", "g"), "f");
+    }
+
+    #[test]
+    fn legacy_impl_segments_keep_the_impl() {
+        let display = "core::fmt::num::imp::<impl core::fmt::Display for u32>::fmt";
+        assert_eq!(strip_generics(display), display);
+        assert_eq!(
+            strip_generics("<impl core::fmt::Debug for alloc::vec::Vec<T,A>>::fmt"),
+            "<impl core::fmt::Debug for alloc::vec::Vec>::fmt"
+        );
+        assert_eq!(
+            strip_generics("core::num::<impl u32>::checked_add"),
+            "core::num::<impl u32>::checked_add"
+        );
+        assert_eq!(strip_generics("a::f::<u8>"), "a::f");
+        assert_eq!(
+            common_name(display, &display.replace("u32", "u64")),
+            "core::fmt::num::imp::<impl core::fmt::Display for _>::fmt"
+        );
+        assert_eq!(
+            common_name(
+                "core::num::<impl u32>::checked_add",
+                "core::num::<impl u64>::checked_add"
+            ),
+            "core::num::<impl _>::checked_add"
+        );
     }
 }

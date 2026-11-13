@@ -35,9 +35,8 @@ const WAT: &str = r#"
     i32.add))
 "#;
 
-/// The function's body range, code-section relative, including the size
-/// before it, and the local indices it sets and global index it reads, in
-/// order.
+/// The function's body range, code-section relative, after the size before
+/// it, and the local indices it sets and global index it reads, in order.
 fn function(wasm: &[u8]) -> ((u64, u64), Vec<u32>, u32) {
     let mut code_start = 0;
     for payload in Parser::new(0).parse_all(wasm) {
@@ -45,9 +44,8 @@ fn function(wasm: &[u8]) -> ((u64, u64), Vec<u32>, u32) {
             Payload::CodeSectionStart { range, .. } => code_start = range.start,
             Payload::CodeSectionEntry(body) => {
                 let range = body.range();
-                // The body is shorter than 128 bytes, so its size is 1 byte.
                 let range = (
-                    (range.start - 1 - code_start) as u64,
+                    (range.start - code_start) as u64,
                     (range.end - code_start) as u64,
                 );
                 let mut sets = Vec::new();
@@ -110,8 +108,8 @@ fn build_dwarf(body: (u64, u64)) -> Vec<(&'static str, Vec<u8>)> {
         );
         id
     };
-    // LLVM points `DW_AT_low_pc` at the body's size. The frame base is
-    // global 1 in its fixed-width form.
+    // LLVM points `DW_AT_low_pc` at the body, after its size. The frame base
+    // is global 1 in its fixed-width form.
     let frame_base = [
         &[constants::DW_OP_WASM_location.0, 3][..],
         &1u32.to_le_bytes(),
@@ -125,7 +123,7 @@ fn build_dwarf(body: (u64, u64)) -> Vec<(&'static str, Vec<u8>)> {
         .unit
         .locations
         .add(LocationList(vec![Location::StartEnd {
-            begin: Address::Constant(body.0 + 1),
+            begin: Address::Constant(body.0),
             end: Address::Constant(body.1),
             data: local(3),
         }]));

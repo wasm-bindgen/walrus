@@ -16,6 +16,8 @@ type OnInstrLocFn = Box<dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static>;
 #[derive(Default)]
 pub struct ModuleConfig {
     pub(crate) generate_dwarf: bool,
+    pub(crate) generate_source_map: bool,
+    pub(crate) skip_source_map_scopes: bool,
     pub(crate) generate_synthetic_names_for_anonymous_items: bool,
     pub(crate) only_stable_features: bool,
     pub(crate) skip_strict_validate: bool,
@@ -32,6 +34,8 @@ impl Clone for ModuleConfig {
         ModuleConfig {
             // These are all cloned...
             generate_dwarf: self.generate_dwarf,
+            generate_source_map: self.generate_source_map,
+            skip_source_map_scopes: self.skip_source_map_scopes,
             generate_synthetic_names_for_anonymous_items: self
                 .generate_synthetic_names_for_anonymous_items,
             only_stable_features: self.only_stable_features,
@@ -54,6 +58,8 @@ impl fmt::Debug for ModuleConfig {
         // add new fields to the debug here.
         let ModuleConfig {
             ref generate_dwarf,
+            ref generate_source_map,
+            ref skip_source_map_scopes,
             ref generate_synthetic_names_for_anonymous_items,
             ref only_stable_features,
             ref skip_strict_validate,
@@ -67,6 +73,8 @@ impl fmt::Debug for ModuleConfig {
 
         f.debug_struct("ModuleConfig")
             .field("generate_dwarf", generate_dwarf)
+            .field("generate_source_map", generate_source_map)
+            .field("skip_source_map_scopes", skip_source_map_scopes)
             .field(
                 "generate_synthetic_names_for_anonymous_items",
                 generate_synthetic_names_for_anonymous_items,
@@ -99,6 +107,44 @@ impl ModuleConfig {
         self.generate_dwarf = generate;
         // generate_dwarf implies preserve_code_transform
         self.preserve_code_transform = generate || self.preserve_code_transform;
+        self
+    }
+
+    /// Sets a flag to whether [`Module::emit_wasm_with_source_map`] builds a
+    /// source map of the emitted module from its DWARF, with the [Scopes]
+    /// of inlined calls.
+    ///
+    /// The map's `sources` are the paths that DWARF records, joined to each
+    /// unit's compilation directory, so they are usually absolute paths on
+    /// the build machine. Callers that serve the map relocate them, for
+    /// example relative to the map, or have rustc record other paths with
+    /// `--remap-path-prefix`.
+    ///
+    /// The DWARF sections are only written to the module when
+    /// [`ModuleConfig::generate_dwarf`] is also set. By default this flag is
+    /// `false`.
+    ///
+    /// [Scopes]: https://tc39.es/ecma426/branch/proposal-scopes/
+    pub fn generate_source_map(&mut self, generate: bool) -> &mut ModuleConfig {
+        self.generate_source_map = generate;
+        // generate_source_map implies preserve_code_transform
+        self.preserve_code_transform = generate || self.preserve_code_transform;
+        self
+    }
+
+    /// Sets a flag to whether the source map that
+    /// [`ModuleConfig::generate_source_map`] enables has [Scopes]: the
+    /// `scopes` and `ranges` that describe source functions and inlined
+    /// calls, and the `names` they use.
+    ///
+    /// Without them, the map has only `mappings`, `sources` and `names`
+    /// (empty), which is smaller and quicker to build, and readers that
+    /// don't support Scopes show the same thing. By default this flag is
+    /// `true`.
+    ///
+    /// [Scopes]: https://tc39.es/ecma426/branch/proposal-scopes/
+    pub fn source_map_scopes(&mut self, scopes: bool) -> &mut ModuleConfig {
+        self.skip_source_map_scopes = !scopes;
         self
     }
 

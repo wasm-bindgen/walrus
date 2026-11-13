@@ -387,6 +387,66 @@ fn without_generate_source_map_there_is_no_map() {
     assert_eq!((wasm, map), (parse(|c| c).emit_wasm(), None));
 }
 
+/// The sources of a one-function module whose line table names a file in the
+/// compilation directory, which is directory 0.
+fn sources_in_directory_0(version: u16, comp_dir: &str) -> Value {
+    let mut wasm = wat::parse_str(r#"(module (func (export "f") i32.const 0 drop))"#).unwrap();
+    let code = Code::of(&wasm);
+    let (start, instrs, end) = &code.bodies[0];
+    let encoding = Encoding {
+        format: Format::Dwarf32,
+        version,
+        address_size: 4,
+    };
+    let mut dwarf = DwarfUnit::new(encoding);
+    let string = |s: &str| LineString::String(s.into());
+    let (dir, name) = (string(comp_dir), string("src/lib.rs"));
+    let mut program = LineProgram::new(encoding, LineEncoding::default(), dir, None, name, None);
+    let file = program.add_file(string("src/lib.rs"), program.default_directory(), None);
+    program.begin_sequence(Some(Address::Constant(*start)));
+    let row = program.row();
+    row.address_offset = instrs[0] - start;
+    (row.file, row.line, row.column) = (file, 1, 1);
+    program.generate_row();
+    program.end_sequence(end - start);
+    dwarf.unit.line_program = program;
+    let root = dwarf.unit.root();
+    let unit = dwarf.unit.get_mut(root);
+    unit.set(DW_AT_name, Attr::String("src/lib.rs".into()));
+    unit.set(DW_AT_comp_dir, Attr::String(comp_dir.into()));
+    unit.set(DW_AT_low_pc, Attr::Address(Address::Constant(0)));
+    unit.set(DW_AT_stmt_list, Attr::LineProgramRef);
+    let mut sections = Sections::new(EndianVec::new(LittleEndian));
+    dwarf.write(&mut sections).unwrap();
+    sections
+        .for_each(|id, data| {
+            if !data.slice().is_empty() {
+                let (name, data) = (id.name().into(), data.slice().into());
+                let section = wasm_encoder::CustomSection { name, data };
+                wasm.push(wasm_encoder::SectionId::Custom as u8);
+                wasm_encoder::Encode::encode(&section, &mut wasm);
+            }
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    let module = ModuleConfig::new()
+        .generate_source_map(true)
+        .parse(&wasm)
+        .unwrap();
+    emit(module, false).1["sources"].clone()
+}
+
+#[test]
+fn directory_0_is_the_compilation_directory_once() {
+    for version in [4, 5] {
+        // A relative compilation directory, as `--remap-path-prefix` leaves.
+        let sources = sources_in_directory_0(version, "myproj");
+        assert_eq!(sources, json!(["myproj/src/lib.rs"]), "DWARF {version}");
+        let sources = sources_in_directory_0(version, "/work");
+        assert_eq!(sources, json!(["/work/src/lib.rs"]), "DWARF {version}");
+    }
+}
+
 #[test]
 fn code_is_the_same_with_a_source_map() {
     let plain = parse(|c| c).emit_wasm();

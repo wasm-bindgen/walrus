@@ -1,7 +1,8 @@
 mod dwarf;
 mod expression;
+mod source_map;
 
-use crate::emit::{Emit, EmitContext};
+use crate::emit::EmitContext;
 use crate::map::IdHashMap;
 use crate::parse::IndicesToIds;
 use crate::{CustomSection, Function, FunctionId, GlobalId, LocalId, Module, RawCustomSection};
@@ -58,8 +59,11 @@ impl Module {
     }
 }
 
-impl Emit for ModuleDebugData {
-    fn emit(&self, cx: &mut EmitContext) {
+impl ModuleDebugData {
+    /// Rewrites the DWARF for the emitted code, and writes it to the module
+    /// when `generate_dwarf` is set. With `source_map`, returns the source map
+    /// built from the rewritten DWARF.
+    pub(crate) fn emit(&self, cx: &mut EmitContext, source_map: bool) -> Option<String> {
         let address_generator = CodeAddressGenerator::new(&cx.module.funcs);
         let address_converter = CodeAddressConverter::new(&cx.code_transform);
         let code_section_start = cx.code_transform.code_section_start;
@@ -124,18 +128,21 @@ impl Emit for ModuleDebugData {
 
         let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
         dwarf.write(&mut sections).expect("write failed");
-        sections
-            .for_each(
-                |id: SectionId, data: &write::EndianVec<LittleEndian>| -> Result<()> {
-                    if !data.slice().is_empty() {
-                        cx.wasm_module.section(&wasm_encoder::CustomSection {
-                            name: id.name().into(),
-                            data: data.slice().into(),
-                        });
-                    }
-                    Ok(())
-                },
-            )
-            .expect("never");
+        if cx.module.config.generate_dwarf {
+            sections
+                .for_each(
+                    |id: SectionId, data: &write::EndianVec<LittleEndian>| -> Result<()> {
+                        if !data.slice().is_empty() {
+                            cx.wasm_module.section(&wasm_encoder::CustomSection {
+                                name: id.name().into(),
+                                data: data.slice().into(),
+                            });
+                        }
+                        Ok(())
+                    },
+                )
+                .expect("never");
+        }
+        source_map.then(|| source_map::build(&sections, &cx.code_transform))
     }
 }

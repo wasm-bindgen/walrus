@@ -138,12 +138,16 @@ impl DebugInfo {
             return Ok(None);
         };
         // The file's name, under its directory and then the unit's
-        // compilation directory, unless one of them is absolute.
+        // compilation directory, unless one of them is absolute. Directory 0
+        // is the compilation directory itself, so it isn't joined again.
         let mut path = match unit.comp_dir {
             Some(dir) => dir.to_string_lossy().into_owned(),
             None => String::new(),
         };
-        if let Some(dir) = file.directory(header) {
+        if let Some(dir) = file
+            .directory(header)
+            .filter(|_| file.directory_index() != 0)
+        {
             push_path(&mut path, &dwarf.attr_string(unit, dir)?.to_string_lossy());
         }
         push_path(

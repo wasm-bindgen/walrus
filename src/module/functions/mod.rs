@@ -13,15 +13,18 @@ use rayon::prelude::*;
 
 mod local_function;
 
+use crate::const_expr::ConstOp;
 use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
 use crate::ir::InstrLocId;
+use crate::map::IdHashMap;
 use crate::module::imports::ImportId;
 use crate::module::Module;
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
 use crate::ty::TypeId;
 use crate::ty::ValType;
+use crate::{ConstExpr, ElementItems, GlobalKind};
 use crate::{ExportItem, FunctionBuilder, InstrSeqBuilder, LocalId, Memory, MemoryId};
 
 pub(crate) use self::local_function::EmitFacts;
@@ -445,9 +448,10 @@ impl Module {
         // `LocalFunction::parse` builds blocks on a scratch stack of
         // instructions, which is reused for the functions parsed by one task.
         //
-        // Function sizes vary a lot, and walrus emits functions largest first,
-        // so splitting the list into contiguous chunks leaves the first chunk
-        // with most of the work. Make every function its own task instead.
+        // Function sizes vary a lot, and many modules (including older walrus
+        // output) put the largest functions first, so splitting the list into
+        // contiguous chunks can leave one chunk with most of the work. Make
+        // every function its own task instead.
         // That gives every function a fresh scratch stack; a per-thread one
         // that is reused across tasks measured no faster.
         #[cfg(feature = "parallel")]
@@ -682,14 +686,79 @@ fn used_local_functions<'a>(cx: &mut EmitContext<'a>) -> Vec<(FunctionId, &'a Lo
         }
     }
 
-    // Sort local functions from largest to smallest; we will emit them in
-    // this order. This helps load times, since wasm engines generally use
-    // the function as their level of granularity for parallelism. We want
-    // larger functions compiled before smaller ones because they will take
-    // longer to compile.
-    functions.sort_by_key(|(id, _, size)| (cmp::Reverse(*size), *id));
+    // Number the most-referenced functions first. A function index is a
+    // LEB128, one byte below 128 and two below 16384, so this puts the
+    // shortest encodings where they are written most often. Among functions
+    // referenced equally often, larger ones come first: engines compile a
+    // module function by function in parallel, and starting on the larger
+    // functions early shortens the compile.
+    let uses = function_uses(cx.module, &cx.func_facts);
+    functions.sort_by_key(|(id, _, size)| {
+        let uses = uses.get(id).copied().unwrap_or(0);
+        (cmp::Reverse(uses), cmp::Reverse(*size), *id)
+    });
 
     functions
+}
+
+/// How many times the module writes each function's index: in code (`call`,
+/// `return_call`, `ref.func`), exports, element segments, global initializers
+/// and the start section.
+fn function_uses(
+    module: &Module,
+    func_facts: &IdHashMap<Function, EmitFacts>,
+) -> IdHashMap<Function, u64> {
+    fn add(uses: &mut IdHashMap<Function, u64>, f: FunctionId) {
+        *uses.entry(f).or_insert(0) += 1;
+    }
+    fn const_expr(uses: &mut IdHashMap<Function, u64>, e: &ConstExpr) {
+        match e {
+            ConstExpr::RefFunc(f) => add(uses, *f),
+            ConstExpr::Extended(ops) => {
+                for op in ops {
+                    if let ConstOp::RefFunc(f) = op {
+                        add(uses, *f);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut uses = IdHashMap::default();
+    for facts in func_facts.values() {
+        for &f in &facts.func_refs {
+            add(&mut uses, f);
+        }
+    }
+    for export in module.exports.iter() {
+        if let ExportItem::Function(f) = export.item {
+            add(&mut uses, f);
+        }
+    }
+    for global in module.globals.iter() {
+        if let GlobalKind::Local(e) = &global.kind {
+            const_expr(&mut uses, e);
+        }
+    }
+    for elem in module.elements.iter() {
+        match &elem.items {
+            ElementItems::Functions(fs) => {
+                for &f in fs {
+                    add(&mut uses, f);
+                }
+            }
+            ElementItems::Expressions(_, es) => {
+                for e in es {
+                    const_expr(&mut uses, e);
+                }
+            }
+        }
+    }
+    if let Some(f) = module.start {
+        add(&mut uses, f);
+    }
+    uses
 }
 
 fn collect_non_default_code_offsets(
@@ -720,8 +789,8 @@ impl Emit for ModuleFunctions {
         // everything in parallel. Afterwards we'll actually place all the
         // functions together.
         //
-        // `functions` is sorted largest first, so splitting it into contiguous
-        // chunks would leave the first chunk with most of the work. Make every
+        // Function sizes vary a lot, so splitting `functions` into contiguous
+        // chunks can leave one chunk with most of the work. Make every
         // function its own task instead.
         #[cfg(feature = "parallel")]
         let functions = functions.into_par_iter().with_max_len(1);

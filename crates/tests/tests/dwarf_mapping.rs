@@ -482,3 +482,188 @@ fn range_starting_the_byte_before_an_instruction() {
         assert_eq!(stats.in_scope, 2, "DWARF {version}");
     }
 }
+
+/// `wasm` with custom sections.
+fn with_sections(wasm: &[u8], sections: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut wasm = wasm.to_vec();
+    for (name, data) in sections {
+        wasm.push(0);
+        wasm_encoder::Encode::encode(
+            &wasm_encoder::CustomSection {
+                name: Cow::Borrowed(name),
+                data: Cow::Borrowed(data),
+            },
+            &mut wasm,
+        );
+    }
+    wasm
+}
+
+/// A DWARF 4 line program with the given minimum instruction length, line
+/// base and line range, a row at each address with the given line, and a
+/// sequence ending at `end` (or the first address after it a whole number of
+/// minimum instruction lengths from the last row).
+fn line_program(
+    min_inst_length: u8,
+    line_base: i8,
+    line_range: u8,
+    rows: &[(u64, u64)],
+    end: u64,
+) -> Vec<u8> {
+    #[rustfmt::skip]
+    let mut line = vec![
+        0, 0, 0, 0, // unit_length
+        4, 0, // version
+        25, 0, 0, 0, // header_length
+        min_inst_length, 1, 1, line_base as u8, line_range, 13,
+        0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1, // standard_opcode_lengths
+        0, // include_directories
+        b'a', 0, 0, 0, 0, 0, // file_names
+    ];
+    let mut previous = 1;
+    for &(address, row) in rows {
+        line.extend([0, 5, 2]); // DW_LNE_set_address
+        line.extend((address as u32).to_le_bytes());
+        line.push(3); // DW_LNS_advance_line
+        let mut delta = row as i64 - previous;
+        loop {
+            let byte = (delta & 0x7f) as u8;
+            delta >>= 7;
+            let done = (delta == 0 && byte & 0x40 == 0) || (delta == -1 && byte & 0x40 != 0);
+            line.push(if done { byte } else { byte | 0x80 });
+            if done {
+                break;
+            }
+        }
+        previous = row as i64;
+        line.push(1); // DW_LNS_copy
+    }
+    // Advanced to rather than set, as LLVM does: gimli's conversion loses
+    // a `DW_LNE_set_address` just before `DW_LNE_end_sequence`.
+    let last = rows.last().map_or(0, |r| r.0);
+    let units = (end - last).div_ceil(min_inst_length.into());
+    line.push(2); // DW_LNS_advance_pc
+    line.push(u8::try_from(units).unwrap());
+    line.extend([0, 1, 1]); // DW_LNE_end_sequence
+    let length = (line.len() - 4) as u32;
+    line[..4].copy_from_slice(&length.to_le_bytes());
+    line
+}
+
+/// Wasm has one operation per instruction and instructions of any length,
+/// so a line table for a header with a minimum instruction length, or a
+/// line base and range gimli's writer rejects, is rewritten with wasm's
+/// encoding rather than making `emit_wasm` panic.
+#[test]
+fn line_tables_with_any_encoding_are_rewritten() {
+    let wasm = wat::parse_str(
+        r#"(module (func (export "f") (result i32)
+          i32.const 1 i32.const 2 i32.add))"#,
+    )
+    .unwrap();
+    let body = &bodies(&wasm)[0];
+    let rows: Vec<_> = (0..body.instrs.len())
+        .map(|i| (body.instrs[i], i as u64 + 1))
+        .collect();
+    // A compile unit with only a `DW_AT_stmt_list`.
+    let abbrev = [1, 0x11, 0, 0x10, 0x17, 0, 0, 0];
+    let info = [12, 0, 0, 0, 4, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0];
+    // Instructions at least 4 bytes long, and a `line_base + line_range` of
+    // no more than 0. (gimli won't convert a positive line base.)
+    for (min_inst_length, line_base, line_range) in [(4, -5, 14), (1, -10, 5)] {
+        let line = line_program(min_inst_length, line_base, line_range, &rows, body.end);
+        let input = with_sections(
+            &wasm,
+            &[
+                (".debug_abbrev", &abbrev[..]),
+                (".debug_info", &info[..]),
+                (".debug_line", &line[..]),
+            ],
+        );
+        let output = walrus(&input, false);
+        dwarf::check_readable(&output).unwrap();
+        let encoding = format!("encoding {min_inst_length} {line_base} {line_range}");
+        let stats =
+            dwarf::check_preserved(&input, &output).unwrap_or_else(|e| panic!("{encoding}: {e}"));
+        assert_eq!(stats.with_line, stats.instructions, "{encoding}");
+    }
+}
+
+/// A `DW_AT_low_pc` that isn't an address, or the tombstone of discarded
+/// code with an end that's neither a size nor a tombstone, can't be mapped,
+/// so its code is written as removed, rather than copied or mapped on its
+/// own to a range over unrelated code.
+#[test]
+fn low_and_high_pc_that_cant_be_mapped() {
+    let wasm = wat::parse_str(
+        r#"(module
+          (func (export "a") (result i32) i32.const 1)
+          (func (export "b") (result i32) i32.const 2))"#,
+    )
+    .unwrap();
+    let (a, b) = (&bodies(&wasm)[0], &bodies(&wasm)[1]);
+    let address = |a| AttributeValue::Address(Address::Constant(a));
+    let mut not_an_end = Expression::new();
+    not_an_end.op_wasm_local(0);
+    for (low, high) in [
+        // A size in `DW_AT_low_pc`, and the start in `DW_AT_high_pc`.
+        (AttributeValue::Data4(4), address(b.start)),
+        // Discarded code whose end was left as an address, which would
+        // otherwise become `0..` the end of `b`.
+        (address(0), address(b.end)),
+        (address(0xffff_ffff), AttributeValue::Exprloc(not_an_end)),
+    ] {
+        let mut dwarf = unit(4);
+        let root = dwarf.unit.root();
+        let sub = dwarf.unit.add(root, constants::DW_TAG_subprogram);
+        let e = dwarf.unit.get_mut(sub);
+        e.set(constants::DW_AT_low_pc, low);
+        e.set(constants::DW_AT_high_pc, high);
+        // Real code, so the unit isn't empty.
+        let sub = dwarf.unit.add(root, constants::DW_TAG_subprogram);
+        let e = dwarf.unit.get_mut(sub);
+        e.set(constants::DW_AT_low_pc, address(a.start));
+        e.set(
+            constants::DW_AT_high_pc,
+            AttributeValue::Udata(a.end - a.start),
+        );
+        let output = walrus(&with_dwarf(&wasm, dwarf), false);
+        dwarf::check_readable(&output).unwrap();
+        // The checker skips ranges that start at a tombstone, so check that
+        // the end is one too.
+        let (low, high) = first_subprogram_pc(&output);
+        assert!(
+            low >= 0xffff_fffe && high >= 0xffff_fffe,
+            "{low:#x}..{high:#x}"
+        );
+    }
+}
+
+/// The `DW_AT_low_pc` and `DW_AT_high_pc` addresses of the first subprogram.
+fn first_subprogram_pc(wasm: &[u8]) -> (u64, u64) {
+    use gimli::read;
+    let mut sections = std::collections::HashMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CustomSection(s) = payload.unwrap() {
+            sections.insert(s.name(), s.data());
+        }
+    }
+    let dwarf = read::Dwarf::load(|id| {
+        let data = sections.get(id.name()).copied().unwrap_or_default();
+        Ok::<_, gimli::Error>(read::EndianSlice::new(data, LittleEndian))
+    })
+    .unwrap();
+    let unit = dwarf.units().next().unwrap().unwrap();
+    let unit = dwarf.unit(unit).unwrap();
+    let mut entries = unit.entries();
+    while let Some(entry) = entries.next_dfs().unwrap() {
+        if entry.tag() == constants::DW_TAG_subprogram {
+            let pc = |name| match entry.attr_value(name) {
+                Some(read::AttributeValue::Addr(a)) => a,
+                value => panic!("{name} is {value:?}"),
+            };
+            return (pc(constants::DW_AT_low_pc), pc(constants::DW_AT_high_pc));
+        }
+    }
+    panic!("no subprogram");
+}

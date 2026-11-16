@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use crate::{FunctionId, InstrLocId};
 use gimli::write::{self, Address, ConvertLineSequenceEnd, ConvertResult};
-use gimli::{constants, read, AttributeValue, EndianRcSlice, LittleEndian, Reader};
+use gimli::{constants, read, AttributeValue, EndianRcSlice, LineEncoding, LittleEndian, Reader};
 
 /// An owned reader, so that an expression with remapped indices can be
 /// converted by gimli like any other.
@@ -433,7 +433,15 @@ pub(crate) fn convert(
         if let Some(program) = &root.read_unit.line_program {
             check_line_program(program)?;
         }
-        if let Some(program) = unit.read_line_program(None, None)? {
+        // Wasm has one operation per instruction and instructions of any
+        // length, so line programs are written with one byte per
+        // instruction and one operation each, whatever the input's header
+        // said. Rows move to new addresses, so a header's minimum
+        // instruction length or operation indices wouldn't fit them, and
+        // gimli's writer asserts on both (and on a `line_base` and
+        // `line_range` that can't encode an advance).
+        let line_encoding = Some(LineEncoding::default());
+        if let Some(program) = unit.read_line_program(None, line_encoding)? {
             let (program, files) = convert_line_program(program, code)?;
             unit.set_line_program(program, files);
         }
@@ -604,6 +612,7 @@ fn convert_line_program(
             for (_, row) in &sequences[rows.0].rows[rows.1.clone()] {
                 let mut row = *row;
                 row.address_offset = address - start;
+                row.op_index = 0;
                 program.generate_row(row);
             }
             current = Some(rows);
@@ -739,15 +748,32 @@ enum Pc {
 
 fn convert_pc(entry: &write::ConvertUnitEntry<'_, R>, cx: &Context) -> ConvertResult<Pc> {
     let read_unit = entry.read_unit;
-    let low = match entry.attr_value(constants::DW_AT_low_pc) {
-        Some(value) => read_unit.attr_address(value)?,
-        None => None,
-    };
-    let Some(low) = low else {
+    let Some(low) = entry.attr_value(constants::DW_AT_low_pc) else {
         return Ok(Pc::Unchanged);
+    };
+    let high_pc = entry.attr_value(constants::DW_AT_high_pc);
+    let high_is_size = matches!(high_pc, Some(AttributeValue::Udata(_)));
+    let Some(low) = read_unit.attr_address(low)? else {
+        // Not an address, so where its code is isn't known.
+        return Ok(match high_pc {
+            None => Pc::Single(DEAD_CODE),
+            Some(_) => Pc::Removed(high_is_size),
+        });
     };
     if is_tombstone(low) {
-        return Ok(Pc::Unchanged);
+        // Discarded code. Its size or a tombstone end can stay, but another
+        // end address would be mapped as if it were the end of live code,
+        // and an end that's neither would be copied as it is.
+        let keep = match high_pc {
+            None => true,
+            Some(_) if high_is_size => true,
+            Some(value) => read_unit.attr_address(value)?.is_some_and(is_tombstone),
+        };
+        return Ok(if keep {
+            Pc::Unchanged
+        } else {
+            Pc::Removed(false)
+        });
     }
     let high = match entry.attr_value(constants::DW_AT_high_pc) {
         None => None,

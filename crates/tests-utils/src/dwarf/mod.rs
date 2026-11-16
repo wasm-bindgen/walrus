@@ -821,6 +821,13 @@ pub fn check_readable(wasm: &[u8]) -> Result<()> {
                     | read::AttributeValue::DebugStrOffsetsIndex(_) => {
                         dwarf.attr_string(&unit, attr.value())?;
                     }
+                    // The last child's sibling is the null entry that ends its
+                    // parent's children.
+                    read::AttributeValue::UnitRef(offset)
+                        if attr.name() == constants::DW_AT_sibling =>
+                    {
+                        unit.entries_at_offset(offset)?.next_entry()?;
+                    }
                     read::AttributeValue::UnitRef(offset) => {
                         unit.entry(offset)?;
                     }

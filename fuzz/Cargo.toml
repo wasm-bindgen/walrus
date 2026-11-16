@@ -19,6 +19,9 @@ path = ".."
 [dependencies.walrus-fuzz-utils]
 path = "../crates/fuzz-utils"
 
+[dependencies.walrus-tests-utils]
+path = "../crates/tests-utils"
+
 [dependencies.libfuzzer-sys]
 git = "https://github.com/rust-fuzz/libfuzzer-sys.git"
 
@@ -42,3 +45,10 @@ path = "fuzz_targets/raw.rs"
 name = "gc-smith"
 path = "fuzz_targets/gc-smith.rs"
 
+[[bin]]
+name = "dwarf"
+path = "fuzz_targets/dwarf.rs"
+
+[[bin]]
+name = "dwarf-raw"
+path = "fuzz_targets/dwarf-raw.rs"

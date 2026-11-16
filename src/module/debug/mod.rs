@@ -145,11 +145,20 @@ impl Emit for ModuleDebugData {
             global: &global,
         });
 
-        let mut dwarf =
-            dwarf::convert(&from_dwarf, &code, indices.as_ref()).expect("cannot convert DWARF");
-
+        // DWARF that can't be read, or can't be written back once converted,
+        // is left out rather than emitted wrong.
+        let mut dwarf = match dwarf::convert(&from_dwarf, &code, indices.as_ref()) {
+            Ok(dwarf) => dwarf,
+            Err(e) => {
+                log::warn!("dropping DWARF that can't be converted: {e}");
+                return;
+            }
+        };
         let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
-        dwarf.write(&mut sections).expect("write failed");
+        if let Err(e) = dwarf.write(&mut sections) {
+            log::warn!("dropping DWARF that can't be written: {e}");
+            return;
+        }
         sections
             .for_each(
                 |id: SectionId, data: &write::EndianVec<LittleEndian>| -> Result<()> {

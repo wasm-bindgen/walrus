@@ -178,6 +178,55 @@ fn row_for_removed_nop_applies_to_the_next_instruction() {
     assert_eq!(stats.with_line, stats.instructions);
 }
 
+/// An expression's local indices belong to the function its DIE is in,
+/// which a subprogram can give as `DW_AT_ranges` rather than
+/// `DW_AT_low_pc`.
+#[test]
+fn locals_of_a_subprogram_with_ranges_are_remapped() {
+    // walrus drops the unused `$unused`, so `$x` goes from index 1 to 0.
+    let wasm = wat::parse_str(
+        r#"(module
+          (func (export "f") (result i32)
+            (local $unused i64) (local $x i32)
+            i32.const 7
+            local.set $x
+            local.get $x))"#,
+    )
+    .unwrap();
+    let body = &bodies(&wasm)[0];
+    for version in [4, 5] {
+        let mut dwarf = unit(version);
+        let root = dwarf.unit.root();
+        let sub = dwarf.unit.add(root, constants::DW_TAG_subprogram);
+        let ranges = dwarf.unit.ranges.add(RangeList(vec![Range::StartEnd {
+            begin: Address::Constant(body.start),
+            end: Address::Constant(body.end),
+        }]));
+        let mut frame_base = Expression::new();
+        frame_base.op_wasm_local(1);
+        let entry = dwarf.unit.get_mut(sub);
+        entry.set(
+            constants::DW_AT_ranges,
+            AttributeValue::RangeListRef(ranges),
+        );
+        entry.set(
+            constants::DW_AT_frame_base,
+            AttributeValue::Exprloc(frame_base),
+        );
+        let var = dwarf.unit.add(sub, constants::DW_TAG_variable);
+        dwarf
+            .unit
+            .get_mut(var)
+            .set(constants::DW_AT_location, AttributeValue::Exprloc(local(1)));
+        let input = with_dwarf(&wasm, dwarf);
+        let output = walrus(&input, false);
+        dwarf::check_readable(&output).unwrap();
+        let stats = dwarf::check_preserved(&input, &output).unwrap();
+        // The frame base and the variable, at each of the 4 instructions.
+        assert_eq!(stats.locations, 8, "DWARF {version}");
+    }
+}
+
 /// `DW_OP_addr` and `DW_OP_addrx` name linear memory, such as where a
 /// static variable is, not code, so walrus keeps them.
 #[test]
@@ -322,6 +371,77 @@ fn rows_with_operation_indices_moved_together() {
     let output = walrus(&input, false);
     dwarf::check_readable(&output).unwrap();
     dwarf::check_preserved(&input, &output).unwrap();
+}
+
+/// Code that spans functions, which a DIE can give as one range, uses each
+/// function's local indices. An expression for a local walrus renumbers
+/// differently in each becomes a location list with each function's index,
+/// as do a location list's entries. A default location entry can't be
+/// split, so it's dropped.
+#[test]
+fn locals_over_functions_numbered_differently() {
+    // `a` drops its unused `i64` local, so its local 1 becomes 0; `b` keeps
+    // its local 1.
+    let wasm = wat::parse_str(
+        r#"(module
+          (func (export "a") (result i32) (local i64 i32)
+            i32.const 7 local.set 1 local.get 1)
+          (func (export "b") (param i32) (result i32) (local i32)
+            i32.const 8 local.set 1 local.get 1))"#,
+    )
+    .unwrap();
+    let (a, b) = (&bodies(&wasm)[0], &bodies(&wasm)[1]);
+    for version in [4, 5] {
+        let mut dwarf = unit(version);
+        let root = dwarf.unit.root();
+        let block = dwarf.unit.add(root, constants::DW_TAG_lexical_block);
+        let ranges = dwarf.unit.ranges.add(RangeList(vec![Range::StartEnd {
+            begin: Address::Constant(a.start),
+            end: Address::Constant(b.end),
+        }]));
+        dwarf.unit.get_mut(block).set(
+            constants::DW_AT_ranges,
+            AttributeValue::RangeListRef(ranges),
+        );
+        let var = dwarf.unit.add(block, constants::DW_TAG_variable);
+        dwarf
+            .unit
+            .get_mut(var)
+            .set(constants::DW_AT_location, AttributeValue::Exprloc(local(1)));
+        let list = dwarf
+            .unit
+            .locations
+            .add(LocationList(vec![Location::StartEnd {
+                begin: Address::Constant(a.start),
+                end: Address::Constant(b.end),
+                data: local(1),
+            }]));
+        let var = dwarf.unit.add(block, constants::DW_TAG_variable);
+        dwarf.unit.get_mut(var).set(
+            constants::DW_AT_location,
+            AttributeValue::LocationListRef(list),
+        );
+        if version >= 5 {
+            let list = dwarf
+                .unit
+                .locations
+                .add(LocationList(vec![Location::DefaultLocation {
+                    data: local(1),
+                }]));
+            let var = dwarf.unit.add(block, constants::DW_TAG_variable);
+            dwarf.unit.get_mut(var).set(
+                constants::DW_AT_location,
+                AttributeValue::LocationListRef(list),
+            );
+        }
+        let input = with_dwarf(&wasm, dwarf);
+        let output = walrus(&input, false);
+        dwarf::check_readable(&output).unwrap();
+        let stats = dwarf::check_preserved(&input, &output).unwrap();
+        // The expression's and the list's locations at each of the 8
+        // instructions, and none for the default location.
+        assert_eq!(stats.locations, 16, "DWARF {version}");
+    }
 }
 
 /// A range can start at the byte before an instruction, which is the last

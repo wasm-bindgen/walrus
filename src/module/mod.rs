@@ -463,6 +463,7 @@ impl Module {
             wasm_module: wasm_encoder::Module::new(),
             func_facts: func_facts.into_iter().collect(),
             code_transform: Default::default(),
+            function_instructions: Vec::new(),
         };
         // The dynamic-linking ABI requires this metadata before every standard
         // section. Its payload contains allocation requirements and symbol names,

@@ -2,7 +2,7 @@
 //! structures. E.g. translating from globally unique identifiers down to the
 //! raw wasm structure's index spaces.
 
-use crate::ir::Local;
+use crate::ir::{InstrLocId, Local};
 use crate::map::IdHashMap;
 use crate::module::EmitFacts;
 use crate::{CodeTransform, Global, GlobalId, Memory, MemoryId, Module, Table, TableId};
@@ -16,7 +16,16 @@ pub struct EmitContext<'a> {
     /// Facts about every local function's body, gathered before emission.
     pub func_facts: IdHashMap<Function, EmitFacts>,
     pub code_transform: CodeTransform,
+    /// Each emitted function's instructions in order, with their offsets in
+    /// the output Wasm, when `preserve_code_transform` is on. Unlike
+    /// `CodeTransform::instruction_map`, this keeps every place a location
+    /// was emitted.
+    pub function_instructions: Vec<(FunctionId, EmittedInstructions)>,
 }
+
+/// An emitted function's instructions: each one's location and its offset in
+/// the output Wasm, in order.
+pub(crate) type EmittedInstructions = Vec<(InstrLocId, usize)>;
 
 /// Anything that can be lowered to raw wasm structures.
 pub trait Emit {

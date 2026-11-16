@@ -1,9 +1,10 @@
 use crate::error::Result;
 use crate::ir::InstrLocId;
-use crate::module::Module;
+use crate::module::{FunctionInfo, Module};
 use crate::parse::IndicesToIds;
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use wasmparser::WasmFeatures;
 
 /// Type alias for the on_parse callback function.
@@ -11,6 +12,9 @@ type OnParseFn = Box<dyn Fn(&mut Module, &IndicesToIds) -> Result<()> + Sync + S
 
 /// Type alias for the on_instr_loc callback function.
 type OnInstrLocFn = Box<dyn Fn(&usize) -> InstrLocId + Sync + Send + 'static>;
+
+/// Type alias for the function_order callback function.
+type FunctionOrderFn = Arc<dyn Fn(&Module, &mut [FunctionInfo]) + Sync + Send + 'static>;
 
 /// Configuration for a `Module` which currently affects parsing.
 #[derive(Default)]
@@ -25,6 +29,7 @@ pub struct ModuleConfig {
     pub(crate) preserve_code_transform: bool,
     pub(crate) on_parse: Option<OnParseFn>,
     pub(crate) on_instr_loc: Option<OnInstrLocFn>,
+    pub(crate) function_order: Option<FunctionOrderFn>,
 }
 
 impl Clone for ModuleConfig {
@@ -40,8 +45,9 @@ impl Clone for ModuleConfig {
             skip_name_section: self.skip_name_section,
             skip_legacy_exceptions: self.skip_legacy_exceptions,
             preserve_code_transform: self.preserve_code_transform,
+            function_order: self.function_order.clone(),
 
-            // ... and this is left empty.
+            // ... and these are left empty.
             on_parse: None,
             on_instr_loc: None,
         }
@@ -63,6 +69,7 @@ impl fmt::Debug for ModuleConfig {
             ref preserve_code_transform,
             ref on_parse,
             ref on_instr_loc,
+            ref function_order,
         } = self;
 
         f.debug_struct("ModuleConfig")
@@ -79,6 +86,7 @@ impl fmt::Debug for ModuleConfig {
             .field("preserve_code_transform", preserve_code_transform)
             .field("on_parse", &on_parse.as_ref().map(|_| ".."))
             .field("on_instr_loc", &on_instr_loc.as_ref().map(|_| ".."))
+            .field("function_order", &function_order.as_ref().map(|_| ".."))
             .finish()
     }
 }
@@ -248,6 +256,42 @@ impl ModuleConfig {
     /// By default this flag is `false`.
     pub fn preserve_code_transform(&mut self, preserve: bool) -> &mut ModuleConfig {
         self.preserve_code_transform = preserve;
+        self
+    }
+
+    /// Provide a function that decides the order defined functions are
+    /// emitted, and so numbered, in.
+    ///
+    /// When a module is emitted, `f` is given every defined function, in
+    /// walrus's default order, to reorder in place. Imported functions always
+    /// come first in the function index space, so they aren't included.
+    ///
+    /// The default order is largest function first, so that engines that
+    /// compile functions in parallel start on the longest ones early. It is
+    /// not guaranteed and may change between releases; give a closure to
+    /// depend on a particular order. A stable sort keeps the default order
+    /// among functions that compare equal. For example, to give the shortest
+    /// function indices to the functions whose index is written most often:
+    ///
+    /// ```
+    /// use std::cmp::Reverse;
+    ///
+    /// let mut config = walrus::ModuleConfig::new();
+    /// config.function_order(|_module, functions| {
+    ///     functions.sort_by_key(|f| Reverse(f.uses()));
+    /// });
+    /// ```
+    ///
+    /// Note that only one `function_order` function may be registered and
+    /// subsequent registrations will override the old ones.
+    ///
+    /// Unlike `on_parse`, cloning a `ModuleConfig` keeps its `function_order`
+    /// function.
+    pub fn function_order<F>(&mut self, f: F) -> &mut ModuleConfig
+    where
+        F: Fn(&Module, &mut [FunctionInfo]) + Send + Sync + 'static,
+    {
+        self.function_order = Some(Arc::new(f) as _);
         self
     }
 

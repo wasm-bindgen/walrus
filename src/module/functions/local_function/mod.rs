@@ -26,6 +26,10 @@ pub(crate) struct EmitFacts {
     pub uses_data_segments: bool,
     /// The targets of every `ref.func`, in visit order, repeats included.
     pub ref_funcs: Vec<FunctionId>,
+    /// Every function whose index the body writes (`call`, `return_call`,
+    /// `ref.func`), repeats included. Only gathered when a
+    /// `ModuleConfig::function_order` closure needs the counts.
+    pub func_index_uses: Vec<FunctionId>,
     /// The locals that the function's instructions use.
     pub used_locals: IdHashSet<Local>,
 }
@@ -200,12 +204,16 @@ impl LocalFunction {
     /// reachable from the entry block. In particular, `size` must not be
     /// computed from the arena of instruction sequences: that would count
     /// dangling sequences too.
-    pub(crate) fn emit_facts(&self) -> EmitFacts {
+    ///
+    /// `count_uses` gathers [`EmitFacts::func_index_uses`] too.
+    pub(crate) fn emit_facts(&self, count_uses: bool) -> EmitFacts {
         let mut v = FactsVisitor {
+            count_uses,
             facts: EmitFacts {
                 size: 0,
                 uses_data_segments: false,
                 ref_funcs: Vec::new(),
+                func_index_uses: Vec::new(),
                 used_locals: IdHashSet::default(),
             },
         };
@@ -213,6 +221,7 @@ impl LocalFunction {
         return v.facts;
 
         struct FactsVisitor {
+            count_uses: bool,
             facts: EmitFacts,
         }
 
@@ -227,6 +236,12 @@ impl LocalFunction {
 
             fn visit_ref_func(&mut self, instr: &RefFunc) {
                 self.facts.ref_funcs.push(instr.func);
+            }
+
+            fn visit_function_id(&mut self, id: &FunctionId) {
+                if self.count_uses {
+                    self.facts.func_index_uses.push(*id);
+                }
             }
 
             fn visit_local_id(&mut self, id: &LocalId) {

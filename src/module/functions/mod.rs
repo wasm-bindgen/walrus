@@ -13,15 +13,18 @@ use rayon::prelude::*;
 
 mod local_function;
 
+use crate::const_expr::ConstOp;
 use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
 use crate::ir::InstrLocId;
+use crate::map::IdHashMap;
 use crate::module::imports::ImportId;
 use crate::module::Module;
 use crate::parse::IndicesToIds;
 use crate::tombstone_arena::{Id, Tombstone, TombstoneArena};
 use crate::ty::TypeId;
 use crate::ty::ValType;
+use crate::{ConstExpr, ElementItems, GlobalKind};
 use crate::{ExportItem, FunctionBuilder, InstrSeqBuilder, LocalId, Memory, MemoryId};
 
 pub(crate) use self::local_function::EmitFacts;
@@ -297,7 +300,7 @@ impl ModuleFunctions {
             return;
         }
         let mut func_section = wasm_encoder::FunctionSection::new();
-        for (id, function, _size) in functions {
+        for (id, function) in functions {
             let index = cx.indices.get_type_index(function.ty());
             func_section.function(index);
 
@@ -668,28 +671,145 @@ impl Module {
     }
 }
 
-fn used_local_functions<'a>(cx: &mut EmitContext<'a>) -> Vec<(FunctionId, &'a LocalFunction, u64)> {
-    // Extract all local functions because imported ones were already
-    // emitted as part of the import sectin. Find the size of each local
-    // function. Sort imported functions in order so that we can get their
-    // index in the function index space.
-    let mut functions = Vec::new();
-    for f in cx.module.funcs.iter() {
-        match &f.kind {
-            FunctionKind::Local(l) => functions.push((f.id(), l, cx.func_facts[&f.id()].size)),
-            FunctionKind::Import(_) => {}
-            FunctionKind::Uninitialized(_) => unreachable!(),
+/// A defined function, as the closure given to
+/// [`ModuleConfig::function_order`](crate::ModuleConfig::function_order) sees
+/// it.
+///
+/// Code outside walrus can't build, clone or replace a `FunctionInfo`, so the
+/// closure can only reorder them: every defined function is still emitted
+/// exactly once.
+#[derive(Debug)]
+pub struct FunctionInfo {
+    id: FunctionId,
+    size: u64,
+    uses: u64,
+}
+
+impl FunctionInfo {
+    /// The function.
+    pub fn id(&self) -> FunctionId {
+        self.id
+    }
+
+    /// The function's size in instructions, as [`LocalFunction::size`]
+    /// returns it.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// How many times the emitted module writes this function's index: in
+    /// `call`, `return_call` and `ref.func` instructions, exports, element
+    /// segments, global initializers and the start section. The name section
+    /// and DWARF aren't counted.
+    pub fn uses(&self) -> u64 {
+        self.uses
+    }
+}
+
+/// The order that defined functions are emitted, and so numbered, in.
+///
+/// By default, local functions are sorted from largest to smallest. This
+/// helps load times, since wasm engines generally use the function as their
+/// level of granularity for parallelism. We want larger functions compiled
+/// before smaller ones because they will take longer to compile. A
+/// [`ModuleConfig::function_order`](crate::ModuleConfig::function_order)
+/// closure is then given that order to change.
+pub(crate) fn local_function_order(
+    module: &Module,
+    func_facts: &[(FunctionId, EmitFacts)],
+) -> Vec<FunctionId> {
+    let mut functions = func_facts
+        .iter()
+        .map(|(id, facts)| FunctionInfo {
+            id: *id,
+            size: facts.size,
+            uses: 0,
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by_key(|f| (cmp::Reverse(f.size), f.id));
+
+    if let Some(order) = &module.config.function_order {
+        let uses = function_uses(module, func_facts);
+        for f in &mut functions {
+            f.uses = uses.get(&f.id).copied().unwrap_or(0);
+        }
+        order(module, &mut functions);
+    }
+
+    functions.into_iter().map(|f| f.id).collect()
+}
+
+/// How many times the module writes each function's index: in code (`call`,
+/// `return_call`, `ref.func`), exports, element segments, global initializers
+/// and the start section.
+fn function_uses(
+    module: &Module,
+    func_facts: &[(FunctionId, EmitFacts)],
+) -> IdHashMap<Function, u64> {
+    fn add(uses: &mut IdHashMap<Function, u64>, f: FunctionId) {
+        *uses.entry(f).or_insert(0) += 1;
+    }
+    fn add_const_expr(uses: &mut IdHashMap<Function, u64>, e: &ConstExpr) {
+        match e {
+            ConstExpr::RefFunc(f) => add(uses, *f),
+            ConstExpr::Extended(ops) => {
+                for op in ops {
+                    if let ConstOp::RefFunc(f) = op {
+                        add(uses, *f);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
-    // Sort local functions from largest to smallest; we will emit them in
-    // this order. This helps load times, since wasm engines generally use
-    // the function as their level of granularity for parallelism. We want
-    // larger functions compiled before smaller ones because they will take
-    // longer to compile.
-    functions.sort_by_key(|(id, _, size)| (cmp::Reverse(*size), *id));
+    let mut uses = IdHashMap::default();
+    for (_, facts) in func_facts {
+        for &f in &facts.func_index_uses {
+            add(&mut uses, f);
+        }
+    }
+    for export in module.exports.iter() {
+        if let ExportItem::Function(f) = export.item {
+            add(&mut uses, f);
+        }
+    }
+    for global in module.globals.iter() {
+        if let GlobalKind::Local(e) = &global.kind {
+            add_const_expr(&mut uses, e);
+        }
+    }
+    for elem in module.elements.iter() {
+        match &elem.items {
+            ElementItems::Functions(fs) => {
+                for &f in fs {
+                    add(&mut uses, f);
+                }
+            }
+            ElementItems::Expressions(_, es) => {
+                for e in es {
+                    add_const_expr(&mut uses, e);
+                }
+            }
+        }
+    }
+    if let Some(f) = module.start {
+        add(&mut uses, f);
+    }
+    uses
+}
 
-    functions
+/// The local functions in the order they are emitted, which
+/// [`local_function_order`] decided before emission started.
+fn used_local_functions<'a>(cx: &EmitContext<'a>) -> Vec<(FunctionId, &'a LocalFunction)> {
+    let module = cx.module;
+    cx.function_order
+        .iter()
+        .map(|&id| match &module.funcs.get(id).kind {
+            FunctionKind::Local(l) => (id, l),
+            FunctionKind::Import(_) | FunctionKind::Uninitialized(_) => unreachable!(),
+        })
+        .collect()
 }
 
 fn collect_non_default_code_offsets(
@@ -726,7 +846,7 @@ impl Emit for ModuleFunctions {
         #[cfg(not(feature = "parallel"))]
         let functions = functions.into_iter();
         let bytes = functions
-            .map(|(id, func, _size)| {
+            .map(|(id, func)| {
                 log::debug!("emit function {:?} {:?}", id, cx.module.funcs.get(id).name);
                 let mut wasm = Vec::new();
                 let mut map = if generate_map { Some(Vec::new()) } else { None };

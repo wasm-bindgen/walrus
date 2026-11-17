@@ -30,8 +30,18 @@ impl FunctionNames for RustNames {
         strip_generics(name)
     }
 
+    /// The path from the last named segment: compiler segments such as
+    /// `{closure#0}` are in many functions, so they don't tell them apart.
     fn declaration_key<'a>(&self, name: &'a str) -> &'a str {
-        name.rsplit("::").next().unwrap_or(name)
+        let mut start = name.len();
+        for segment in name.rsplit("::") {
+            start -= segment.len();
+            if !segment.starts_with('{') {
+                break;
+            }
+            start = start.saturating_sub(2);
+        }
+        &name[start..]
     }
 
     fn shared_name(&self, a: &str, b: &str) -> String {
@@ -198,6 +208,27 @@ mod tests {
         );
         assert_eq!(common_name("a::x::f", "b::x::f"), "_::x::f");
         assert_eq!(common_name("f", "g"), "f");
+    }
+
+    #[test]
+    fn closures_of_different_functions_have_different_keys() {
+        let key = |name| RustNames.declaration_key(name);
+        assert_eq!(key("worker::fetch::{closure#0}"), "fetch::{closure#0}");
+        assert_eq!(
+            key("worker::__wasm_bindgen_generated_fetch::{closure#0}"),
+            "__wasm_bindgen_generated_fetch::{closure#0}"
+        );
+        assert_eq!(
+            key("worker::fetch::{closure#0}::{closure#0}"),
+            "fetch::{closure#0}::{closure#0}"
+        );
+        assert_eq!(key("<_ as core::ops::FnMut>::call_mut"), "call_mut");
+        assert_eq!(
+            key("<a::A as b::T>::f::{constant#0}::{closure#1}"),
+            "f::{constant#0}::{closure#1}"
+        );
+        assert_eq!(key("a::f::{{closure}}"), "f::{{closure}}");
+        assert_eq!(key("{closure#0}"), "{closure#0}");
     }
 
     #[test]

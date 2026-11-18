@@ -11,6 +11,7 @@ use crate::{ir::*, HeapType, RefType};
 use crate::{Data, DataId, FunctionBuilder, FunctionId, MemoryId, Module, Result, TypeId, ValType};
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wasmparser::{FuncValidator, Operator, ValidatorResources};
 
 /// Return type for emit_locals: (encoded locals, local index map)
@@ -200,8 +201,14 @@ impl LocalFunction {
     /// reachable from the entry block. In particular, `size` must not be
     /// computed from the arena of instruction sequences: that would count
     /// dangling sequences too.
-    pub(crate) fn emit_facts(&self) -> EmitFacts {
+    ///
+    /// With `uses`, every function index the body writes (`call`,
+    /// `return_call`, `ref.func`) also increments that function's counter,
+    /// which is indexed by [`FunctionId::index`]. Bodies may be walked in
+    /// parallel, so the counts are only meaningful once every walk is done.
+    pub(crate) fn emit_facts(&self, uses: Option<&[AtomicU64]>) -> EmitFacts {
         let mut v = FactsVisitor {
+            uses,
             facts: EmitFacts {
                 size: 0,
                 uses_data_segments: false,
@@ -212,11 +219,12 @@ impl LocalFunction {
         dfs_in_order(&mut v, self, self.entry_block());
         return v.facts;
 
-        struct FactsVisitor {
+        struct FactsVisitor<'a> {
+            uses: Option<&'a [AtomicU64]>,
             facts: EmitFacts,
         }
 
-        impl<'instr> Visitor<'instr> for FactsVisitor {
+        impl<'instr> Visitor<'instr> for FactsVisitor<'_> {
             fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
                 self.facts.size += seq.len() as u64;
             }
@@ -227,6 +235,12 @@ impl LocalFunction {
 
             fn visit_ref_func(&mut self, instr: &RefFunc) {
                 self.facts.ref_funcs.push(instr.func);
+            }
+
+            fn visit_function_id(&mut self, id: &FunctionId) {
+                if let Some(uses) = self.uses {
+                    uses[id.index()].fetch_add(1, Ordering::Relaxed);
+                }
             }
 
             fn visit_local_id(&mut self, id: &LocalId) {

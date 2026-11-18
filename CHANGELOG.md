@@ -8,7 +8,13 @@ Released YYYY-MM-DD.
 
 ### Added
 
-* TODO (or remove section if none)
+* `ModuleConfig::function_order` takes a closure that decides the order
+  defined functions are emitted, and so numbered, in. It is given every
+  defined function as a `FunctionInfo`, with its size and how many times its
+  index is written, in the default order (largest first) to reorder. For
+  example, sorting by `Reverse(f.uses())` gives the shortest LEB128 indices to
+  the most-referenced functions, which makes most modules smaller. The default
+  order isn't guaranteed and may change; give a closure to depend on one.
 
 ### Changed
 

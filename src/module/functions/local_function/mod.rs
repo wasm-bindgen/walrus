@@ -11,6 +11,7 @@ use crate::{ir::*, HeapType, RefType};
 use crate::{Data, DataId, FunctionBuilder, FunctionId, MemoryId, Module, Result, TypeId, ValType};
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wasmparser::{FuncValidator, Operator, ValidatorResources};
 
 /// Return type for emit_locals: (encoded locals, local index map)
@@ -26,10 +27,6 @@ pub(crate) struct EmitFacts {
     pub uses_data_segments: bool,
     /// The targets of every `ref.func`, in visit order, repeats included.
     pub ref_funcs: Vec<FunctionId>,
-    /// Every function whose index the body writes (`call`, `return_call`,
-    /// `ref.func`), repeats included. Only gathered when a
-    /// `ModuleConfig::function_order` closure needs the counts.
-    pub func_index_uses: Vec<FunctionId>,
     /// The locals that the function's instructions use.
     pub used_locals: IdHashSet<Local>,
 }
@@ -205,27 +202,29 @@ impl LocalFunction {
     /// computed from the arena of instruction sequences: that would count
     /// dangling sequences too.
     ///
-    /// `count_uses` gathers [`EmitFacts::func_index_uses`] too.
-    pub(crate) fn emit_facts(&self, count_uses: bool) -> EmitFacts {
+    /// With `uses`, every function index the body writes (`call`,
+    /// `return_call`, `ref.func`) also increments that function's counter,
+    /// which is indexed by [`FunctionId::index`]. Bodies may be walked in
+    /// parallel, so the counts are only meaningful once every walk is done.
+    pub(crate) fn emit_facts(&self, uses: Option<&[AtomicU64]>) -> EmitFacts {
         let mut v = FactsVisitor {
-            count_uses,
+            uses,
             facts: EmitFacts {
                 size: 0,
                 uses_data_segments: false,
                 ref_funcs: Vec::new(),
-                func_index_uses: Vec::new(),
                 used_locals: IdHashSet::default(),
             },
         };
         dfs_in_order(&mut v, self, self.entry_block());
         return v.facts;
 
-        struct FactsVisitor {
-            count_uses: bool,
+        struct FactsVisitor<'a> {
+            uses: Option<&'a [AtomicU64]>,
             facts: EmitFacts,
         }
 
-        impl<'instr> Visitor<'instr> for FactsVisitor {
+        impl<'instr> Visitor<'instr> for FactsVisitor<'_> {
             fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
                 self.facts.size += seq.len() as u64;
             }
@@ -239,8 +238,8 @@ impl LocalFunction {
             }
 
             fn visit_function_id(&mut self, id: &FunctionId) {
-                if self.count_uses {
-                    self.facts.func_index_uses.push(*id);
+                if let Some(uses) = self.uses {
+                    uses[id.index()].fetch_add(1, Ordering::Relaxed);
                 }
             }
 

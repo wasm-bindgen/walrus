@@ -3,6 +3,7 @@
 use std::cmp;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::{bail, Context};
 use wasm_encoder::Encode;
@@ -17,7 +18,6 @@ use crate::const_expr::ConstOp;
 use crate::emit::{Emit, EmitContext};
 use crate::error::Result;
 use crate::ir::InstrLocId;
-use crate::map::IdHashMap;
 use crate::module::imports::ImportId;
 use crate::module::Module;
 use crate::parse::IndicesToIds;
@@ -291,6 +291,14 @@ impl ModuleFunctions {
                 _ => None,
             }
         })
+    }
+
+    /// One zeroed counter per slot in the function arena, deleted functions
+    /// included, indexed by [`FunctionId::index`].
+    pub(crate) fn use_counters(&self) -> Vec<AtomicU64> {
+        (0..self.arena.next_id().index())
+            .map(|_| AtomicU64::new(0))
+            .collect()
     }
 
     pub(crate) fn emit_func_section(&self, cx: &mut EmitContext) {
@@ -714,9 +722,13 @@ impl FunctionInfo {
 /// before smaller ones because they will take longer to compile. A
 /// [`ModuleConfig::function_order`](crate::ModuleConfig::function_order)
 /// closure is then given that order to change.
+///
+/// `uses` holds the counts that walking the function bodies gathered, as
+/// [`LocalFunction::emit_facts`] describes; it is set whenever the closure is.
 pub(crate) fn local_function_order(
     module: &Module,
     func_facts: &[(FunctionId, EmitFacts)],
+    uses: Option<Vec<AtomicU64>>,
 ) -> Vec<FunctionId> {
     let mut functions = func_facts
         .iter()
@@ -729,9 +741,10 @@ pub(crate) fn local_function_order(
     functions.sort_by_key(|f| (cmp::Reverse(f.size), f.id));
 
     if let Some(order) = &module.config.function_order {
-        let uses = function_uses(module, func_facts);
+        let uses = uses.expect("use counts are gathered when a function_order closure is set");
+        let uses = function_uses(module, uses);
         for f in &mut functions {
-            f.uses = uses.get(&f.id).copied().unwrap_or(0);
+            f.uses = uses[f.id.index()];
         }
         order(module, &mut functions);
     }
@@ -739,23 +752,18 @@ pub(crate) fn local_function_order(
     functions.into_iter().map(|f| f.id).collect()
 }
 
-/// How many times the module writes each function's index: in code (`call`,
-/// `return_call`, `ref.func`), exports, element segments, global initializers
-/// and the start section.
-fn function_uses(
-    module: &Module,
-    func_facts: &[(FunctionId, EmitFacts)],
-) -> IdHashMap<Function, u64> {
-    fn add(uses: &mut IdHashMap<Function, u64>, f: FunctionId) {
-        *uses.entry(f).or_insert(0) += 1;
-    }
-    fn add_const_expr(uses: &mut IdHashMap<Function, u64>, e: &ConstExpr) {
+/// How many times the module writes each function's index, indexed by
+/// [`FunctionId::index`]: `code_uses` already counts code (`call`,
+/// `return_call`, `ref.func`), and this adds exports, element segments, global
+/// initializers and the start section.
+fn function_uses(module: &Module, code_uses: Vec<AtomicU64>) -> Vec<u64> {
+    fn add_const_expr(uses: &mut [u64], e: &ConstExpr) {
         match e {
-            ConstExpr::RefFunc(f) => add(uses, *f),
+            ConstExpr::RefFunc(f) => uses[f.index()] += 1,
             ConstExpr::Extended(ops) => {
                 for op in ops {
                     if let ConstOp::RefFunc(f) = op {
-                        add(uses, *f);
+                        uses[f.index()] += 1;
                     }
                 }
             }
@@ -763,15 +771,15 @@ fn function_uses(
         }
     }
 
-    let mut uses = IdHashMap::default();
-    for (_, facts) in func_facts {
-        for &f in &facts.func_index_uses {
-            add(&mut uses, f);
-        }
-    }
+    // The walks over function bodies have all finished, so every increment
+    // is visible here.
+    let mut uses = code_uses
+        .into_iter()
+        .map(AtomicU64::into_inner)
+        .collect::<Vec<_>>();
     for export in module.exports.iter() {
         if let ExportItem::Function(f) = export.item {
-            add(&mut uses, f);
+            uses[f.index()] += 1;
         }
     }
     for global in module.globals.iter() {
@@ -782,8 +790,8 @@ fn function_uses(
     for elem in module.elements.iter() {
         match &elem.items {
             ElementItems::Functions(fs) => {
-                for &f in fs {
-                    add(&mut uses, f);
+                for f in fs {
+                    uses[f.index()] += 1;
                 }
             }
             ElementItems::Expressions(_, es) => {
@@ -794,7 +802,7 @@ fn function_uses(
         }
     }
     if let Some(f) = module.start {
-        add(&mut uses, f);
+        uses[f.index()] += 1;
     }
     uses
 }

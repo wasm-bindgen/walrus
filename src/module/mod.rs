@@ -447,13 +447,19 @@ impl Module {
         // Walk every function body once for the facts that emission needs.
         // `parallel` collects these in function order.
         let funcs = &self.funcs;
-        let count_uses = self.config.function_order.is_some();
+        // Function index use counts are only needed by a `function_order`
+        // closure, so the table is only allocated when one is set.
+        let uses = self
+            .config
+            .function_order
+            .is_some()
+            .then(|| funcs.use_counters());
         let func_facts = maybe_parallel!(funcs.(iter_local | par_iter_local))
-            .map(|(id, f)| (id, f.emit_facts(count_uses)))
+            .map(|(id, f)| (id, f.emit_facts(uses.as_deref())))
             .collect::<Vec<_>>();
 
         self.ensure_func_declarations(&func_facts);
-        let function_order = functions::local_function_order(self, &func_facts);
+        let function_order = functions::local_function_order(self, &func_facts, uses);
 
         let indices = &mut IdsToIndices::default();
 

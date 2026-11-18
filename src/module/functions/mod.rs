@@ -352,12 +352,12 @@ impl Module {
         // necessary and it's a bottleneck!
         let mut bodies = Vec::with_capacity(functions.len());
 
-        // `register_legacy_catch_block_types` only registers a `Type` for a
-        // `catch` whose tag has params, or for a handler of a `try` with two
-        // or more results, which only a function type in the type section
-        // can give it. When the module has neither, or legacy exceptions are
-        // disabled so validation rejects any `try`, it would register
-        // nothing, so don't decode every body for it.
+        // `legacy_catch_block_types` only finds a `Type` for a `catch` whose
+        // tag has params, or for a handler of a `try` with two or more
+        // results, which needs a function type from the type section. When
+        // the module has neither, or legacy exceptions are disabled so
+        // validation rejects any `try`, it would find nothing, so don't
+        // decode every body for it.
         let has_legacy_catch_block_types = !self.config.skip_legacy_exceptions
             && (self
                 .tags
@@ -369,6 +369,20 @@ impl Module {
                     .iter()
                     .filter_map(|ty| ty.as_function())
                     .any(|ty| ty.results().len() >= 2));
+        // Decoding every body is costly, so with the `parallel` feature find
+        // the types in parallel. The loop below adds each function's types
+        // after its entry block type, in function order.
+        let legacy_catch_block_types = if has_legacy_catch_block_types {
+            let indices = &*indices;
+            #[cfg(feature = "parallel")]
+            let iter = functions.par_iter();
+            #[cfg(not(feature = "parallel"))]
+            let iter = functions.iter();
+            iter.map(|(body, _)| self.legacy_catch_block_types(body, indices))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
         for (i, (body, mut validator)) in functions.into_iter().enumerate() {
             let index = (num_imports + i) as u32;
@@ -400,8 +414,8 @@ impl Module {
             self.types.add_entry_ty(&results);
 
             // Likewise for legacy `catch` handler block types.
-            if has_legacy_catch_block_types {
-                self.register_legacy_catch_block_types(&body, indices)?;
+            for (params, results) in legacy_catch_block_types.get(i).into_iter().flatten() {
+                self.types.add(params, results);
             }
 
             // Next up comes all the locals of the function.
@@ -475,24 +489,26 @@ impl Module {
         Ok(())
     }
 
-    /// Pre-register the implicit `[tag params] -> [try results]` `Type` of
-    /// every non-`Simple` legacy `catch` / `catch_all` handler in `body`.
+    /// The implicit `[tag params] -> [try results]` `Type` of every
+    /// non-`Simple` legacy `catch` / `catch_all` handler in `body`.
     ///
     /// Legacy `catch` handler signatures are implicit in the encoding and
     /// so never in `ModuleTypes`. The IR builder runs in parallel over
     /// `&Module` and cannot register them itself, so — like `add_entry_ty`
-    /// for the function entry block — they're pre-registered here.
-    fn register_legacy_catch_block_types(
-        &mut self,
+    /// for the function entry block — `parse_local_functions` registers
+    /// them before parsing the bodies.
+    fn legacy_catch_block_types(
+        &self,
         body: &wasmparser::FunctionBody,
         indices: &IndicesToIds,
-    ) -> Result<()> {
+    ) -> Result<Vec<(Vec<ValType>, Vec<ValType>)>> {
         use wasmparser::{BlockType, Operator};
 
         // One entry per open structured frame; `Some` holds a `try`'s
         // result types. A `catch` pairs with the innermost `try`, i.e.
         // the top frame.
         let mut frames: Vec<Option<Vec<ValType>>> = Vec::new();
+        let mut types = Vec::new();
         for op in body.get_operators_reader()? {
             match op? {
                 Operator::Block { .. }
@@ -515,7 +531,7 @@ impl Module {
                         let params = self.types.params(tag_ty).to_vec();
                         // `Simple` handlers (0 params, <=1 result) need no `Type`.
                         if !matches!((params.len(), results.len()), (0, 0) | (0, 1)) {
-                            self.types.add(&params, &results);
+                            types.push((params, results));
                         }
                     }
                 }
@@ -523,15 +539,14 @@ impl Module {
                     if let Some(Some(results)) = frames.last() {
                         // Handler is `[] -> results`; multi-value iff >1 result.
                         if results.len() > 1 {
-                            let results = results.clone();
-                            self.types.add(&[], &results);
+                            types.push((Vec::new(), results.clone()));
                         }
                     }
                 }
                 _ => {}
             }
         }
-        Ok(())
+        Ok(types)
     }
 
     /// Retrieve the ID for the first exported memory.

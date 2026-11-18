@@ -707,8 +707,8 @@ impl FunctionInfo {
 
     /// How many times the emitted module writes this function's index: in
     /// `call`, `return_call` and `ref.func` instructions, exports, element
-    /// segments, global and table initializers and the start section. The name section
-    /// and DWARF aren't counted.
+    /// segments, global and table initializers and the start section. Custom
+    /// sections, including the name section and DWARF, aren't counted.
     pub fn uses(&self) -> u64 {
         self.uses
     }
@@ -851,9 +851,9 @@ impl Emit for ModuleFunctions {
         // everything in parallel. Afterwards we'll actually place all the
         // functions together.
         //
-        // `functions` is sorted largest first, so splitting it into contiguous
-        // chunks would leave the first chunk with most of the work. Make every
-        // function its own task instead.
+        // `functions` is sorted largest first by default, so splitting it into
+        // contiguous chunks would leave the first chunk with most of the work.
+        // Make every function its own task instead.
         #[cfg(feature = "parallel")]
         let functions = functions.into_par_iter().with_max_len(1);
         #[cfg(not(feature = "parallel"))]

@@ -15,6 +15,8 @@ pub struct EmitContext<'a> {
     pub wasm_module: wasm_encoder::Module,
     /// Facts about every local function's body, gathered before emission.
     pub func_facts: IdHashMap<Function, EmitFacts>,
+    /// The order that local functions are emitted, and so numbered, in.
+    pub function_order: Vec<FunctionId>,
     pub code_transform: CodeTransform,
     /// Each emitted function's instructions in order, with their offsets in
     /// the output Wasm, when `preserve_code_transform` is on. Unlike

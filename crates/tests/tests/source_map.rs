@@ -206,6 +206,9 @@ fn map_follows_the_dwarf() {
     assert_eq!(text, std::fs::read_to_string(&path).unwrap());
     assert_eq!(map["version"], 3);
     assert_eq!(map["names"], json!([]));
+    // The same lines, from the line tables that are written.
+    let module = parse(|c| c.generate_source_map(true).generate_dwarf(true));
+    assert_eq!(emit(module, true).1, map);
 }
 
 #[test]

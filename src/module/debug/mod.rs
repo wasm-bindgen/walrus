@@ -12,7 +12,8 @@ use gimli::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use self::dwarf::{CodeMap, Indices, InputFunction, OutputFunction};
+use self::dwarf::{CodeMap, Files, Indices, InputFunction, Line, OutputFunction};
+use self::source_map::SourceMap;
 
 /// The DWARF debug section in input WebAssembly binary.
 #[derive(Debug, Default)]
@@ -76,9 +77,10 @@ impl Module {
 }
 
 impl ModuleDebugData {
-    /// Rewrites the DWARF for the emitted code, and writes it to the module
+    /// Rewrites the DWARF for the emitted code and writes it to the module
     /// when `generate_dwarf` is set. With `source_map`, returns the source map
-    /// built from the rewritten DWARF.
+    /// of the rewritten line tables; without `generate_dwarf`, only the line
+    /// tables are rewritten, and nothing is written.
     pub(crate) fn emit(&self, cx: &mut EmitContext, source_map: bool) -> Option<String> {
         let code_section_start = cx.code_transform.code_section_start;
         let inputs = cx
@@ -149,12 +151,19 @@ impl ModuleDebugData {
             global: &global,
         });
 
-        let mut dwarf =
-            dwarf::convert(&from_dwarf, &code, indices.as_ref()).expect("cannot convert DWARF");
-
-        let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
-        dwarf.write(&mut sections).expect("write failed");
+        let mut map = source_map.then(|| SourceMap::new(code_section_start as u64));
+        let mut add_unit = |files: &Files, lines: Vec<Line>| {
+            if let Some(map) = &mut map {
+                map.add_unit(files, lines);
+            }
+        };
         if cx.module.config.generate_dwarf {
+            let lines = source_map.then_some(&mut add_unit as _);
+            let mut dwarf = dwarf::convert(&from_dwarf, &code, indices.as_ref(), lines)
+                .expect("cannot convert DWARF");
+
+            let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
+            dwarf.write(&mut sections).expect("write failed");
             sections
                 .for_each(
                     |id: SectionId, data: &write::EndianVec<LittleEndian>| -> Result<()> {
@@ -168,8 +177,11 @@ impl ModuleDebugData {
                     },
                 )
                 .expect("never");
+        } else if source_map {
+            dwarf::lines(&from_dwarf, &code, &mut add_unit)
+                .expect("cannot convert the DWARF line tables");
         }
-        source_map.then(|| source_map::build(&sections, &cx.code_transform))
+        map.map(SourceMap::finish)
     }
 }
 

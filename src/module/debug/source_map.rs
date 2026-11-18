@@ -1,167 +1,89 @@
 //! Builds a source map of the emitted module, with the `mappings` from the
-//! line tables of its rewritten DWARF.
+//! lines of its DWARF line tables at the addresses they were emitted to.
 //!
 //! In a source map of a Wasm module, the whole module is generated line 0 and
 //! a generated column is a byte offset in the module.
 
-use crate::CodeTransform;
-use gimli::write::{EndianVec, Sections};
-use gimli::{ColumnType, EndianSlice, LittleEndian};
+use super::dwarf::{Files, Line};
+use gimli::write::FileId;
 use std::collections::HashMap;
-
-type Reader<'a> = EndianSlice<'a, LittleEndian>;
 
 /// A source location as DWARF writes it: a source index, a 1-based line and
 /// a 1-based column, where column 0 is the start of the line.
 type Location = (usize, u64, u64);
 
-/// What the source map is built from.
-#[derive(Default)]
-struct DebugInfo {
+/// A source map, built from the lines of each unit.
+pub(crate) struct SourceMap {
+    /// The module offset of the code section's contents, which DWARF
+    /// addresses are relative to.
+    code_start: u64,
     sources: Vec<String>,
     source_indices: HashMap<String, usize>,
-    /// Each line table row's module offset and location, if it has one.
+    /// Each line's module offset and location, if it has one.
     rows: Vec<(u64, Option<Location>)>,
 }
 
-/// Returns the JSON source map of the module whose code `transform`
-/// describes, from its rewritten DWARF `sections`.
-pub(crate) fn build(
-    sections: &Sections<EndianVec<LittleEndian>>,
-    transform: &CodeTransform,
-) -> String {
-    let dwarf = gimli::Dwarf::load(|id| -> gimli::Result<Reader> {
-        let data = sections.get(id).map_or(&[][..], |w| w.slice());
-        Ok(EndianSlice::new(data, LittleEndian))
-    })
-    .expect("cannot load the rewritten DWARF");
-    let code_end = transform.function_ranges.iter().map(|(_, r)| r.end).max();
-    let code_len = code_end.map_or(0, |end| end - transform.code_section_start) as u64;
-    let mut info = DebugInfo::default();
-    info.read(&dwarf, transform.code_section_start as u64, code_len)
-        .expect("cannot read the rewritten DWARF");
-
-    // Readers take the last mapping at an offset, so where one sequence ends
-    // and the next starts, the next one's location goes last.
-    info.rows
-        .sort_by_key(|&(offset, location)| (offset, location.is_some()));
-
-    let mut json = String::from("{\"version\":3,\"sources\":[");
-    push_list(&mut json, info.sources.iter());
-    json.push_str("],\"names\":[],\"mappings\":\"");
-    json.push_str(&mappings(&info.rows));
-    json.push_str("\"}");
-    json
-}
-
-impl DebugInfo {
-    /// Reads the line tables.
-    fn read(
-        &mut self,
-        dwarf: &gimli::Dwarf<Reader>,
-        code_start: u64,
-        code_len: u64,
-    ) -> gimli::Result<()> {
-        let mut units = dwarf.units();
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
-            self.read_line_table(dwarf, &unit, code_start, code_len)?;
+impl SourceMap {
+    pub(crate) fn new(code_start: u64) -> Self {
+        SourceMap {
+            code_start,
+            sources: Vec::new(),
+            source_indices: HashMap::new(),
+            rows: Vec::new(),
         }
-        Ok(())
     }
 
-    fn read_line_table(
-        &mut self,
-        dwarf: &gimli::Dwarf<Reader>,
-        unit: &gimli::Unit<Reader>,
-        code_start: u64,
-        code_len: u64,
-    ) -> gimli::Result<()> {
-        let Some(program) = unit.line_program.clone() else {
-            return Ok(());
-        };
-        let mut files = HashMap::new();
-        let mut rows = program.rows();
-        let mut sequence = Vec::new();
-        // Whether the current sequence is in code the module still has.
-        let mut sequence_live = None;
-        while let Some((_, row)) = rows.next_row()? {
-            let address = row.address();
-            let live = *sequence_live.get_or_insert(0 < address && address < code_len);
-            let offset = code_start + address;
-            if row.end_sequence() {
-                if live {
-                    sequence.push((offset, None));
-                    self.rows.append(&mut sequence);
-                }
-                sequence.clear();
-                sequence_live = None;
-                continue;
-            }
-            if !live {
-                continue;
-            }
+    /// Adds the lines of one unit, whose `files` they name.
+    pub(crate) fn add_unit(&mut self, files: &Files, lines: Vec<Line>) {
+        // The source index of each of the unit's files.
+        let mut sources = HashMap::new();
+        self.rows.reserve(lines.len());
+        for (address, line) in lines {
             // Line 0 is code that no single source line produced, so it gets
             // no location rather than the location of the row before it.
-            let location = match row.line() {
-                Some(line) => {
-                    let source = self.file(dwarf, unit, &mut files, row.file_index())?;
-                    let column = match row.column() {
-                        ColumnType::LeftEdge => 0,
-                        ColumnType::Column(column) => column.get(),
-                    };
-                    source.map(|source| (source, line.get(), column))
-                }
-                None => None,
-            };
-            sequence.push((offset, location));
+            let location = line
+                .filter(|&(_, line, _)| line != 0)
+                .map(|(file, line, column)| {
+                    let source = *sources
+                        .entry(file)
+                        .or_insert_with(|| self.source(files, file));
+                    (source, line, column)
+                });
+            self.rows.push((self.code_start + address, location));
         }
-        Ok(())
     }
 
-    /// The source index of a unit's file, which `files` caches.
-    fn file(
-        &mut self,
-        dwarf: &gimli::Dwarf<Reader>,
-        unit: &gimli::Unit<Reader>,
-        files: &mut HashMap<u64, usize>,
-        index: u64,
-    ) -> gimli::Result<Option<usize>> {
-        if let Some(&source) = files.get(&index) {
-            return Ok(Some(source));
-        }
-        let Some(program) = &unit.line_program else {
-            return Ok(None);
-        };
-        let header = program.header();
-        let Some(file) = header.file(index) else {
-            return Ok(None);
-        };
+    /// The source index of a unit's file.
+    fn source(&mut self, files: &Files, file: FileId) -> usize {
         // The file's name, under its directory and then the unit's
-        // compilation directory, unless one of them is absolute. Directory 0
-        // is the compilation directory itself, so it isn't joined again.
-        let mut path = match unit.comp_dir {
-            Some(dir) => dir.to_string_lossy().into_owned(),
-            None => String::new(),
-        };
-        if let Some(dir) = file
-            .directory(header)
-            .filter(|_| file.directory_index() != 0)
-        {
-            push_path(&mut path, &dwarf.attr_string(unit, dir)?.to_string_lossy());
+        // compilation directory, unless one of them is absolute.
+        let (comp_dir, dir, name) = files.path(file);
+        let mut path = String::from_utf8_lossy(comp_dir).into_owned();
+        if let Some(dir) = dir {
+            push_path(&mut path, &String::from_utf8_lossy(dir));
         }
-        push_path(
-            &mut path,
-            &dwarf.attr_string(unit, file.path_name())?.to_string_lossy(),
-        );
+        push_path(&mut path, &String::from_utf8_lossy(name));
         let path = normalize(&path);
         let next = self.sources.len();
-        let source = *self.source_indices.entry(path).or_insert_with_key(|path| {
+        *self.source_indices.entry(path).or_insert_with_key(|path| {
             self.sources.push(path.clone());
             next
-        });
-        files.insert(index, source);
-        Ok(Some(source))
+        })
+    }
+
+    /// Returns the JSON source map.
+    pub(crate) fn finish(mut self) -> String {
+        // Readers take the last mapping at an offset, so where some lines end
+        // and others start, the location goes last.
+        self.rows
+            .sort_by_key(|&(offset, location)| (offset, location.is_some()));
+
+        let mut json = String::from("{\"version\":3,\"sources\":[");
+        push_list(&mut json, self.sources.iter());
+        json.push_str("],\"names\":[],\"mappings\":\"");
+        json.push_str(&mappings(&self.rows));
+        json.push_str("\"}");
+        json
     }
 }
 

@@ -707,7 +707,7 @@ impl FunctionInfo {
 
     /// How many times the emitted module writes this function's index: in
     /// `call`, `return_call` and `ref.func` instructions, exports, element
-    /// segments, global initializers and the start section. The name section
+    /// segments, global and table initializers and the start section. The name section
     /// and DWARF aren't counted.
     pub fn uses(&self) -> u64 {
         self.uses
@@ -755,7 +755,7 @@ pub(crate) fn local_function_order(
 /// How many times the module writes each function's index, indexed by
 /// [`FunctionId::index`]: `code_uses` already counts code (`call`,
 /// `return_call`, `ref.func`), and this adds exports, element segments, global
-/// initializers and the start section.
+/// and table initializers and the start section.
 fn function_uses(module: &Module, code_uses: Vec<AtomicU64>) -> Vec<u64> {
     fn add_const_expr(uses: &mut [u64], e: &ConstExpr) {
         match e {
@@ -785,6 +785,11 @@ fn function_uses(module: &Module, code_uses: Vec<AtomicU64>) -> Vec<u64> {
     for global in module.globals.iter() {
         if let GlobalKind::Local(e) = &global.kind {
             add_const_expr(&mut uses, e);
+        }
+    }
+    for table in module.tables.iter() {
+        if let Some(init) = &table.init {
+            add_const_expr(&mut uses, init);
         }
     }
     for elem in module.elements.iter() {

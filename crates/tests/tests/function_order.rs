@@ -135,12 +135,14 @@ fn uses_count_every_index_outside_code() {
     let wat = r#"
     (module
       (table 2 funcref)
+      (table 1 funcref (ref.func $in_table))
       (global funcref (ref.func $in_global))
       (elem (i32.const 0) funcref (ref.func $in_elem_expr) (ref.func $in_elem_expr))
       (elem declare func $by_ref_func)
       (start $start)
       (func $start)
       (func $in_global)
+      (func $in_table)
       (func $in_elem_expr)
       (func $by_ref_func)
       (func $user
@@ -168,6 +170,8 @@ fn uses_count_every_index_outside_code() {
         // The global initializer, and the `declare` segment walrus adds for
         // functions referenced from one.
         ("in_global", 2),
+        // A table initializer declares the function itself.
+        ("in_table", 1),
         ("start", 1),
         ("user", 0),
     ]

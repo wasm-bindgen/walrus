@@ -1,20 +1,18 @@
 //! Builds a source map of the emitted module: the `mappings` from the lines
 //! of its DWARF line tables at the addresses they were emitted to, and the
-//! [Scopes] of functions and inlined calls from the debugging information
-//! entries of its rewritten DWARF.
+//! [Scopes] of functions and inlined calls from its debugging information
+//! entries, with the emitted code of their address ranges.
 //!
 //! In a source map of a Wasm module, the whole module is generated line 0 and
 //! a generated column is a byte offset in the module.
 //!
 //! [Scopes]: https://tc39.es/ecma426/branch/proposal-scopes/
 
-use super::dwarf::{Files, Line};
+use super::dwarf::{CodeMap, Files, Line, R};
 use super::scopes::{self, FunctionNames};
-use gimli::write::{EndianVec, FileId, Sections};
-use gimli::{AttributeValue, EndianSlice, LittleEndian};
+use gimli::write::FileId;
+use gimli::{read, AttributeValue, Reader};
 use std::collections::HashMap;
-
-type Reader<'a> = EndianSlice<'a, LittleEndian>;
 
 /// A source location as DWARF writes it: a source index, a 1-based line and
 /// a 1-based column, where column 0 is the start of the line.
@@ -80,13 +78,16 @@ impl<'a> SourceMap<'a> {
         }
     }
 
-    /// Whether the map has Scopes, which need the entries.
-    pub(crate) fn has_scopes(&self) -> bool {
-        self.naming.is_some()
-    }
-
-    /// Adds the lines of one unit, whose `files` they name.
-    pub(crate) fn add_unit(&mut self, files: &Files, lines: Vec<Line>) {
+    /// Adds the lines of one input unit, whose `files` they name, and with
+    /// Scopes the functions and inlined calls of its entries, whose code
+    /// `code` maps.
+    pub(crate) fn add_unit(
+        &mut self,
+        unit: read::UnitRef<R>,
+        files: &Files,
+        lines: Vec<Line>,
+        code: &CodeMap,
+    ) {
         // The source index of each of the unit's files.
         let mut sources = HashMap::new();
         self.rows.reserve(lines.len());
@@ -103,6 +104,21 @@ impl<'a> SourceMap<'a> {
                 });
             self.rows.push((self.code_start + address, location));
         }
+        let Some(naming) = self.naming else {
+            return;
+        };
+        let mut walk = Walk {
+            unit,
+            files,
+            sources: &mut sources,
+            code,
+            naming,
+            namespaces: Vec::new(),
+            code_start: self.code_start,
+        };
+        unit.entries_tree(None)
+            .and_then(|mut tree| walk.entry(self, tree.root()?, None))
+            .expect("cannot read the DWARF entries");
     }
 
     /// The source index of a unit's file.
@@ -115,101 +131,12 @@ impl<'a> SourceMap<'a> {
             push_path(&mut path, &String::from_utf8_lossy(dir));
         }
         push_path(&mut path, &String::from_utf8_lossy(name));
-        self.intern(path)
-    }
-
-    /// The source index of a path.
-    fn intern(&mut self, path: String) -> usize {
         let path = normalize(&path);
         let next = self.sources.len();
         *self.source_indices.entry(path).or_insert_with_key(|path| {
             self.sources.push(path.clone());
             next
         })
-    }
-
-    /// Adds the functions and inlined calls of the debugging information
-    /// entries in the rewritten DWARF `sections`, whose code ends at
-    /// `code_len`.
-    pub(crate) fn add_entries(
-        &mut self,
-        sections: &Sections<EndianVec<LittleEndian>>,
-        code_len: u64,
-    ) {
-        let Some(naming) = self.naming else {
-            return;
-        };
-        let dwarf = gimli::Dwarf::load(|id| -> gimli::Result<Reader> {
-            let data = sections.get(id).map_or(&[][..], |w| w.slice());
-            Ok(EndianSlice::new(data, LittleEndian))
-        })
-        .expect("cannot load the rewritten DWARF");
-        self.read_entries(&dwarf, naming, code_len)
-            .expect("cannot read the rewritten DWARF");
-    }
-
-    fn read_entries(
-        &mut self,
-        dwarf: &gimli::Dwarf<Reader>,
-        naming: &dyn FunctionNames,
-        code_len: u64,
-    ) -> gimli::Result<()> {
-        let mut units = dwarf.units();
-        while let Some(header) = units.next()? {
-            let unit = dwarf.unit(header)?;
-            let mut tree = unit.entries_tree(None)?;
-            let mut walk = Walk {
-                dwarf,
-                unit: &unit,
-                files: &mut HashMap::new(),
-                naming,
-                namespaces: Vec::new(),
-                code_start: self.code_start,
-                code_len,
-            };
-            walk.entry(self, tree.root()?, None)?;
-        }
-        Ok(())
-    }
-
-    /// The source index of a unit's file, which `files` caches.
-    fn file(
-        &mut self,
-        dwarf: &gimli::Dwarf<Reader>,
-        unit: &gimli::Unit<Reader>,
-        files: &mut HashMap<u64, usize>,
-        index: u64,
-    ) -> gimli::Result<Option<usize>> {
-        if let Some(&source) = files.get(&index) {
-            return Ok(Some(source));
-        }
-        let Some(program) = &unit.line_program else {
-            return Ok(None);
-        };
-        let header = program.header();
-        let Some(file) = header.file(index) else {
-            return Ok(None);
-        };
-        // The file's name, under its directory and then the unit's
-        // compilation directory, unless one of them is absolute. Directory 0
-        // is the compilation directory itself, so it isn't joined again.
-        let mut path = match unit.comp_dir {
-            Some(dir) => dir.to_string_lossy().into_owned(),
-            None => String::new(),
-        };
-        if let Some(dir) = file
-            .directory(header)
-            .filter(|_| file.directory_index() != 0)
-        {
-            push_path(&mut path, &dwarf.attr_string(unit, dir)?.to_string_lossy());
-        }
-        push_path(
-            &mut path,
-            &dwarf.attr_string(unit, file.path_name())?.to_string_lossy(),
-        );
-        let source = self.intern(path);
-        files.insert(index, source);
-        Ok(Some(source))
     }
 
     /// Returns the JSON source map.
@@ -296,22 +223,23 @@ fn normalize(path: &str) -> String {
     out.join("/")
 }
 
-/// Walks the debugging information entries of one unit.
-struct Walk<'a, 'b> {
-    dwarf: &'a gimli::Dwarf<Reader<'b>>,
-    unit: &'a gimli::Unit<Reader<'b>>,
-    files: &'a mut HashMap<u64, usize>,
+/// Walks the debugging information entries of one input unit.
+struct Walk<'a> {
+    unit: read::UnitRef<'a, R>,
+    files: &'a Files<'a>,
+    /// The source index of each of the unit's files.
+    sources: &'a mut HashMap<FileId, usize>,
+    code: &'a CodeMap<'a>,
     naming: &'a dyn FunctionNames,
     namespaces: Vec<String>,
     code_start: u64,
-    code_len: u64,
 }
 
-impl<'b> Walk<'_, 'b> {
+impl Walk<'_> {
     fn entry(
         &mut self,
         info: &mut SourceMap,
-        node: gimli::EntriesTreeNode<Reader<'b>>,
+        node: gimli::EntriesTreeNode<R>,
         parent: Option<usize>,
     ) -> gimli::Result<()> {
         let entry = node.entry();
@@ -359,11 +287,11 @@ impl<'b> Walk<'_, 'b> {
                     }
                 }
                 if let Some(file) = decl_file {
-                    function.decl_file = self.file(info, file)?;
+                    function.decl_file = self.file(info, file);
                 }
                 let call = match call_file {
                     Some(file) if !subprogram => self
-                        .file(info, file)?
+                        .file(info, file)
                         .map(|file| (file, call_line, call_column)),
                     _ => None,
                 };
@@ -377,20 +305,15 @@ impl<'b> Walk<'_, 'b> {
                     info.functions.insert(offset, function);
                 }
 
+                // The emitted code of the entry's input ranges, as the
+                // rewritten DWARF has it.
                 let mut ranges = Vec::new();
-                // walrus leaves out the pieces of a range list in removed code.
                 let mut any_range = entry.attr(gimli::DW_AT_ranges).is_some();
-                let mut iter = self.dwarf.die_ranges(self.unit, entry)?;
+                let mut iter = self.unit.die_ranges(entry)?;
                 while let Some(range) = iter.next()? {
                     any_range = true;
-                    if 0 < range.begin && range.begin < range.end && range.end <= self.code_len {
-                        ranges.push((self.code_start + range.begin, self.code_start + range.end));
-                    } else if range.begin != 0 && range.begin < 0xffff_fff0 {
-                        log::debug!(
-                            "source map: dropping range [{:#x}, {:#x}) outside the code of entry {offset:#x}",
-                            range.begin,
-                            range.end
-                        );
+                    for (_, begin, end) in self.code.ranges(range.begin, range.end) {
+                        ranges.push((self.code_start + begin, self.code_start + end));
                     }
                 }
                 if any_range && ranges.is_empty() {
@@ -437,16 +360,26 @@ impl<'b> Walk<'_, 'b> {
         Ok(())
     }
 
-    fn string(&self, value: AttributeValue<Reader>) -> gimli::Result<String> {
+    fn string(&self, value: AttributeValue<R>) -> gimli::Result<String> {
         Ok(self
-            .dwarf
-            .attr_string(self.unit, value)?
-            .to_string_lossy()
+            .unit
+            .attr_string(value)?
+            .to_string_lossy()?
             .into_owned())
     }
 
-    fn file(&mut self, info: &mut SourceMap, index: u64) -> gimli::Result<Option<usize>> {
-        info.file(self.dwarf, self.unit, self.files, index)
+    /// The source index of an input file index.
+    fn file(&mut self, info: &mut SourceMap, index: u64) -> Option<usize> {
+        let file = self.files.input_file(index)?;
+        let source = match self.sources.get(&file) {
+            Some(&source) => source,
+            None => {
+                let source = info.source(self.files, file);
+                self.sources.insert(file, source);
+                source
+            }
+        };
+        Some(source)
     }
 }
 

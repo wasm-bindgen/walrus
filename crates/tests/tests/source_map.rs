@@ -361,6 +361,9 @@ fn map_follows_the_dwarf() {
     // `dead` has a scope until gc removes it.
     let (_, all) = emit(parse(|c| c.generate_source_map(true)), false);
     assert!(all["names"].to_string().contains("\"krate::dead\""));
+    // The same map, from the DWARF that is written.
+    let module = parse(|c| c.generate_source_map(true).generate_dwarf(true));
+    assert_eq!(emit(module, true).1, map);
 }
 
 #[test]

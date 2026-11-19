@@ -1,16 +1,17 @@
-//! Builds a source map of the emitted module from its rewritten DWARF: the
-//! `mappings` from the line tables, and the [Scopes] of functions and inlined
-//! calls from the debugging information entries.
+//! Builds a source map of the emitted module: the `mappings` from the lines
+//! of its DWARF line tables at the addresses they were emitted to, and the
+//! [Scopes] of functions and inlined calls from the debugging information
+//! entries of its rewritten DWARF.
 //!
 //! In a source map of a Wasm module, the whole module is generated line 0 and
 //! a generated column is a byte offset in the module.
 //!
 //! [Scopes]: https://tc39.es/ecma426/branch/proposal-scopes/
 
+use super::dwarf::{Files, Line};
 use super::scopes::{self, FunctionNames};
-use crate::CodeTransform;
-use gimli::write::{EndianVec, Sections};
-use gimli::{AttributeValue, ColumnType, EndianSlice, LittleEndian};
+use gimli::write::{EndianVec, FileId, Sections};
+use gimli::{AttributeValue, EndianSlice, LittleEndian};
 use std::collections::HashMap;
 
 type Reader<'a> = EndianSlice<'a, LittleEndian>;
@@ -48,169 +49,125 @@ pub(crate) struct CodeEntry {
     pub depth: usize,
 }
 
-/// What the source map is built from.
-#[derive(Default)]
-pub(crate) struct DebugInfo {
+/// A source map, built from the lines of each unit and, with Scopes, the
+/// debugging information entries.
+pub(crate) struct SourceMap<'a> {
+    /// The module offset of the code section's contents, which DWARF
+    /// addresses are relative to.
+    code_start: u64,
+    /// How to name functions, if the map has Scopes.
+    naming: Option<&'a dyn FunctionNames>,
     pub sources: Vec<String>,
     source_indices: HashMap<String, usize>,
-    /// Each line table row's module offset and location, if it has one.
+    /// Each line's module offset and location, if it has one.
     pub rows: Vec<(u64, Option<Location>)>,
     pub functions: HashMap<usize, FunctionEntry>,
     pub code: Vec<CodeEntry>,
 }
 
-/// Returns the JSON source map of the module whose code `transform`
-/// describes, from its rewritten DWARF `sections`, with functions named by
-/// `naming`, and with `scopes` the Scopes of functions and inlined calls.
-pub(crate) fn build(
-    sections: &Sections<EndianVec<LittleEndian>>,
-    transform: &CodeTransform,
-    naming: &dyn FunctionNames,
-    scopes: bool,
-) -> String {
-    let dwarf = gimli::Dwarf::load(|id| -> gimli::Result<Reader> {
-        let data = sections.get(id).map_or(&[][..], |w| w.slice());
-        Ok(EndianSlice::new(data, LittleEndian))
-    })
-    .expect("cannot load the rewritten DWARF");
-    let code_end = transform.function_ranges.iter().map(|(_, r)| r.end).max();
-    let code_len = code_end.map_or(0, |end| end - transform.code_section_start) as u64;
-    let mut info = DebugInfo::default();
-    // Only scopes need the debugging information entries.
-    let entries = scopes.then_some(naming);
-    info.read(
-        &dwarf,
-        entries,
-        transform.code_section_start as u64,
-        code_len,
-    )
-    .expect("cannot read the rewritten DWARF");
-
-    // Readers take the last mapping at an offset, so where one sequence ends
-    // and the next starts, the next one's location goes last.
-    info.rows
-        .sort_by_key(|&(offset, location)| (offset, location.is_some()));
-    let scopes = scopes.then(|| scopes::build(&info, naming));
-
-    // Keep only the sources that a mapping, a scope or a call site names,
-    // rather than every file the line tables and entries list.
-    let mut used = vec![false; info.sources.len()];
-    for (_, location) in &info.rows {
-        if let Some((source, ..)) = location {
-            used[*source] = true;
-        }
-    }
-    if let Some(scopes) = &scopes {
-        scopes.mark_sources(&mut used);
-    }
-    let mut new_index = vec![usize::MAX; used.len()];
-    let mut sources = Vec::new();
-    for (i, path) in info.sources.iter().enumerate() {
-        if used[i] {
-            new_index[i] = sources.len();
-            sources.push(path);
+impl<'a> SourceMap<'a> {
+    /// With `naming`, the map has the Scopes of functions and inlined calls,
+    /// named by it.
+    pub(crate) fn new(code_start: u64, naming: Option<&'a dyn FunctionNames>) -> Self {
+        SourceMap {
+            code_start,
+            naming,
+            sources: Vec::new(),
+            source_indices: HashMap::new(),
+            rows: Vec::new(),
+            functions: HashMap::new(),
+            code: Vec::new(),
         }
     }
 
-    let mut names = Names::default();
-    let encoded = scopes.map(|scopes| scopes.encode(&new_index, sources.len(), &mut names));
-
-    let mut json = String::from("{\"version\":3,\"sources\":[");
-    push_list(&mut json, sources.into_iter().map(Some));
-    json.push_str("],\"names\":[");
-    push_list(&mut json, names.list.iter().map(Some));
-    json.push_str("],\"mappings\":\"");
-    json.push_str(&mappings(&info.rows, &new_index));
-    json.push('"');
-    if let Some((encoded_scopes, encoded_ranges)) = encoded {
-        json.push_str(",\"scopes\":[");
-        push_list(&mut json, encoded_scopes.iter().map(Option::as_ref));
-        json.push_str("],\"ranges\":[");
-        push_list(&mut json, encoded_ranges.iter().map(Some));
-        json.push(']');
+    /// Whether the map has Scopes, which need the entries.
+    pub(crate) fn has_scopes(&self) -> bool {
+        self.naming.is_some()
     }
-    json.push('}');
-    json
-}
 
-impl DebugInfo {
-    /// Reads the line tables and, with `entries`, the functions and inlined
-    /// calls of the debugging information entries, named by it.
-    fn read(
+    /// Adds the lines of one unit, whose `files` they name.
+    pub(crate) fn add_unit(&mut self, files: &Files, lines: Vec<Line>) {
+        // The source index of each of the unit's files.
+        let mut sources = HashMap::new();
+        self.rows.reserve(lines.len());
+        for (address, line) in lines {
+            // Line 0 is code that no single source line produced, so it gets
+            // no location rather than the location of the row before it.
+            let location = line
+                .filter(|&(_, line, _)| line != 0)
+                .map(|(file, line, column)| {
+                    let source = *sources
+                        .entry(file)
+                        .or_insert_with(|| self.source(files, file));
+                    (source, line, column)
+                });
+            self.rows.push((self.code_start + address, location));
+        }
+    }
+
+    /// The source index of a unit's file.
+    fn source(&mut self, files: &Files, file: FileId) -> usize {
+        // The file's name, under its directory and then the unit's
+        // compilation directory, unless one of them is absolute.
+        let (comp_dir, dir, name) = files.path(file);
+        let mut path = String::from_utf8_lossy(comp_dir).into_owned();
+        if let Some(dir) = dir {
+            push_path(&mut path, &String::from_utf8_lossy(dir));
+        }
+        push_path(&mut path, &String::from_utf8_lossy(name));
+        self.intern(path)
+    }
+
+    /// The source index of a path.
+    fn intern(&mut self, path: String) -> usize {
+        let path = normalize(&path);
+        let next = self.sources.len();
+        *self.source_indices.entry(path).or_insert_with_key(|path| {
+            self.sources.push(path.clone());
+            next
+        })
+    }
+
+    /// Adds the functions and inlined calls of the debugging information
+    /// entries in the rewritten DWARF `sections`, whose code ends at
+    /// `code_len`.
+    pub(crate) fn add_entries(
+        &mut self,
+        sections: &Sections<EndianVec<LittleEndian>>,
+        code_len: u64,
+    ) {
+        let Some(naming) = self.naming else {
+            return;
+        };
+        let dwarf = gimli::Dwarf::load(|id| -> gimli::Result<Reader> {
+            let data = sections.get(id).map_or(&[][..], |w| w.slice());
+            Ok(EndianSlice::new(data, LittleEndian))
+        })
+        .expect("cannot load the rewritten DWARF");
+        self.read_entries(&dwarf, naming, code_len)
+            .expect("cannot read the rewritten DWARF");
+    }
+
+    fn read_entries(
         &mut self,
         dwarf: &gimli::Dwarf<Reader>,
-        entries: Option<&dyn FunctionNames>,
-        code_start: u64,
+        naming: &dyn FunctionNames,
         code_len: u64,
     ) -> gimli::Result<()> {
         let mut units = dwarf.units();
         while let Some(header) = units.next()? {
             let unit = dwarf.unit(header)?;
-            let mut files = HashMap::new();
-            self.read_line_table(dwarf, &unit, &mut files, code_start, code_len)?;
-            let Some(naming) = entries else {
-                continue;
-            };
             let mut tree = unit.entries_tree(None)?;
             let mut walk = Walk {
                 dwarf,
                 unit: &unit,
-                files: &mut files,
+                files: &mut HashMap::new(),
                 naming,
                 namespaces: Vec::new(),
-                code_start,
+                code_start: self.code_start,
                 code_len,
             };
             walk.entry(self, tree.root()?, None)?;
-        }
-        Ok(())
-    }
-
-    fn read_line_table(
-        &mut self,
-        dwarf: &gimli::Dwarf<Reader>,
-        unit: &gimli::Unit<Reader>,
-        files: &mut HashMap<u64, usize>,
-        code_start: u64,
-        code_len: u64,
-    ) -> gimli::Result<()> {
-        let Some(program) = unit.line_program.clone() else {
-            return Ok(());
-        };
-        let mut rows = program.rows();
-        let mut sequence = Vec::new();
-        // Whether the current sequence is in code the module still has.
-        let mut sequence_live = None;
-        while let Some((_, row)) = rows.next_row()? {
-            let address = row.address();
-            let live = *sequence_live.get_or_insert(0 < address && address < code_len);
-            let offset = code_start + address;
-            if row.end_sequence() {
-                if live {
-                    sequence.push((offset, None));
-                    self.rows.append(&mut sequence);
-                }
-                sequence.clear();
-                sequence_live = None;
-                continue;
-            }
-            if !live {
-                continue;
-            }
-            // Line 0 is code that no single source line produced, so it gets
-            // no location rather than the location of the row before it.
-            let location = match row.line() {
-                Some(line) => {
-                    let source = self.file(dwarf, unit, files, row.file_index())?;
-                    let column = match row.column() {
-                        ColumnType::LeftEdge => 0,
-                        ColumnType::Column(column) => column.get(),
-                    };
-                    source.map(|source| (source, line.get(), column))
-                }
-                None => None,
-            };
-            sequence.push((offset, location));
         }
         Ok(())
     }
@@ -250,14 +207,58 @@ impl DebugInfo {
             &mut path,
             &dwarf.attr_string(unit, file.path_name())?.to_string_lossy(),
         );
-        let path = normalize(&path);
-        let next = self.sources.len();
-        let source = *self.source_indices.entry(path).or_insert_with_key(|path| {
-            self.sources.push(path.clone());
-            next
-        });
+        let source = self.intern(path);
         files.insert(index, source);
         Ok(Some(source))
+    }
+
+    /// Returns the JSON source map.
+    pub(crate) fn finish(mut self) -> String {
+        // Readers take the last mapping at an offset, so where some lines end
+        // and others start, the location goes last.
+        self.rows
+            .sort_by_key(|&(offset, location)| (offset, location.is_some()));
+        let scopes = self.naming.map(|naming| scopes::build(&self, naming));
+
+        // Keep only the sources that a mapping, a scope or a call site names,
+        // rather than every file the line tables and entries list.
+        let mut used = vec![false; self.sources.len()];
+        for (_, location) in &self.rows {
+            if let Some((source, ..)) = location {
+                used[*source] = true;
+            }
+        }
+        if let Some(scopes) = &scopes {
+            scopes.mark_sources(&mut used);
+        }
+        let mut new_index = vec![usize::MAX; used.len()];
+        let mut sources = Vec::new();
+        for (i, path) in self.sources.iter().enumerate() {
+            if used[i] {
+                new_index[i] = sources.len();
+                sources.push(path);
+            }
+        }
+
+        let mut names = Names::default();
+        let encoded = scopes.map(|scopes| scopes.encode(&new_index, sources.len(), &mut names));
+
+        let mut json = String::from("{\"version\":3,\"sources\":[");
+        push_list(&mut json, sources.into_iter().map(Some));
+        json.push_str("],\"names\":[");
+        push_list(&mut json, names.list.iter().map(Some));
+        json.push_str("],\"mappings\":\"");
+        json.push_str(&mappings(&self.rows, &new_index));
+        json.push('"');
+        if let Some((encoded_scopes, encoded_ranges)) = encoded {
+            json.push_str(",\"scopes\":[");
+            push_list(&mut json, encoded_scopes.iter().map(Option::as_ref));
+            json.push_str("],\"ranges\":[");
+            push_list(&mut json, encoded_ranges.iter().map(Some));
+            json.push(']');
+        }
+        json.push('}');
+        json
     }
 }
 
@@ -309,7 +310,7 @@ struct Walk<'a, 'b> {
 impl<'b> Walk<'_, 'b> {
     fn entry(
         &mut self,
-        info: &mut DebugInfo,
+        info: &mut SourceMap,
         node: gimli::EntriesTreeNode<Reader<'b>>,
         parent: Option<usize>,
     ) -> gimli::Result<()> {
@@ -444,7 +445,7 @@ impl<'b> Walk<'_, 'b> {
             .into_owned())
     }
 
-    fn file(&mut self, info: &mut DebugInfo, index: u64) -> gimli::Result<Option<usize>> {
+    fn file(&mut self, info: &mut SourceMap, index: u64) -> gimli::Result<Option<usize>> {
         info.file(self.dwarf, self.unit, self.files, index)
     }
 }

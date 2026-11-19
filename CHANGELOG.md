@@ -8,6 +8,13 @@ Released YYYY-MM-DD.
 
 ### Added
 
+* `ModuleConfig::function_order` takes a closure that decides the order
+  defined functions are emitted, and so numbered, in. It is given every
+  defined function as a `FunctionInfo`, with its size and how many times its
+  index is written, in the default order (largest first) to reorder. For
+  example, sorting by `Reverse(f.uses())` gives the shortest LEB128 indices to
+  the most-referenced functions, which makes most modules smaller. The default
+  order isn't guaranteed and may change; give a closure to depend on one.
 * `ModuleConfig::generate_source_map` and `Module::emit_wasm_with_source_map`
   build a source map of the emitted module from its DWARF, with the
   [Scopes](https://tc39.es/ecma426/branch/proposal-scopes/) of its functions
@@ -30,6 +37,9 @@ Released YYYY-MM-DD.
   0.33, which also requires 1.88.
 * `ModuleDebugData` has a private field, so it can no longer be built with a
   struct expression; use `Default`.
+* With `generate_dwarf`, `DW_AT_macros`, `DW_AT_macro_info` and
+  `DW_AT_GNU_macros` are removed. walrus never emitted the macro sections
+  they point into, because gimli can't write them.
 
 ### Deprecated
 
@@ -66,6 +76,23 @@ Released YYYY-MM-DD.
   locals by type and drops unused ones, so 10-24% of the local indices in
   optimized Rust builds named the wrong local. Locations of removed locals
   and globals are dropped.
+* With `generate_dwarf`, `DW_OP_addr` keeps its address. In Wasm it's a
+  linear memory address of static data, but walrus treated it as a code
+  address, so the locations of static and global variables were replaced,
+  usually with the removed-code tombstone.
+* DWARF now follows code that passes insert, copy or remove, and locals they
+  replace. Each line row, range, location list entry and code address is
+  derived from where its input instructions were emitted, so code that is
+  now in several places gets a `DW_AT_ranges` list, and a local a pass
+  replaced is found through the instructions that used it. A variable whose
+  code was copied into another function, which numbers its locals
+  differently, gets a location list with the right local in each, and code
+  copied from another compile unit keeps its line rows. Previously
+  addresses were mapped through a table that kept one place per input
+  instruction.
+* Line rows stay on the instructions they describe. In a Rust -O0 build,
+  133 instructions whose row was line 0 were given other lines. `delegate`
+  also keeps its row now.
 
 ### Security
 

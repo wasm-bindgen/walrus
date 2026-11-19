@@ -15,7 +15,7 @@
 //!
 //! [Scopes]: https://tc39.es/ecma426/branch/proposal-scopes/
 
-use super::source_map::{vlq, vlq_unsigned, DebugInfo, Names};
+use super::source_map::{vlq, vlq_unsigned, Names, SourceMap};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
 
@@ -88,7 +88,7 @@ pub(crate) struct Scopes {
 /// it calls inlined functions, by source.
 type Positions = HashMap<usize, BTreeMap<usize, Vec<Pos>>>;
 
-pub(crate) fn build(info: &DebugInfo, naming: &dyn FunctionNames) -> Scopes {
+pub(crate) fn build(info: &SourceMap, naming: &dyn FunctionNames) -> Scopes {
     // An entry's function is the end of its chain of abstract origins.
     let canonical = |mut offset: usize| {
         for _ in 0..16 {
@@ -143,7 +143,7 @@ pub(crate) fn build(info: &DebugInfo, naming: &dyn FunctionNames) -> Scopes {
 
 /// Each function's positions, and the positions of the calls inlined into
 /// it, from the line table rows of the innermost entry that covers them.
-fn positions(info: &DebugInfo, keys: &[usize]) -> (Positions, HashMap<usize, Vec<(usize, Pos)>>) {
+fn positions(info: &SourceMap, keys: &[usize]) -> (Positions, HashMap<usize, Vec<(usize, Pos)>>) {
     let mut positions = Positions::new();
     let mut calls: HashMap<usize, Vec<(usize, Pos)>> = HashMap::new();
     let mut intervals: Vec<(u64, usize, u64, usize)> = Vec::new();
@@ -182,7 +182,7 @@ fn positions(info: &DebugInfo, keys: &[usize]) -> (Positions, HashMap<usize, Vec
 
 /// One original scope per source function.
 fn merge(
-    info: &DebugInfo,
+    info: &SourceMap,
     naming: &dyn FunctionNames,
     starts: &HashMap<usize, usize>,
     positions: &Positions,
@@ -302,7 +302,7 @@ fn tighten(scopes: &mut [Scope]) {
 /// `start`, as a concrete entry, its abstract instance and its declaration
 /// can each carry some of them.
 fn describe(
-    info: &DebugInfo,
+    info: &SourceMap,
     naming: &dyn FunctionNames,
     key: usize,
     start: usize,
@@ -435,7 +435,7 @@ fn nest(
 }
 
 struct RangeContext<'a> {
-    info: &'a DebugInfo,
+    info: &'a SourceMap<'a>,
     keys: &'a [usize],
     key_scope: &'a HashMap<usize, usize>,
     scopes: &'a [Scope],
@@ -652,7 +652,7 @@ impl Scopes {
     /// The `scopes` of each of the map's sources, and the `ranges`, with one
     /// segment per top-level range so that a reader can decode only the one
     /// around an offset.
-    /// `new_index` maps the sources of `DebugInfo` to the map's `sources`,
+    /// `new_index` maps the sources of the `SourceMap` to the map's `sources`,
     /// of which there are `sources`.
     pub(crate) fn encode(
         &self,
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn declarations_come_from_the_nearest_entry_that_has_them() {
-        let mut info = DebugInfo::default();
+        let mut info = SourceMap::new(0, None);
         // A concrete entry, its abstract instance and its declaration.
         let entry = |linkage: Option<&str>, file, line, origin| FunctionEntry {
             name: Some("f".to_owned()),

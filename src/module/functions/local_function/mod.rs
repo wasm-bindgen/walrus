@@ -11,6 +11,7 @@ use crate::{ir::*, HeapType, RefType};
 use crate::{Data, DataId, FunctionBuilder, FunctionId, MemoryId, Module, Result, TypeId, ValType};
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wasmparser::{FuncValidator, Operator, ValidatorResources};
 
 /// Return type for emit_locals: (encoded locals, local index map)
@@ -45,6 +46,10 @@ pub struct LocalFunction {
     /// Range of the function's body in the original module, after the body's
     /// size.
     pub original_range: Option<Range<usize>>,
+
+    /// With `generate_dwarf`, the local index each input `local.get`,
+    /// `local.set` and `local.tee` used, until the debug data takes them.
+    pub(crate) dwarf_local_operands: Vec<(InstrLocId, u32)>,
 }
 
 impl LocalFunction {
@@ -55,6 +60,7 @@ impl LocalFunction {
             builder,
             instruction_mapping: Vec::new(),
             original_range: None,
+            dwarf_local_operands: Vec::new(),
         }
     }
 
@@ -84,7 +90,10 @@ impl LocalFunction {
                 start: body.range().start - code_address_offset,
                 end: body.range().end - code_address_offset,
             }),
+            dwarf_local_operands: Vec::new(),
         };
+        let record_locals = module.config.generate_dwarf;
+        let mut dwarf_local_operands = Vec::new();
 
         let result: Vec<_> = module.types.get(ty).results().to_vec();
         let result = result.into_boxed_slice();
@@ -118,6 +127,14 @@ impl LocalFunction {
                 InstrLocId::new(pos as u32)
             };
             validator.op(pos, &inst)?;
+            if record_locals {
+                if let Operator::LocalGet { local_index }
+                | Operator::LocalSet { local_index }
+                | Operator::LocalTee { local_index } = inst
+                {
+                    dwarf_local_operands.push((loc, local_index));
+                }
+            }
             append_instruction(&mut ctx, inst, loc);
             let offset = pos - code_address_offset;
             debug_assert!(instruction_mapping
@@ -127,6 +144,7 @@ impl LocalFunction {
         }
         instruction_mapping.shrink_to_fit();
         ctx.func.instruction_mapping = instruction_mapping;
+        ctx.func.dwarf_local_operands = dwarf_local_operands;
         ops_reader.finish()?;
 
         debug_assert!(ctx.controls.is_empty());
@@ -183,8 +201,14 @@ impl LocalFunction {
     /// reachable from the entry block. In particular, `size` must not be
     /// computed from the arena of instruction sequences: that would count
     /// dangling sequences too.
-    pub(crate) fn emit_facts(&self) -> EmitFacts {
+    ///
+    /// With `uses`, every function index the body writes (`call`,
+    /// `return_call`, `ref.func`) also increments that function's counter,
+    /// which is indexed by [`FunctionId::index`]. Bodies may be walked in
+    /// parallel, so the counts are only meaningful once every walk is done.
+    pub(crate) fn emit_facts(&self, uses: Option<&[AtomicU64]>) -> EmitFacts {
         let mut v = FactsVisitor {
+            uses,
             facts: EmitFacts {
                 size: 0,
                 uses_data_segments: false,
@@ -195,11 +219,12 @@ impl LocalFunction {
         dfs_in_order(&mut v, self, self.entry_block());
         return v.facts;
 
-        struct FactsVisitor {
+        struct FactsVisitor<'a> {
+            uses: Option<&'a [AtomicU64]>,
             facts: EmitFacts,
         }
 
-        impl<'instr> Visitor<'instr> for FactsVisitor {
+        impl<'instr> Visitor<'instr> for FactsVisitor<'_> {
             fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
                 self.facts.size += seq.len() as u64;
             }
@@ -210,6 +235,12 @@ impl LocalFunction {
 
             fn visit_ref_func(&mut self, instr: &RefFunc) {
                 self.facts.ref_funcs.push(instr.func);
+            }
+
+            fn visit_function_id(&mut self, id: &FunctionId) {
+                if let Some(uses) = self.uses {
+                    uses[id.index()].fetch_add(1, Ordering::Relaxed);
+                }
             }
 
             fn visit_local_id(&mut self, id: &LocalId) {
@@ -1803,7 +1834,9 @@ fn append_instruction(ctx: &mut ValidationContext, inst: Operator, loc: InstrLoc
             // Delegate to an outer block - ends the try block early
             ctx.add_legacy_catch(LegacyCatch::Delegate { relative_depth })
                 .unwrap();
-            ctx.pop_control().unwrap();
+            let (_, block) = ctx.pop_control().unwrap();
+            // `delegate` ends the try body, as `end` would.
+            ctx.func.block_mut(block).end = loc;
         }
         Operator::Rethrow { relative_depth } => {
             // Rethrow a caught exception

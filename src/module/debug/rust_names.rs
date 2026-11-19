@@ -44,7 +44,7 @@ impl FunctionNames for RustNames {
         &name[start..]
     }
 
-    fn shared_name(&self, a: &str, b: &str) -> String {
+    fn shared_name(&self, a: &str, b: &str) -> Option<String> {
         common_name(a, b)
     }
 }
@@ -146,38 +146,34 @@ fn impl_segment(name: &str) -> Option<(&str, &str, &str)> {
 }
 
 /// `<A as T>::f` and `<B as T>::f` to `<_ as T>::f`, and legacy
-/// `<impl T for A>::f` and `<impl T for B>::f` to `<impl T for _>::f`;
-/// otherwise `_` and the path segments they share at the end.
+/// `<impl T for A>::f` and `<impl T for B>::f` to `<impl T for _>::f`, or
+/// `None` if the names differ in more than their self type.
 ///
 /// Each source function has one original scope, which all of its instances
-/// share, so its name must be right for every instance: the parts that
-/// differ become `_`. A function's outermost frame still gets its
-/// instance's own name from the name section.
-fn common_name(a: &str, b: &str) -> String {
+/// share, so its name must be right for every instance: the self type that
+/// differs becomes `_`. Names that differ elsewhere, such as functions that
+/// one macro generates for different traits, belong to different functions.
+fn common_name(a: &str, b: &str) -> Option<String> {
     if let (Some((pa, ia, ra)), Some((pb, ib, rb))) = (impl_segment(a), impl_segment(b)) {
-        if pa == pb && ra == rb {
-            match (ia.rsplit_once(" for "), ib.rsplit_once(" for ")) {
-                (Some((ta, _)), Some((tb, _))) if ta == tb => return format!("{pa}{ta} for _{ra}"),
-                (None, None) => return format!("{pa}_{ra}"),
-                _ => {}
-            }
+        if pa != pb || ra != rb {
+            return None;
         }
+        return match (ia.rsplit_once(" for "), ib.rsplit_once(" for ")) {
+            (Some((ta, _)), Some((tb, _))) if ta == tb => Some(format!("{pa}{ta} for _{ra}")),
+            (None, None) => Some(format!("{pa}_{ra}")),
+            _ => None,
+        };
     }
-    let shared: usize = a
-        .chars()
-        .rev()
-        .zip(b.chars().rev())
-        .take_while(|(x, y)| x == y)
-        .map(|(x, _)| x.len_utf8())
-        .sum();
-    let suffix = &a[a.len() - shared..];
-    if let Some(i) = suffix.find(" as ") {
-        return format!("<_{}", &suffix[i..]);
-    }
-    match suffix.find("::") {
-        Some(i) => format!("_{}", &suffix[i..]),
-        None => a.to_owned(),
-    }
+    let ((_, ra), (_, rb)) = (self_type(a)?, self_type(b)?);
+    (ra == rb).then(|| format!("<_{ra}"))
+}
+
+/// The self type of a name that starts with a qualified path, `<A as T>::f`,
+/// and the text after it.
+fn self_type(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix('<')?;
+    let i = rest.find(" as ")?;
+    Some(rest.split_at(i))
 }
 
 #[cfg(test)]
@@ -203,11 +199,38 @@ mod tests {
             common_name(
                 "<a::A as core::ops::FnMut>::call_mut",
                 "<b::B as core::ops::FnMut>::call_mut"
-            ),
-            "<_ as core::ops::FnMut>::call_mut"
+            )
+            .as_deref(),
+            Some("<_ as core::ops::FnMut>::call_mut")
         );
-        assert_eq!(common_name("a::x::f", "b::x::f"), "_::x::f");
-        assert_eq!(common_name("f", "g"), "f");
+    }
+
+    #[test]
+    fn functions_that_differ_in_more_than_their_self_type_dont() {
+        let cases = [
+            // Both from `const_eval_select!`.
+            (
+                "<*const _>::is_null::runtime",
+                "core::slice::index::slice_index_fail::do_panic::runtime",
+            ),
+            (
+                "<u64 as core::fmt::LowerHex>::fmt",
+                "<u64 as core::fmt::UpperHex>::fmt",
+            ),
+            (
+                "<&core::panic::panic_info::PanicMessage as core::fmt::Display>::fmt",
+                "<&dyn core::fmt::Debug as core::fmt::Debug>::fmt",
+            ),
+            ("a::x::f", "b::x::f"),
+            ("f", "g"),
+            (
+                "core::fmt::num::<impl core::fmt::LowerHex for u64>::fmt",
+                "core::fmt::num::<impl core::fmt::UpperHex for u64>::fmt",
+            ),
+        ];
+        for (a, b) in cases {
+            assert_eq!(common_name(a, b), None, "{a} and {b}");
+        }
     }
 
     #[test]
@@ -245,15 +268,16 @@ mod tests {
         );
         assert_eq!(strip_generics("a::f::<u8>"), "a::f");
         assert_eq!(
-            common_name(display, &display.replace("u32", "u64")),
-            "core::fmt::num::imp::<impl core::fmt::Display for _>::fmt"
+            common_name(display, &display.replace("u32", "u64")).as_deref(),
+            Some("core::fmt::num::imp::<impl core::fmt::Display for _>::fmt")
         );
         assert_eq!(
             common_name(
                 "core::num::<impl u32>::checked_add",
                 "core::num::<impl u64>::checked_add"
-            ),
-            "core::num::<impl _>::checked_add"
+            )
+            .as_deref(),
+            Some("core::num::<impl _>::checked_add")
         );
     }
 }

@@ -36,11 +36,13 @@ pub(crate) trait FunctionNames {
 
     /// The part of `name` that copies whose names still differ share, such
     /// as copies with different self types. Declared scopes that start at
-    /// the same position with the same key are one scope.
+    /// the same position with the same key are one scope if
+    /// [`shared_name`](Self::shared_name) gives them a name.
     fn declaration_key<'a>(&self, name: &'a str) -> &'a str;
 
-    /// The name of the scope that copies named `a` and `b` share.
-    fn shared_name(&self, a: &str, b: &str) -> String;
+    /// The name of the scope that copies named `a` and `b` share, or `None`
+    /// if they are different functions.
+    fn shared_name(&self, a: &str, b: &str) -> Option<String>;
 }
 
 /// A 0-based source line and column.
@@ -223,32 +225,39 @@ fn merge(
     // Some copies keep different names, such as Rust's copies whose self
     // types differ (`<A as FnMut>::call_mut` and `<B as FnMut>::call_mut`);
     // with a declaration line they are one source function, so merge
-    // declared scopes that start at the same place and have the same
-    // declaration key.
+    // declared scopes that start at the same place, have the same
+    // declaration key and have a shared name. Others, such as different
+    // functions that one macro generates, stay apart for `nest`.
     let declaration_key = |s: &Scope| {
         let name = s.name.as_deref().unwrap_or_default();
         naming.declaration_key(name).to_owned()
     };
-    let mut by_decl: HashMap<(usize, Pos, String), usize> = HashMap::new();
+    let mut by_decl: HashMap<(usize, Pos, String), Vec<usize>> = HashMap::new();
     let mut out: Vec<Scope> = Vec::with_capacity(scopes.len());
     for scope in scopes {
+        if !scope.declared {
+            out.push(scope);
+            continue;
+        }
         let decl = (scope.source, scope.start, declaration_key(&scope));
-        match by_decl.get(&decl) {
-            Some(&i) if scope.declared => {
+        let candidates = by_decl.entry(decl).or_default();
+        let shared = candidates.iter().find_map(|&i| {
+            let name = match (&out[i].name, &scope.name) {
+                (Some(a), Some(b)) if a != b => Some(naming.shared_name(a, b)?),
+                (a, _) => a.clone(),
+            };
+            Some((i, name))
+        });
+        match shared {
+            Some((i, name)) => {
                 let o = &mut out[i];
-                if let (Some(a), Some(b)) = (&o.name, &scope.name) {
-                    if a != b {
-                        o.name = Some(naming.shared_name(a, b));
-                    }
-                }
+                o.name = name;
                 o.end = o.end.max(scope.end);
                 o.first = earliest(o.first, scope.first);
                 o.keys.extend(scope.keys);
             }
-            _ => {
-                if scope.declared {
-                    by_decl.insert(decl, out.len());
-                }
+            None => {
+                candidates.push(out.len());
                 out.push(scope);
             }
         }
@@ -713,6 +722,42 @@ mod tests {
         info.functions.get_mut(&2).unwrap().decl_file = None;
         let scope = describe(&info, &RustNames, 3, 1, &Positions::new()).unwrap();
         assert_eq!((scope.source, scope.start), (1, (9, 0)));
+    }
+
+    #[test]
+    fn functions_declared_at_one_place_are_one_scope_only_if_they_share_a_name() {
+        // Functions that one macro generates, declared at the macro.
+        let names = [
+            "<&dyn core::fmt::Debug as core::fmt::Debug>::fmt",
+            "<a::A as core::fmt::Display>::fmt",
+            "<b::B as core::fmt::Display>::fmt",
+            "<u64 as core::fmt::LowerHex>::fmt",
+            "<u64 as core::fmt::UpperHex>::fmt",
+        ];
+        let mut info = SourceMap::new(0, None);
+        let mut starts = HashMap::new();
+        for (key, name) in names.into_iter().enumerate() {
+            let entry = FunctionEntry {
+                name: Some(name.to_owned()),
+                linkage_name: None,
+                decl_file: Some(0),
+                decl_line: Some(5),
+                origin: None,
+            };
+            info.functions.insert(key, entry);
+            starts.insert(key, key);
+        }
+        let scopes = merge(&info, &RustNames, &starts, &Positions::new());
+        let names: Vec<_> = scopes.iter().map(|s| s.name.as_deref().unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                "<&dyn core::fmt::Debug as core::fmt::Debug>::fmt",
+                "<_ as core::fmt::Display>::fmt",
+                "<u64 as core::fmt::LowerHex>::fmt",
+                "<u64 as core::fmt::UpperHex>::fmt",
+            ]
+        );
     }
 
     #[test]

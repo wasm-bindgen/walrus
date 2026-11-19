@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, HashMap};
 /// How to name functions from what DWARF records, for one language, and
 /// which names belong to copies of one source function.
 pub(crate) trait FunctionNames {
-    /// The name of a `DW_AT_name` inside `DW_TAG_namespace` entries.
+    /// The name of a `DW_AT_name` inside `DW_TAG_namespace` entries. A
+    /// namespace without a `DW_AT_name` is empty.
     fn qualify(&self, namespaces: &[String], name: &str) -> String;
 
     /// The name of one function, from the nearest `DW_AT_linkage_name` and

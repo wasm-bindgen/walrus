@@ -15,7 +15,16 @@ use super::scopes::FunctionNames;
 pub(crate) struct RustNames;
 
 impl FunctionNames for RustNames {
+    /// A namespace without a name, which is a C++ anonymous namespace, is
+    /// `(anonymous namespace)`, as `llvm-cxxfilt` writes it.
     fn qualify(&self, namespaces: &[String], name: &str) -> String {
+        let namespaces: Vec<&str> = namespaces
+            .iter()
+            .map(|namespace| match namespace.as_str() {
+                "" => "(anonymous namespace)",
+                namespace => namespace,
+            })
+            .collect();
         format!("{}::{name}", namespaces.join("::"))
     }
 
@@ -192,6 +201,15 @@ fn self_type(name: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anonymous_namespaces_have_a_name() {
+        let namespaces = ["a".to_owned(), String::new()];
+        assert_eq!(
+            RustNames.qualify(&namespaces, "helper"),
+            "a::(anonymous namespace)::helper"
+        );
+    }
 
     #[test]
     fn shims_have_their_function_name() {

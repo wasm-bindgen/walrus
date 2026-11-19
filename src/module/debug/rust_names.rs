@@ -145,9 +145,10 @@ fn impl_segment(name: &str) -> Option<(&str, &str, &str)> {
     Some((&name[..start], &name[start..end], &name[end..]))
 }
 
-/// `<A as T>::f` and `<B as T>::f` to `<_ as T>::f`, and legacy
-/// `<impl T for A>::f` and `<impl T for B>::f` to `<impl T for _>::f`, or
-/// `None` if the names differ in more than their self type.
+/// `<A as T>::f` and `<B as T>::f` to `<_ as T>::f`, `<A>::f` and `<B>::f`
+/// to `<_>::f`, and legacy `<impl T for A>::f` and `<impl T for B>::f` to
+/// `<impl T for _>::f`, or `None` if the names differ in more than their
+/// self type.
 ///
 /// Each source function has one original scope, which all of its instances
 /// share, so its name must be right for every instance: the self type that
@@ -168,9 +169,9 @@ fn common_name(a: &str, b: &str) -> Option<String> {
     (ra == rb).then(|| format!("<_{ra}"))
 }
 
-/// The self type of a name that starts with a qualified path, `<A as T>::f`,
-/// and the text after it. The self type can be a qualified path itself, as
-/// in `<<A as X>::Out as T>::f`.
+/// The self type of a name that starts with a qualified path, `<A as T>::f`
+/// or `<A>::f` for an inherent impl, and the text after it. The self type
+/// can be a qualified path itself, as in `<<A as X>::Out as T>::f`.
 fn self_type(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix('<')?;
     let mut depth = 0;
@@ -178,6 +179,7 @@ fn self_type(name: &str) -> Option<(&str, &str)> {
     for (i, c) in rest.char_indices() {
         match c {
             '<' => depth += 1,
+            '>' if previous != '-' && depth == 0 => return Some(rest.split_at(i)),
             '>' if previous != '-' => depth -= 1,
             ' ' if depth == 0 && rest[i..].starts_with(" as ") => return Some(rest.split_at(i)),
             _ => {}
@@ -293,6 +295,26 @@ mod tests {
             )
             .as_deref(),
             Some("core::num::<impl _>::checked_add")
+        );
+    }
+
+    #[test]
+    fn inherent_impls_share_a_name() {
+        assert_eq!(
+            common_name("<u32>::checked_mul", "<usize>::checked_mul").as_deref(),
+            Some("<_>::checked_mul")
+        );
+        assert_eq!(
+            common_name("<*mut u8>::add", "<*mut u16>::add").as_deref(),
+            Some("<_>::add")
+        );
+        assert_eq!(
+            common_name("<[u8]>::iter", "<[u16]>::iter").as_deref(),
+            Some("<_>::iter")
+        );
+        assert_eq!(
+            common_name("<u32>::checked_mul", "<u32 as T>::checked_mul"),
+            None
         );
     }
 }

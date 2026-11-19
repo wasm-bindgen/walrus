@@ -169,11 +169,22 @@ fn common_name(a: &str, b: &str) -> Option<String> {
 }
 
 /// The self type of a name that starts with a qualified path, `<A as T>::f`,
-/// and the text after it.
+/// and the text after it. The self type can be a qualified path itself, as
+/// in `<<A as X>::Out as T>::f`.
 fn self_type(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix('<')?;
-    let i = rest.find(" as ")?;
-    Some(rest.split_at(i))
+    let mut depth = 0;
+    let mut previous = ' ';
+    for (i, c) in rest.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' if previous != '-' => depth -= 1,
+            ' ' if depth == 0 && rest[i..].starts_with(" as ") => return Some(rest.split_at(i)),
+            _ => {}
+        }
+        previous = c;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -202,6 +213,10 @@ mod tests {
             )
             .as_deref(),
             Some("<_ as core::ops::FnMut>::call_mut")
+        );
+        assert_eq!(
+            common_name("<<A as X>::Out as T>::f", "<<B as X>::Out as T>::f").as_deref(),
+            Some("<_ as T>::f")
         );
     }
 

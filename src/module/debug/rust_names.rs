@@ -39,23 +39,18 @@ impl FunctionNames for RustNames {
         strip_generics(name)
     }
 
-    /// The path without generic arguments. rustc puts the functions of a
-    /// trait impl, or of an inherent impl of a primitive, in an `{impl#N}`
-    /// namespace, so copies of one impl, such as
-    /// `core::ptr::mut_ptr::{impl#0}::add<u8>` and `add<u16>`, have one
-    /// definition, and separate impls have different ones. Those of one
-    /// generic type, such as `impl Encode for Vec<A>` and `for Vec<B>`, keep
-    /// separate scopes with the same name, as names drop generic arguments.
-    /// Methods of an inherent impl on a type are in a namespace named after
-    /// the type, so separate impls of one type share a definition, and their
-    /// names are the same too. With full debuginfo they are in the type's
-    /// entry instead, which isn't a namespace, so a macro's inherent impls on
-    /// different types share one as well. So do impls in separate
-    /// `const _: () = { … }` blocks, which are each `_::{impl#0}`: only their
-    /// linkage names tell them apart. The namespaces are the same with
-    /// legacy and v0 mangling.
-    fn definition(&self, name: &str) -> String {
-        strip_generics(name)
+    /// The path from the last named segment: compiler segments such as
+    /// `{closure#0}` are in many functions, so they don't tell them apart.
+    fn declaration_key<'a>(&self, name: &'a str) -> &'a str {
+        let mut start = name.len();
+        for segment in name.rsplit("::") {
+            start -= segment.len();
+            if !segment.starts_with('{') {
+                break;
+            }
+            start = start.saturating_sub(2);
+        }
+        &name[start..]
     }
 
     fn shared_name(&self, a: &str, b: &str) -> Option<String> {
@@ -164,9 +159,11 @@ fn impl_segment(name: &str) -> Option<(&str, &str, &str)> {
 /// `<impl T for _>::f`, or `None` if the names differ in more than their
 /// self type.
 ///
-/// Each source function has one original scope, which all of its copies
-/// share, so its name must be right for every copy: the self type that
-/// differs becomes `_`. Names that differ elsewhere keep their own scopes.
+/// Functions at one place whose names differ only in their self type, such
+/// as monomorphizations or one macro's impls for different types, share one
+/// original scope, so its name must be right for each of them: the self type
+/// that differs becomes `_`. Names that differ elsewhere, such as one macro's
+/// impls of different traits, keep scopes of their own.
 fn common_name(a: &str, b: &str) -> Option<String> {
     if let (Some((pa, ia, ra)), Some((pb, ib, rb))) = (impl_segment(a), impl_segment(b)) {
         if pa != pb || ra != rb {
@@ -245,6 +242,43 @@ mod tests {
     }
 
     #[test]
+    fn arrow_self_types() {
+        let call_once = |ret| format!("<fn() -> {ret} as core::ops::function::FnOnce>::call_once");
+        assert_eq!(
+            common_name(&call_once("js_sys::Object"), &call_once("js_sys::Array")).as_deref(),
+            Some("<_ as core::ops::function::FnOnce>::call_once")
+        );
+        assert_eq!(
+            common_name(
+                "<alloc::boxed::Box<dyn Fn() -> u8> as T>::f",
+                "<alloc::boxed::Box<dyn Fn() -> u16> as T>::f"
+            )
+            .as_deref(),
+            Some("<_ as T>::f")
+        );
+    }
+
+    #[test]
+    fn arrow_generics() {
+        assert_eq!(
+            strip_generics("<alloc::raw_vec::RawVec<fn() -> core::result::Result<u8, u8>>>::ptr"),
+            "<alloc::raw_vec::RawVec>::ptr"
+        );
+    }
+
+    #[test]
+    fn arrow_legacy_impls() {
+        assert_eq!(
+            common_name(
+                "a::<impl T for fn() -> A>::f",
+                "a::<impl T for fn() -> B>::f"
+            )
+            .as_deref(),
+            Some("a::<impl T for _>::f")
+        );
+    }
+
+    #[test]
     fn no_merge_beyond_self_type() {
         let cases = [
             // Both from `const_eval_select!`.
@@ -266,6 +300,8 @@ mod tests {
                 "core::fmt::num::<impl core::fmt::LowerHex for u64>::fmt",
                 "core::fmt::num::<impl core::fmt::UpperHex for u64>::fmt",
             ),
+            ("<impl T for A>::f", "<impl T for B>::g"),
+            ("a::<impl T for A>::f", "b::<impl T for B>::f"),
         ];
         for (a, b) in cases {
             assert_eq!(common_name(a, b), None, "{a} and {b}");
@@ -273,22 +309,24 @@ mod tests {
     }
 
     #[test]
-    fn definitions() {
-        let definition = |name| RustNames.definition(name);
+    fn closure_keys() {
+        let key = |name| RustNames.declaration_key(name);
+        assert_eq!(key("worker::fetch::{closure#0}"), "fetch::{closure#0}");
         assert_eq!(
-            definition("alloc::vec::{impl#1}::push<u8, alloc::alloc::Global>"),
-            "alloc::vec::{impl#1}::push"
+            key("worker::__wasm_bindgen_generated_fetch::{closure#0}"),
+            "__wasm_bindgen_generated_fetch::{closure#0}"
         );
         assert_eq!(
-            definition("a::{impl#2}::fmt::{closure#0}<a::B>"),
-            "a::{impl#2}::fmt::{closure#0}"
+            key("worker::fetch::{closure#0}::{closure#0}"),
+            "fetch::{closure#0}::{closure#0}"
         );
+        assert_eq!(key("<_ as core::ops::FnMut>::call_mut"), "call_mut");
         assert_eq!(
-            definition("core::fmt::{impl#4}::fmt<core::io::error::{impl#4}::fmt::{closure_env#0}>"),
-            "core::fmt::{impl#4}::fmt"
+            key("<a::A as b::T>::f::{constant#0}::{closure#1}"),
+            "f::{constant#0}::{closure#1}"
         );
-        // A trait's default method.
-        assert_eq!(definition("a::T::f<a::A>"), "a::T::f");
+        assert_eq!(key("a::f::{{closure}}"), "f::{{closure}}");
+        assert_eq!(key("{closure#0}"), "{closure#0}");
     }
 
     #[test]

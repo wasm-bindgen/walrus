@@ -31,20 +31,18 @@ pub(crate) trait FunctionNames {
     fn name(&self, linkage_name: Option<&str>, name: Option<&str>) -> Option<String>;
 
     /// The name that all copies of the function named `name` share. Scopes
-    /// in one source with the same group name and definition that overlap
-    /// are one scope, with that name.
+    /// in one source with the same group name that overlap are one scope,
+    /// with that name.
     fn group_name(&self, name: &str) -> String;
 
-    /// The source function that a function with the qualified `DW_AT_name`
-    /// `name` is a copy of, as far as that name shows. Scopes with different
-    /// definitions stay apart, even when declared at one place, as those of
-    /// one macro are. Scopes with the same definition merge when they
-    /// overlap and have the same group name, or when they start at one
-    /// declaration and have a shared name.
-    fn definition(&self, name: &str) -> String;
+    /// The part of `name` that functions declared at one place share when
+    /// their names differ, such as in their self types. Declared scopes that
+    /// start at the same position with the same key are one scope if
+    /// [`shared_name`](Self::shared_name) gives them a name.
+    fn declaration_key<'a>(&self, name: &'a str) -> &'a str;
 
-    /// The name of the scope that copies of one definition named `a` and `b`
-    /// share, or `None` if no name fits both, so their scopes stay apart.
+    /// The name of one scope for functions named `a` and `b` that are
+    /// declared at one place, or `None` if each keeps a scope of its own.
     fn shared_name(&self, a: &str, b: &str) -> Option<String>;
 }
 
@@ -66,9 +64,6 @@ struct Scope {
     /// The first position its code or its calls map to at or after the
     /// declaration line, if any.
     first: Option<Pos>,
-    /// The source function that the functions it describes are copies of,
-    /// if they have a `DW_AT_name`.
-    definition: Option<String>,
     /// The functions it describes, as their canonical entries' offsets.
     keys: Vec<usize>,
     /// Whether one of them has a declaration line.
@@ -197,18 +192,16 @@ fn merge(
 ) -> Vec<Scope> {
     let mut sorted: Vec<(usize, usize)> = starts.iter().map(|(&k, &s)| (k, s)).collect();
     sorted.sort_unstable();
-    // Copies of a function have the same definition and group name.
-    type Group = (usize, Option<String>, Option<String>);
-    let mut groups: BTreeMap<Group, Vec<Scope>> = BTreeMap::new();
+    // Copies of a function have the same group name.
+    let mut groups: BTreeMap<(usize, Option<String>), Vec<Scope>> = BTreeMap::new();
     for (key, start) in sorted {
         if let Some(scope) = describe(info, naming, key, start, positions) {
             let name = scope.name.as_deref().map(|n| naming.group_name(n));
-            let group = (scope.source, scope.definition.clone(), name);
-            groups.entry(group).or_default().push(scope);
+            groups.entry((scope.source, name)).or_default().push(scope);
         }
     }
     let mut scopes: Vec<Scope> = Vec::new();
-    for ((.., name), mut group) in groups {
+    for ((_, name), mut group) in groups {
         group.sort_by_key(|s| (s.start, s.end));
         let mut current: Option<Scope> = None;
         for scope in group {
@@ -230,20 +223,25 @@ fn merge(
         }
         scopes.extend(current);
     }
-    // Some copies keep different names, such as Rust's copies of one impl
-    // whose self types differ (`<A as FnMut>::call_mut` and
-    // `<B as FnMut>::call_mut`), so merge declared scopes that start at the
-    // same place, have the same definition and have a shared name. Others,
-    // such as most separate impls that one macro generates, stay apart for
-    // `nest`, which nests them as their scopes cover the same source.
+    // Functions declared at one place can keep different names, such as
+    // Rust's functions whose self types differ (`<A as FnMut>::call_mut`
+    // and `<B as FnMut>::call_mut`), including one macro's impls for
+    // different types. Merge declared scopes that start at the same place,
+    // have the same declaration key and have a shared name. Others, such as
+    // impls of different traits (`LowerHex::fmt` and `UpperHex::fmt`), stay
+    // apart for `nest`.
+    let declaration_key = |s: &Scope| {
+        let name = s.name.as_deref().unwrap_or_default();
+        naming.declaration_key(name).to_owned()
+    };
     let mut by_decl: HashMap<(usize, Pos, String), Vec<usize>> = HashMap::new();
     let mut out: Vec<Scope> = Vec::with_capacity(scopes.len());
     for scope in scopes {
-        let Some(definition) = scope.definition.clone().filter(|_| scope.declared) else {
+        if !scope.declared {
             out.push(scope);
             continue;
-        };
-        let decl = (scope.source, scope.start, definition);
+        }
+        let decl = (scope.source, scope.start, declaration_key(&scope));
         let candidates = by_decl.entry(decl).or_default();
         let shared = candidates.iter().find_map(|&i| {
             let name = match (&out[i].name, &scope.name) {
@@ -336,7 +334,6 @@ fn describe(
             _ => break,
         }
     }
-    let definition = name.map(|n| naming.definition(n));
     let name = naming.name(linkage, name);
     let decl = decl_file.zip(decl_line);
     let by_source = positions.get(&key);
@@ -374,7 +371,6 @@ fn describe(
         start,
         end,
         first,
-        definition,
         keys: vec![key],
         declared: decl.is_some(),
         children: Vec::new(),
@@ -701,7 +697,21 @@ impl Scopes {
 mod tests {
     use super::*;
     use crate::module::debug::rust_names::RustNames;
-    use crate::module::debug::source_map::FunctionEntry;
+    use crate::module::debug::source_map::{CodeEntry, FunctionEntry};
+
+    fn function(
+        name: Option<&str>,
+        decl_line: Option<u64>,
+        origin: Option<usize>,
+    ) -> FunctionEntry {
+        FunctionEntry {
+            name: name.map(str::to_owned),
+            linkage_name: None,
+            decl_file: decl_line.map(|_| 0),
+            decl_line,
+            origin,
+        }
+    }
 
     #[test]
     fn nearest_declaration() {
@@ -730,15 +740,22 @@ mod tests {
         assert_eq!((scope.source, scope.start), (1, (9, 0)));
     }
 
-    /// The names of the scopes that `merge` makes of functions declared at
-    /// one place, from their `DW_AT_name`s and `DW_AT_linkage_name`s.
-    fn merged(functions: &[(Option<&str>, &str)]) -> Vec<String> {
+    #[test]
+    fn merge_at_one_declaration() {
+        // Functions that one macro generates, declared at the macro.
+        let names = [
+            "<&dyn core::fmt::Debug as core::fmt::Debug>::fmt",
+            "<a::A as core::fmt::Display>::fmt",
+            "<b::B as core::fmt::Display>::fmt",
+            "<u64 as core::fmt::LowerHex>::fmt",
+            "<u64 as core::fmt::UpperHex>::fmt",
+        ];
         let mut info = SourceMap::new(0, None);
         let mut starts = HashMap::new();
-        for (key, &(name, linkage)) in functions.iter().enumerate() {
+        for (key, name) in names.into_iter().enumerate() {
             let entry = FunctionEntry {
-                name: name.map(str::to_owned),
-                linkage_name: Some(linkage.to_owned()),
+                name: Some(name.to_owned()),
+                linkage_name: None,
                 decl_file: Some(0),
                 decl_line: Some(5),
                 origin: None,
@@ -747,74 +764,80 @@ mod tests {
             starts.insert(key, key);
         }
         let scopes = merge(&info, &RustNames, &starts, &Positions::new());
-        scopes.into_iter().filter_map(|s| s.name).collect()
-    }
-
-    #[test]
-    fn impl_copies() {
-        // `impl<T: X> Display for T` and `impl<T> *mut T`.
-        let names = merged(&[
-            (
-                Some("a::{impl#0}::fmt<a::A>"),
-                "_RNvXC1aNtC1a1ANtNtC4core3fmt7Display3fmt",
-            ),
-            (
-                Some("a::{impl#0}::fmt<a::B>"),
-                "_RNvXC1aNtC1a1BNtNtC4core3fmt7Display3fmt",
-            ),
-            (
-                Some("core::ptr::mut_ptr::{impl#0}::add<u8>"),
-                "_RNvMNtNtC4core3ptr7mut_ptrOh3add",
-            ),
-            (
-                Some("core::ptr::mut_ptr::{impl#0}::add<u16>"),
-                "_RNvMNtNtC4core3ptr7mut_ptrOt3add",
-            ),
-        ]);
-        assert_eq!(names, ["<_ as core::fmt::Display>::fmt", "<_>::add"]);
-    }
-
-    #[test]
-    fn separate_impls() {
-        // `impl Display for A` and `for B`, which one macro generates.
-        let names = merged(&[
-            (
-                Some("a::{impl#0}::fmt"),
-                "_RNvXC1aNtC1a1ANtNtC4core3fmt7Display3fmt",
-            ),
-            (
-                Some("a::{impl#1}::fmt"),
-                "_RNvXC1aNtC1a1BNtNtC4core3fmt7Display3fmt",
-            ),
-            // Without a `DW_AT_name`, nothing shows that they are copies.
-            (None, "_RNvMNtNtC4core3ptr7mut_ptrOh3add"),
-            (None, "_RNvMNtNtC4core3ptr7mut_ptrOt3add"),
-        ]);
+        let names: Vec<_> = scopes.iter().map(|s| s.name.as_deref().unwrap()).collect();
         assert_eq!(
             names,
             [
-                "<*mut u16>::add",
-                "<*mut u8>::add",
-                "<a::A as core::fmt::Display>::fmt",
-                "<a::B as core::fmt::Display>::fmt",
+                "<&dyn core::fmt::Debug as core::fmt::Debug>::fmt",
+                "<_ as core::fmt::Display>::fmt",
+                "<u64 as core::fmt::LowerHex>::fmt",
+                "<u64 as core::fmt::UpperHex>::fmt",
             ]
         );
     }
 
     #[test]
-    fn separate_generic_impls() {
-        // `impl Encode for Vec<A>` and `for Vec<B>`, which share a name.
-        let names = merged(&[
-            (
-                Some("m::{impl#0}::encode"),
-                "_RNvXC1mINtNtC5alloc3vec3VecNtC1m1AENtC1m6Encode6encode",
-            ),
-            (
-                Some("m::{impl#1}::encode"),
-                "_RNvXs_C1mINtNtC5alloc3vec3VecNtC1m1BENtC1m6Encode6encode",
-            ),
-        ]);
-        assert_eq!(names, ["<alloc::vec::Vec as m::Encode>::encode"; 2]);
+    fn overlapping_copies() {
+        // Two copies of one closure whose first positions on its declaration
+        // line differ, so they don't start at the same place.
+        let mut info = SourceMap::new(0, None);
+        let mut positions = Positions::new();
+        for (key, ty, first) in [(0, "u32", (4, 3)), (1, "u64", (4, 7))] {
+            let name = format!("indexmap::inner::equal::<{ty}>::{{closure#0}}");
+            info.functions
+                .insert(key, function(Some(&name), Some(5), None));
+            positions.insert(key, BTreeMap::from([(0, vec![first, (6, 0)])]));
+        }
+        let starts = HashMap::from([(0, 0), (1, 1)]);
+        let scopes = merge(&info, &RustNames, &starts, &positions);
+        let scopes: Vec<_> = scopes
+            .iter()
+            .map(|s| (s.name.as_deref().unwrap(), s.start, s.keys.len()))
+            .collect();
+        assert_eq!(scopes, [("indexmap::inner::equal::{closure#0}", (4, 3), 2)]);
+    }
+
+    #[test]
+    fn abstract_origin_start() {
+        // `f` has an out-of-line copy at offset 20, a concrete entry whose
+        // abstract instance at offset 10 has the declaration, and is also
+        // inlined into `g`. Only the inlined code maps to the declaration
+        // line, and both are one function, so its scope starts at that
+        // position rather than at the start of the line.
+        let mut info = SourceMap::new(0, None);
+        info.functions
+            .insert(10, function(Some("krate::f"), Some(346), None));
+        info.functions.insert(20, function(None, None, Some(10)));
+        info.functions
+            .insert(30, function(Some("krate::g"), Some(400), None));
+        let code = |function, range, parent: Option<usize>| CodeEntry {
+            function,
+            subprogram: parent.is_none(),
+            ranges: vec![range],
+            call: parent.map(|_| (0, 400, 5)),
+            parent,
+            children: Vec::new(),
+            depth: usize::from(parent.is_some()),
+        };
+        info.code = vec![
+            code(20, (0, 10), None),
+            code(30, (10, 30), None),
+            code(10, (15, 20), Some(1)),
+        ];
+        info.code[1].children.push(2);
+        info.rows = vec![
+            (0, Some((0, 347, 5))),
+            (10, Some((0, 400, 1))),
+            (15, Some((0, 346, 9))),
+            (20, Some((0, 401, 1))),
+        ];
+        let scopes = build(&info, &RustNames).scopes;
+        let f: Vec<_> = scopes
+            .iter()
+            .filter(|s| s.name.as_deref() == Some("krate::f"))
+            .map(|s| s.start)
+            .collect();
+        assert_eq!(f, [(345, 8)]);
     }
 
     #[test]
@@ -825,7 +848,6 @@ mod tests {
             start,
             end,
             first: Some(first),
-            definition: None,
             keys: Vec::new(),
             declared: true,
             children: Vec::new(),

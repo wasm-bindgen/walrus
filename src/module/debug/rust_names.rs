@@ -203,7 +203,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anonymous_namespaces_have_a_name() {
+    fn anonymous_namespace() {
         let namespaces = ["a".to_owned(), String::new()];
         assert_eq!(
             RustNames.qualify(&namespaces, "helper"),
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn shims_have_their_function_name() {
+    fn shim_names() {
         assert_eq!(
             strip_generics("<F as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}"),
             "<F as core::ops::function::FnOnce>::call_once"
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn copies_with_different_self_types_share_a_name() {
+    fn self_type_merge() {
         assert_eq!(
             common_name(
                 "<a::A as core::ops::FnMut>::call_mut",
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn functions_that_differ_in_more_than_their_self_type_dont() {
+    fn no_merge_beyond_self_type() {
         let cases = [
             // Both from `const_eval_select!`.
             (
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn closures_of_different_functions_have_different_keys() {
+    fn closure_keys() {
         let key = |name| RustNames.declaration_key(name);
         assert_eq!(key("worker::fetch::{closure#0}"), "fetch::{closure#0}");
         assert_eq!(
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_impl_segments_keep_the_impl() {
+    fn legacy_impl_segments() {
         let display = "core::fmt::num::imp::<impl core::fmt::Display for u32>::fmt";
         assert_eq!(strip_generics(display), display);
         assert_eq!(
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn inherent_impls_share_a_name() {
+    fn inherent_impl_merge() {
         assert_eq!(
             common_name("<u32>::checked_mul", "<usize>::checked_mul").as_deref(),
             Some("<_>::checked_mul")

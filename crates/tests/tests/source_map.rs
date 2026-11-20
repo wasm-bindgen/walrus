@@ -468,7 +468,7 @@ fn code_is_the_same_with_a_source_map() {
 }
 
 #[test]
-fn a_map_without_scopes_has_the_same_mappings() {
+fn scopes_off_keeps_mappings() {
     let (wasm, map) = emit(parse(|c| c.generate_source_map(true)), true);
     let (plain_wasm, plain) = emit(
         parse(|c| c.generate_source_map(true).source_map_scopes(false)),

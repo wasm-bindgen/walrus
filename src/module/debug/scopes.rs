@@ -699,7 +699,7 @@ mod tests {
     use crate::module::debug::source_map::FunctionEntry;
 
     #[test]
-    fn declarations_come_from_the_nearest_entry_that_has_them() {
+    fn nearest_declaration() {
         let mut info = SourceMap::new(0, None);
         // A concrete entry, its abstract instance and its declaration.
         let entry = |linkage: Option<&str>, file, line, origin| FunctionEntry {
@@ -726,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn functions_declared_at_one_place_are_one_scope_only_if_they_share_a_name() {
+    fn merge_at_one_declaration() {
         // Functions that one macro generates, declared at the macro.
         let names = [
             "<&dyn core::fmt::Debug as core::fmt::Debug>::fmt",
@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_scopes_without_a_position_on_their_line_start_at_their_first() {
+    fn tighten_nested_starts() {
         let scope = |start: Pos, end: Pos, first: Pos| Scope {
             source: 0,
             name: None,
@@ -787,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn ranges_have_no_generated_lines() {
+    fn range_encoding() {
         let range = |start, end, children| Range {
             start,
             end,

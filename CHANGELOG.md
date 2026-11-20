@@ -31,6 +31,10 @@ Released YYYY-MM-DD.
 * With `generate_dwarf`, `DW_AT_macros`, `DW_AT_macro_info` and
   `DW_AT_GNU_macros` are removed. walrus never emitted the macro sections
   they point into, because gimli can't write them.
+* With the `parallel` feature, parsing finds the block types of legacy `catch`
+  handlers in parallel. This scan decodes every function body. It runs for
+  any module with a tag that has params, such as an Emscripten module built
+  with C++ exceptions, or with a function type that has two or more results.
 
 ### Deprecated
 

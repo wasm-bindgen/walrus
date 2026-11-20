@@ -1,3 +1,5 @@
+pub mod dwarf;
+
 use anyhow::{bail, Context};
 use std::ffi::OsStr;
 use std::fs;

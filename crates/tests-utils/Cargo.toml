@@ -8,6 +8,10 @@ publish = false
 [dependencies]
 tempfile = "3.1.0"
 anyhow = "1.0"
+arbitrary = "1.0"
+gimli = "0.34.0"
+wasm-encoder = "0.245.1"
+wasmparser = "0.245.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

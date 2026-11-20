@@ -33,3 +33,9 @@ cargo test --features parallel --manifest-path crates/tests/Cargo.toml
   semver-relevant and worth calling out.
 - Changes to emitted bytes should keep output deterministic and valid; the
   fuzz targets in `fuzz/` exercise round-tripping.
+- DWARF changes (`src/module/debug`) are checked by `walrus_tests_utils::dwarf`,
+  which compares each instruction's line, scopes and variable locations
+  before and after walrus. `dwarf_synthetic` runs it over every `round_trip`
+  and `valid` module, `dwarf_fixtures` over rustc and clang output in
+  `crates/tests/dwarf-fixtures` (rebuilt by its `build.sh`), and the `dwarf`
+  and `dwarf-raw` fuzz targets over generated and mutated modules.

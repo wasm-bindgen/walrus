@@ -88,6 +88,28 @@ Released YYYY-MM-DD.
 * Line rows stay on the instructions they describe. In a Rust -O0 build,
   133 instructions whose row was line 0 were given other lines. `delegate`
   also keeps its row now.
+* With `generate_dwarf`, the local indices in the expressions of a DIE that
+  gives its code as `DW_AT_ranges`, rather than `DW_AT_low_pc`, are
+  remapped with the indices of the function that code is in. They were
+  remapped with its parent's function, usually dropping the location or
+  naming the wrong local. Code in several functions that number a local
+  differently gets a location list with the right local in each, and each
+  part of a location list entry spanning functions uses its own function's
+  indices. A `DW_LLE_default_location` can't be split, so it's dropped if
+  its locals differ between those functions.
+* With `generate_dwarf`, DWARF that can't be read is dropped with a warning
+  instead of making `emit_wasm` panic. That includes a DWARF 4
+  `DW_LNE_define_file` with an empty name, or a `DW_LNS_advance_line` of
+  `i64::MIN`, which make gimli panic.
+* With `generate_dwarf`, line programs are written with one byte per
+  instruction and one operation each, as Wasm has, whatever the input's
+  header said. A header with a minimum instruction length above 1, or a
+  line base and range that can't encode an advance, made `emit_wasm` panic.
+* With `generate_dwarf`, an entry whose `DW_AT_low_pc` isn't an address, or
+  is the tombstone of discarded code with a `DW_AT_high_pc` that's neither a
+  size nor a tombstone, is written as removed code. Its attributes were
+  copied unchanged or mapped one at a time, so a discarded function could
+  get a range over live code.
 
 ### Security
 

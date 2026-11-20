@@ -12,7 +12,7 @@ use gimli::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use self::dwarf::{CodeMap, Files, Indices, InputFunction, Line, OutputFunction};
+use self::dwarf::{CodeMap, Files, Indices, InputFunction, Line, LineSink, OutputFunction};
 use self::source_map::SourceMap;
 
 /// The DWARF debug section in input WebAssembly binary.
@@ -152,13 +152,11 @@ impl ModuleDebugData {
         });
 
         let mut map = source_map.then(|| SourceMap::new(code_section_start as u64));
-        let mut add_unit = |files: &Files, lines: Vec<Line>| {
-            if let Some(map) = &mut map {
-                map.add_unit(files, lines);
-            }
-        };
+        let mut add_unit = map
+            .as_mut()
+            .map(|map| move |files: &Files, lines: Vec<Line>| map.add_unit(files, lines));
+        let lines = add_unit.as_mut().map(|sink| sink as &mut LineSink);
         if cx.module.config.generate_dwarf {
-            let lines = source_map.then_some(&mut add_unit as _);
             let mut dwarf = dwarf::convert(&from_dwarf, &code, indices.as_ref(), lines)
                 .expect("cannot convert DWARF");
 
@@ -177,9 +175,8 @@ impl ModuleDebugData {
                     },
                 )
                 .expect("never");
-        } else if source_map {
-            dwarf::lines(&from_dwarf, &code, &mut add_unit)
-                .expect("cannot convert the DWARF line tables");
+        } else if let Some(lines) = lines {
+            dwarf::lines(&from_dwarf, &code, lines).expect("cannot convert the DWARF line tables");
         }
         map.map(SourceMap::finish)
     }

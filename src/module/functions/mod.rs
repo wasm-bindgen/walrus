@@ -371,7 +371,9 @@ impl Module {
                     .any(|ty| ty.results().len() >= 2));
         // Decoding every body is costly, so with the `parallel` feature find
         // the types in parallel. The loop below adds each function's types
-        // after its entry block type, in function order.
+        // after its entry block type, in function order, and reports a
+        // scan's error there too, so the first malformed body in function
+        // order is the one reported, not whichever a thread hits first.
         let legacy_catch_block_types = if has_legacy_catch_block_types {
             let indices = &*indices;
             #[cfg(feature = "parallel")]
@@ -379,10 +381,11 @@ impl Module {
             #[cfg(not(feature = "parallel"))]
             let iter = functions.iter();
             iter.map(|(body, _)| self.legacy_catch_block_types(body, indices))
-                .collect::<Result<Vec<_>>>()?
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
+        let mut legacy_catch_block_types = legacy_catch_block_types.into_iter();
 
         for (i, (body, mut validator)) in functions.into_iter().enumerate() {
             let index = (num_imports + i) as u32;
@@ -414,8 +417,10 @@ impl Module {
             self.types.add_entry_ty(&results);
 
             // Likewise for legacy `catch` handler block types.
-            for (params, results) in legacy_catch_block_types.get(i).into_iter().flatten() {
-                self.types.add(params, results);
+            if let Some(types) = legacy_catch_block_types.next() {
+                for (params, results) in types? {
+                    self.types.add(&params, &results);
+                }
             }
 
             // Next up comes all the locals of the function.

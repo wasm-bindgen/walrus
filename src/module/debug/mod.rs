@@ -1,4 +1,6 @@
 mod dwarf;
+mod rust_names;
+mod scopes;
 mod source_map;
 
 use crate::emit::EmitContext;
@@ -79,8 +81,9 @@ impl Module {
 impl ModuleDebugData {
     /// Rewrites the DWARF for the emitted code and writes it to the module
     /// when `generate_dwarf` is set. With `source_map`, returns the source map
-    /// of the rewritten line tables; without `generate_dwarf`, only the line
-    /// tables are rewritten, and nothing is written.
+    /// of the rewritten line tables and, with Scopes, of the entries' emitted
+    /// code; without `generate_dwarf`, only the line tables are rewritten,
+    /// and nothing is written.
     pub(crate) fn emit(&self, cx: &mut EmitContext, source_map: bool) -> Option<String> {
         let code_section_start = cx.code_transform.code_section_start;
         let inputs = cx
@@ -151,10 +154,14 @@ impl ModuleDebugData {
             global: &global,
         });
 
-        let mut map = source_map.then(|| SourceMap::new(code_section_start as u64));
-        let mut add_unit = map
-            .as_mut()
-            .map(|map| move |files: &Files, lines: Vec<Line>| map.add_unit(files, lines));
+        let naming = (!cx.module.config.skip_source_map_scopes)
+            .then_some(&rust_names::RustNames as &dyn scopes::FunctionNames);
+        let mut map = source_map.then(|| SourceMap::new(code_section_start as u64, naming));
+        let mut add_unit = map.as_mut().map(|map| {
+            |unit: read::UnitRef<_>, files: &Files, lines: Vec<Line>| {
+                map.add_unit(unit, files, lines, &code)
+            }
+        });
         let lines = add_unit.as_mut().map(|sink| sink as &mut LineSink);
         if cx.module.config.generate_dwarf {
             let mut dwarf = dwarf::convert(&from_dwarf, &code, indices.as_ref(), lines)

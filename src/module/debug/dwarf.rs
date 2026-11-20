@@ -276,7 +276,7 @@ impl<'a> CodeMap<'a> {
 
     /// The emitted code covering what `begin..end` covered, as runs sorted
     /// by address. Empty if all of it was removed.
-    fn ranges(&self, begin: u64, end: u64) -> Vec<Run> {
+    pub(crate) fn ranges(&self, begin: u64, end: u64) -> Vec<Run> {
         if is_tombstone(begin) || begin >= end {
             return Vec::new();
         }
@@ -389,7 +389,7 @@ fn data_address(address: u64) -> Option<Address> {
 
 /// `indices` is `None` when the input indices weren't recorded, in which
 /// case `DW_OP_WASM_location` is copied unchanged. `lines`, if given, takes
-/// the lines of each unit's converted line program.
+/// each unit with the lines of its converted line program.
 pub(crate) fn convert(
     from: &read::Dwarf<R>,
     code: &CodeMap,
@@ -405,10 +405,11 @@ pub(crate) fn convert(
             if let (Some(sink), Some(rows)) = (&mut lines, rows) {
                 let files = Files {
                     program: &program,
+                    input: &files,
                     strings: unit.strings,
                     line_strings: unit.line_strings,
                 };
-                sink(&files, rows);
+                sink(unit.read_unit, &files, rows);
             }
             unit.set_line_program(program, files);
         }
@@ -635,18 +636,29 @@ fn push_line(lines: &mut Vec<Line>, event: &LineEvent) {
     });
 }
 
-/// Takes the lines of one unit, in the order the line program has them,
-/// with the unit's files.
-pub(crate) type LineSink<'a> = dyn FnMut(&Files, Vec<Line>) + 'a;
+/// Takes each input unit, with its files and its lines, in the order the
+/// line program has them.
+pub(crate) type LineSink<'a> = dyn FnMut(read::UnitRef<R>, &Files, Vec<Line>) + 'a;
 
 /// The files of one unit's converted line program.
 pub(crate) struct Files<'a> {
     program: &'a write::LineProgram,
+    /// The converted file of each input file index.
+    input: &'a [write::FileId],
     strings: &'a write::StringTable,
     line_strings: &'a write::LineStringTable,
 }
 
 impl Files<'_> {
+    /// The converted file of an input file index, as in `DW_AT_decl_file`.
+    pub(crate) fn input_file(&self, index: u64) -> Option<write::FileId> {
+        // Before DWARF 5, file 0 is no file.
+        if index == 0 && self.program.version() <= 4 {
+            return None;
+        }
+        self.input.get(usize::try_from(index).ok()?).copied()
+    }
+
     /// The compilation directory, the file's directory unless it is the
     /// compilation directory, and the file's name.
     pub(crate) fn path(&self, file: write::FileId) -> (&[u8], Option<&[u8]>, &[u8]) {
@@ -662,7 +674,7 @@ impl Files<'_> {
     }
 }
 
-/// The lines of each unit, for a module whose DWARF isn't written: the
+/// Each unit and its lines, for a module whose DWARF isn't written: the
 /// same as `convert` gives `lines`, without converting the rest.
 pub(crate) fn lines(
     from: &read::Dwarf<R>,
@@ -673,20 +685,22 @@ pub(crate) fn lines(
     let mut dwarf = write::Dwarf::default();
     let mut units = from.units();
     while let Some(header) = units.next()? {
-        let Some(program) = from.unit(header)?.line_program else {
+        let unit = from.unit(header)?;
+        let Some(program) = unit.line_program.clone() else {
             continue;
         };
         let mut program = dwarf.read_line_program(from, program, None, None)?;
         let sequences = read_sequences(&mut program)?;
         let mut rows = Vec::new();
         walk_lines(&sequences, code, &mut |event| push_line(&mut rows, &event));
-        let (program, _) = program.program();
+        let (program, input) = program.program();
         let files = Files {
             program: &program,
+            input: &input,
             strings: &dwarf.strings,
             line_strings: &dwarf.line_strings,
         };
-        sink(&files, rows);
+        sink(unit.unit_ref(from), &files, rows);
     }
     Ok(())
 }

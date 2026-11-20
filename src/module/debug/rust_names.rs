@@ -39,18 +39,23 @@ impl FunctionNames for RustNames {
         strip_generics(name)
     }
 
-    /// The path from the last named segment: compiler segments such as
-    /// `{closure#0}` are in many functions, so they don't tell them apart.
-    fn declaration_key<'a>(&self, name: &'a str) -> &'a str {
-        let mut start = name.len();
-        for segment in name.rsplit("::") {
-            start -= segment.len();
-            if !segment.starts_with('{') {
-                break;
-            }
-            start = start.saturating_sub(2);
-        }
-        &name[start..]
+    /// The path without generic arguments. rustc puts the functions of a
+    /// trait impl, or of an inherent impl of a primitive, in an `{impl#N}`
+    /// namespace, so copies of one impl, such as
+    /// `core::ptr::mut_ptr::{impl#0}::add<u8>` and `add<u16>`, have one
+    /// definition, and separate impls have different ones. Those of one
+    /// generic type, such as `impl Encode for Vec<A>` and `for Vec<B>`, keep
+    /// separate scopes with the same name, as names drop generic arguments.
+    /// Methods of an inherent impl on a type are in a namespace named after
+    /// the type, so separate impls of one type share a definition, and their
+    /// names are the same too. With full debuginfo they are in the type's
+    /// entry instead, which isn't a namespace, so a macro's inherent impls on
+    /// different types share one as well. So do impls in separate
+    /// `const _: () = { … }` blocks, which are each `_::{impl#0}`: only their
+    /// linkage names tell them apart. The namespaces are the same with
+    /// legacy and v0 mangling.
+    fn definition(&self, name: &str) -> String {
+        strip_generics(name)
     }
 
     fn shared_name(&self, a: &str, b: &str) -> Option<String> {
@@ -159,10 +164,9 @@ fn impl_segment(name: &str) -> Option<(&str, &str, &str)> {
 /// `<impl T for _>::f`, or `None` if the names differ in more than their
 /// self type.
 ///
-/// Each source function has one original scope, which all of its instances
-/// share, so its name must be right for every instance: the self type that
-/// differs becomes `_`. Names that differ elsewhere, such as functions that
-/// one macro generates for different traits, belong to different functions.
+/// Each source function has one original scope, which all of its copies
+/// share, so its name must be right for every copy: the self type that
+/// differs becomes `_`. Names that differ elsewhere keep their own scopes.
 fn common_name(a: &str, b: &str) -> Option<String> {
     if let (Some((pa, ia, ra)), Some((pb, ib, rb))) = (impl_segment(a), impl_segment(b)) {
         if pa != pb || ra != rb {
@@ -269,24 +273,22 @@ mod tests {
     }
 
     #[test]
-    fn closure_keys() {
-        let key = |name| RustNames.declaration_key(name);
-        assert_eq!(key("worker::fetch::{closure#0}"), "fetch::{closure#0}");
+    fn definitions() {
+        let definition = |name| RustNames.definition(name);
         assert_eq!(
-            key("worker::__wasm_bindgen_generated_fetch::{closure#0}"),
-            "__wasm_bindgen_generated_fetch::{closure#0}"
+            definition("alloc::vec::{impl#1}::push<u8, alloc::alloc::Global>"),
+            "alloc::vec::{impl#1}::push"
         );
         assert_eq!(
-            key("worker::fetch::{closure#0}::{closure#0}"),
-            "fetch::{closure#0}::{closure#0}"
+            definition("a::{impl#2}::fmt::{closure#0}<a::B>"),
+            "a::{impl#2}::fmt::{closure#0}"
         );
-        assert_eq!(key("<_ as core::ops::FnMut>::call_mut"), "call_mut");
         assert_eq!(
-            key("<a::A as b::T>::f::{constant#0}::{closure#1}"),
-            "f::{constant#0}::{closure#1}"
+            definition("core::fmt::{impl#4}::fmt<core::io::error::{impl#4}::fmt::{closure_env#0}>"),
+            "core::fmt::{impl#4}::fmt"
         );
-        assert_eq!(key("a::f::{{closure}}"), "f::{{closure}}");
-        assert_eq!(key("{closure#0}"), "{closure#0}");
+        // A trait's default method.
+        assert_eq!(definition("a::T::f<a::A>"), "a::T::f");
     }
 
     #[test]

@@ -15,6 +15,9 @@ Released YYYY-MM-DD.
   example, sorting by `Reverse(f.uses())` gives the shortest LEB128 indices to
   the most-referenced functions, which makes most modules smaller. The default
   order isn't guaranteed and may change; give a closure to depend on one.
+* `ModuleConfig::generate_source_map` and `Module::emit_wasm_with_source_map`
+  build a source map of the emitted module from its DWARF, and point the
+  module at it with a `sourceMappingURL` section.
 
 ### Changed
 

@@ -1,6 +1,9 @@
 mod dwarf;
+mod rust_names;
+mod scopes;
+mod source_map;
 
-use crate::emit::{Emit, EmitContext};
+use crate::emit::EmitContext;
 use crate::ir::{
     dfs_in_order, Instr, InstrLocId, Local, LocalGet, LocalId, LocalSet, LocalTee, Visitor,
 };
@@ -11,7 +14,8 @@ use gimli::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use self::dwarf::{CodeMap, Indices, InputFunction, OutputFunction};
+use self::dwarf::{CodeMap, Files, Indices, InputFunction, Line, LineSink, OutputFunction};
+use self::source_map::SourceMap;
 
 /// The DWARF debug section in input WebAssembly binary.
 #[derive(Debug, Default)]
@@ -74,8 +78,13 @@ impl Module {
     }
 }
 
-impl Emit for ModuleDebugData {
-    fn emit(&self, cx: &mut EmitContext) {
+impl ModuleDebugData {
+    /// Rewrites the DWARF for the emitted code and writes it to the module
+    /// when `generate_dwarf` is set. With `source_map`, returns the source map
+    /// of the rewritten line tables and, with Scopes, of the entries' emitted
+    /// code; without `generate_dwarf`, only the line tables are rewritten,
+    /// and nothing is written.
+    pub(crate) fn emit(&self, cx: &mut EmitContext, source_map: bool) -> Option<String> {
         let code_section_start = cx.code_transform.code_section_start;
         let inputs = cx
             .module
@@ -145,24 +154,38 @@ impl Emit for ModuleDebugData {
             global: &global,
         });
 
-        let mut dwarf =
-            dwarf::convert(&from_dwarf, &code, indices.as_ref()).expect("cannot convert DWARF");
+        let naming = (!cx.module.config.skip_source_map_scopes)
+            .then_some(&rust_names::RustNames as &dyn scopes::FunctionNames);
+        let mut map = source_map.then(|| SourceMap::new(code_section_start as u64, naming));
+        let mut add_unit = map.as_mut().map(|map| {
+            |unit: read::UnitRef<_>, files: &Files, lines: Vec<Line>| {
+                map.add_unit(unit, files, lines, &code)
+            }
+        });
+        let lines = add_unit.as_mut().map(|sink| sink as &mut LineSink);
+        if cx.module.config.generate_dwarf {
+            let mut dwarf = dwarf::convert(&from_dwarf, &code, indices.as_ref(), lines)
+                .expect("cannot convert DWARF");
 
-        let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
-        dwarf.write(&mut sections).expect("write failed");
-        sections
-            .for_each(
-                |id: SectionId, data: &write::EndianVec<LittleEndian>| -> Result<()> {
-                    if !data.slice().is_empty() {
-                        cx.wasm_module.section(&wasm_encoder::CustomSection {
-                            name: id.name().into(),
-                            data: data.slice().into(),
-                        });
-                    }
-                    Ok(())
-                },
-            )
-            .expect("never");
+            let mut sections = write::Sections::new(write::EndianVec::new(gimli::LittleEndian));
+            dwarf.write(&mut sections).expect("write failed");
+            sections
+                .for_each(
+                    |id: SectionId, data: &write::EndianVec<LittleEndian>| -> Result<()> {
+                        if !data.slice().is_empty() {
+                            cx.wasm_module.section(&wasm_encoder::CustomSection {
+                                name: id.name().into(),
+                                data: data.slice().into(),
+                            });
+                        }
+                        Ok(())
+                    },
+                )
+                .expect("never");
+        } else if let Some(lines) = lines {
+            dwarf::lines(&from_dwarf, &code, lines).expect("cannot convert the DWARF line tables");
+        }
+        map.map(SourceMap::finish)
     }
 }
 

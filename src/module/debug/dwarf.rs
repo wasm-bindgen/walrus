@@ -276,7 +276,7 @@ impl<'a> CodeMap<'a> {
 
     /// The emitted code covering what `begin..end` covered, as runs sorted
     /// by address. Empty if all of it was removed.
-    fn ranges(&self, begin: u64, end: u64) -> Vec<Run> {
+    pub(crate) fn ranges(&self, begin: u64, end: u64) -> Vec<Run> {
         if is_tombstone(begin) || begin >= end {
             return Vec::new();
         }
@@ -388,17 +388,29 @@ fn data_address(address: u64) -> Option<Address> {
 }
 
 /// `indices` is `None` when the input indices weren't recorded, in which
-/// case `DW_OP_WASM_location` is copied unchanged.
+/// case `DW_OP_WASM_location` is copied unchanged. `lines`, if given, takes
+/// each unit with the lines of its converted line program.
 pub(crate) fn convert(
     from: &read::Dwarf<R>,
     code: &CodeMap,
     indices: Option<&Indices>,
+    mut lines: Option<&mut LineSink>,
 ) -> ConvertResult<write::Dwarf> {
     let mut dwarf = write::Dwarf::default();
     let mut units = dwarf.convert(from)?;
     while let Some((mut unit, root)) = units.read_unit()? {
         if let Some(program) = unit.read_line_program(None, None)? {
-            let (program, files) = convert_line_program(program, code)?;
+            let mut rows = lines.is_some().then(Vec::new);
+            let (program, files) = convert_line_program(program, code, rows.as_mut())?;
+            if let (Some(sink), Some(rows)) = (&mut lines, rows) {
+                let files = Files {
+                    program: &program,
+                    input: &files,
+                    strings: unit.strings,
+                    line_strings: unit.line_strings,
+                };
+                sink(unit.read_unit, &files, rows);
+            }
             unit.set_line_program(program, files);
         }
         let mut cx = Context {
@@ -456,16 +468,8 @@ struct Sequence {
     rows: Vec<(u64, write::LineRow)>,
 }
 
-/// Each output function gets sequences from every unit whose line program
-/// covers some of its code (usually just the unit its own input code
-/// belonged to, but a pass can copy code between functions), with a row
-/// wherever the input row covering its instructions changes. Instructions
-/// with no input location continue the row before them, and a sequence
-/// ends where the unit's coverage does.
-fn convert_line_program(
-    mut program: write::ConvertLineProgram<'_, R>,
-    code: &CodeMap,
-) -> ConvertResult<(write::LineProgram, Vec<write::FileId>)> {
+/// The sequences of a line program in code the input module has, sorted.
+fn read_sequences(program: &mut write::ConvertLineProgram<'_, R>) -> ConvertResult<Vec<Sequence>> {
     let mut sequences = Vec::new();
     while let Some(sequence) = program.read_sequence()? {
         let Some(start) = sequence.start else {
@@ -486,7 +490,28 @@ fn convert_line_program(
         sequences.push(Sequence { start, end, rows });
     }
     sequences.sort_by_key(|s| s.start);
+    Ok(sequences)
+}
 
+/// A change in the input rows that cover the emitted code of a function.
+enum LineEvent<'a> {
+    /// These rows, which share an input address, cover the code from
+    /// `address` on.
+    Rows {
+        address: u64,
+        rows: &'a [(u64, write::LineRow)],
+    },
+    /// No row covers the code from `address` on.
+    End { address: u64 },
+}
+
+/// Each output function gets events from every unit whose line program
+/// covers some of its code (usually just the unit its own input code
+/// belonged to, but a pass can copy code between functions), with rows
+/// wherever the input row covering its instructions changes. Instructions
+/// with no input location continue the rows before them, and the rows end
+/// where the unit's coverage does. Output functions come in address order.
+fn walk_lines(sequences: &[Sequence], code: &CodeMap, sink: &mut dyn FnMut(LineEvent)) {
     // The rows covering an input address: those at it, or else the last one
     // before it, in the same function. (A sequence can run on from one
     // function into the next, whose start then seems to have the last row
@@ -515,7 +540,7 @@ fn convert_line_program(
     // The output functions with code from the input functions the unit's
     // sequences cover, in address order.
     let mut targets = Vec::new();
-    for sequence in &sequences {
+    for sequence in sequences {
         let first = code.inputs.partition_point(|f| f.end <= sequence.start);
         for (i, f) in code.inputs.iter().enumerate().skip(first) {
             if f.start >= sequence.end {
@@ -529,42 +554,155 @@ fn convert_line_program(
 
     for o in targets {
         let f = &code.outputs[o];
-        // The rows in effect, and the start of the open sequence. Output
-        // instructions with no input location keep the rows in effect; an
-        // input address no row covers ends the sequence, as in the input.
+        // The rows in effect, if any. Output instructions with no input
+        // location keep the rows in effect; an input address no row covers
+        // ends them, as in the input.
         let mut current = None;
-        let mut open = None;
         for position in 0..=f.instrs.len() {
             let Some(input) = code.input_address(o, position) else {
                 continue;
             };
             let address = f.address(position);
             let Some(rows) = covering(input) else {
-                if let Some(start) = open.take() {
-                    program.end_sequence(address - start);
-                    current = None;
+                if current.take().is_some() {
+                    sink(LineEvent::End { address });
                 }
                 continue;
             };
             if current.as_ref() == Some(&rows) {
                 continue;
             }
-            let start = *open.get_or_insert_with(|| {
-                program.begin_sequence(Some(Address::Constant(address)));
-                address
+            sink(LineEvent::Rows {
+                address,
+                rows: &sequences[rows.0].rows[rows.1.clone()],
             });
-            for (_, row) in &sequences[rows.0].rows[rows.1.clone()] {
-                let mut row = *row;
-                row.address_offset = address - start;
-                program.generate_row(row);
-            }
             current = Some(rows);
         }
-        if let Some(start) = open {
-            program.end_sequence(f.end - start);
+        if current.is_some() {
+            sink(LineEvent::End { address: f.end });
         }
     }
+}
+
+/// Writes a sequence for each run of rows that `walk_lines` finds, and
+/// collects their lines in `lines`, if given.
+fn convert_line_program(
+    mut program: write::ConvertLineProgram<'_, R>,
+    code: &CodeMap,
+    mut lines: Option<&mut Vec<Line>>,
+) -> ConvertResult<(write::LineProgram, Vec<write::FileId>)> {
+    let sequences = read_sequences(&mut program)?;
+    // The start of the open sequence.
+    let mut open = None;
+    walk_lines(&sequences, code, &mut |event| {
+        if let Some(lines) = &mut lines {
+            push_line(lines, &event);
+        }
+        match event {
+            LineEvent::Rows { address, rows } => {
+                let start = *open.get_or_insert_with(|| {
+                    program.begin_sequence(Some(Address::Constant(address)));
+                    address
+                });
+                for (_, row) in rows {
+                    let mut row = *row;
+                    row.address_offset = address - start;
+                    program.generate_row(row);
+                }
+            }
+            LineEvent::End { address } => {
+                if let Some(start) = open.take() {
+                    program.end_sequence(address - start);
+                }
+            }
+        }
+    });
     Ok(program.program())
+}
+
+/// From an emitted address on, the file, line and column of the code, or
+/// `None` where no row of the unit covers it.
+pub(crate) type Line = (u64, Option<(write::FileId, u64, u64)>);
+
+/// Adds the line of an event: of several rows at one address, readers take
+/// the last.
+fn push_line(lines: &mut Vec<Line>, event: &LineEvent) {
+    lines.push(match *event {
+        LineEvent::Rows { address, rows } => {
+            let row = rows[rows.len() - 1].1;
+            (address, Some((row.file, row.line, row.column)))
+        }
+        LineEvent::End { address } => (address, None),
+    });
+}
+
+/// Takes each input unit, with its files and its lines, in the order the
+/// line program has them.
+pub(crate) type LineSink<'a> = dyn FnMut(read::UnitRef<R>, &Files, Vec<Line>) + 'a;
+
+/// The files of one unit's converted line program.
+pub(crate) struct Files<'a> {
+    program: &'a write::LineProgram,
+    /// The converted file of each input file index.
+    input: &'a [write::FileId],
+    strings: &'a write::StringTable,
+    line_strings: &'a write::LineStringTable,
+}
+
+impl Files<'_> {
+    /// The converted file of an input file index, as in `DW_AT_decl_file`.
+    pub(crate) fn input_file(&self, index: u64) -> Option<write::FileId> {
+        // Before DWARF 5, file 0 is no file.
+        if index == 0 && self.program.version() <= 4 {
+            return None;
+        }
+        self.input.get(usize::try_from(index).ok()?).copied()
+    }
+
+    /// The compilation directory, the file's directory unless it is the
+    /// compilation directory, and the file's name.
+    pub(crate) fn path(&self, file: write::FileId) -> (&[u8], Option<&[u8]>, &[u8]) {
+        let comp_dir = self.program.default_directory();
+        let (name, dir) = self.program.get_file(file);
+        let dir = (dir != comp_dir).then(|| self.string(self.program.get_directory(dir)));
+        let comp_dir = self.string(self.program.get_directory(comp_dir));
+        (comp_dir, dir, self.string(name))
+    }
+
+    fn string<'a>(&'a self, string: &'a write::LineString) -> &'a [u8] {
+        string.get(self.strings, self.line_strings)
+    }
+}
+
+/// Each unit and its lines, for a module whose DWARF isn't written: the
+/// same as `convert` gives `lines`, without converting the rest.
+pub(crate) fn lines(
+    from: &read::Dwarf<R>,
+    code: &CodeMap,
+    sink: &mut LineSink,
+) -> ConvertResult<()> {
+    // Holds the strings of the converted line programs.
+    let mut dwarf = write::Dwarf::default();
+    let mut units = from.units();
+    while let Some(header) = units.next()? {
+        let unit = from.unit(header)?;
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+        let mut program = dwarf.read_line_program(from, program, None, None)?;
+        let sequences = read_sequences(&mut program)?;
+        let mut rows = Vec::new();
+        walk_lines(&sequences, code, &mut |event| push_line(&mut rows, &event));
+        let (program, input) = program.program();
+        let files = Files {
+            program: &program,
+            input: &input,
+            strings: &dwarf.strings,
+            line_strings: &dwarf.line_strings,
+        };
+        sink(unit.unit_ref(from), &files, rows);
+    }
+    Ok(())
 }
 
 fn entry_function(

@@ -1,0 +1,28 @@
+sources ["/work/src/lib.rs","/rustc/x/library/core/src/ops/function.rs"]
+mappings
+  run.0 lib.rs:41:5
+  run.4 lib.rs:21:28
+  run.6 lib.rs:11:5
+  run.8 lib.rs:21:20
+  run.10 lib.rs:11:5
+  run.12 lib.rs:43:5
+  run.16 lib.rs:21:24
+  run.20 -
+  run.22 lib.rs:44:5
+  run.24 function.rs:250:5
+  run.26 lib.rs:45:1
+  run.38 -
+  outer.0 lib.rs:61:5
+  outer.2 lib.rs:71:5
+  outer.4 lib.rs:62:9
+  outer.6 lib.rs:71:12
+  outer.8 lib.rs:63:5
+  outer.end -
+  id_u32.0 lib.rs:51:5
+  id_u32.2 lib.rs:51:9
+  id_u32.end -
+  id_u64.0 lib.rs:51:5
+  id_u64.2 lib.rs:51:12
+  id_u64.end -
+  shim.0 function.rs:250:5
+  shim.end -

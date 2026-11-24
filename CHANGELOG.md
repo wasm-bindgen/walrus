@@ -8,6 +8,34 @@ Released YYYY-MM-DD.
 
 ### Added
 
+* TODO (or remove section if none)
+
+### Changed
+
+* TODO (or remove section if none)
+
+### Deprecated
+
+* TODO (or remove section if none)
+
+### Removed
+
+* TODO (or remove section if none)
+
+### Fixed
+
+* TODO (or remove section if none)
+
+### Security
+
+* TODO (or remove section if none)
+
+## 0.29.0
+
+Released 2026-11-24.
+
+### Added
+
 * `ModuleConfig::function_order` takes a closure that decides the order
   defined functions are emitted, and so numbered, in. It is given every
   defined function as a `FunctionInfo`, with its size and how many times its
@@ -44,14 +72,6 @@ Released YYYY-MM-DD.
   handlers in parallel. This scan decodes every function body. It runs for
   any module with a tag that has params, such as an Emscripten module built
   with C++ exceptions, or with a function type that has two or more results.
-
-### Deprecated
-
-* TODO (or remove section if none)
-
-### Removed
-
-* TODO (or remove section if none)
 
 ### Fixed
 
@@ -97,10 +117,6 @@ Released YYYY-MM-DD.
 * Line rows stay on the instructions they describe. In a Rust -O0 build,
   133 instructions whose row was line 0 were given other lines. `delegate`
   also keeps its row now.
-
-### Security
-
-* TODO (or remove section if none)
 
 ## 0.28.0
 

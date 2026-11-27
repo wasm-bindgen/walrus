@@ -34,4 +34,9 @@ impl ModuleLocals {
     pub fn iter(&self) -> impl Iterator<Item = &Local> {
         self.arena.iter().map(|(_, f)| f)
     }
+
+    /// Get a mutable reference to this module's globals.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Local> {
+        self.arena.iter_mut().map(|(_, f)| f)
+    }
 }
